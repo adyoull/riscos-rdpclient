@@ -15,7 +15,20 @@ Run this after editing any source under ../app/!RDPClient/{c,h,rdesktop}:
 Keeping app_base.zip generated (not hand-edited) is what prevents the source
 and the build input from silently diverging.
 """
-import os, sys, shutil, subprocess, zipfile
+import os, sys, shutil, subprocess, zipfile, re
+
+# RISC OS filetype suffix, e.g. "Display,fff" -> type &fff. Stripped when building
+# app_base.zip so the build service compiles by the plain RISC OS leafname.
+SUFFIX = re.compile(r',[0-9A-Fa-f]{3}$')
+def strip_suffix(name):
+    return SUFFIX.sub("", name)
+
+def strip_suffixes_in(tree):
+    for dirpath, dirs, files in os.walk(tree):
+        for fn in files:
+            if SUFFIX.search(fn):
+                os.rename(os.path.join(dirpath, fn),
+                          os.path.join(dirpath, strip_suffix(fn)))
 
 HERE   = os.path.dirname(os.path.abspath(__file__))
 APP    = os.path.normpath(os.path.join(HERE, "..", "app", "!RDPClient"))
@@ -39,6 +52,11 @@ def main():
     shutil.copytree(os.path.join(APP, "c"),        os.path.join(STAGE, "c"))
     shutil.copytree(os.path.join(APP, "h"),        os.path.join(STAGE, "h"))
     shutil.copytree(os.path.join(APP, "rdesktop"), os.path.join(STAGE, "rdesktop"))
+
+    # Drop the ,xxx RISC OS type suffixes: the build service wants plain leafnames
+    # (c/Display, h/Mouse, rdesktop/c/mcs, ...).
+    for d in ("c", "h", "rdesktop"):
+        strip_suffixes_in(os.path.join(STAGE, d))
 
     # 2) C99 -> C89 on the app C sources (Norcroft is C89-only). Idempotent.
     cfiles = [os.path.join(STAGE, "c", n) for n in sorted(os.listdir(os.path.join(STAGE, "c")))]

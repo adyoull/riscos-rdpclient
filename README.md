@@ -42,6 +42,25 @@ LICENSE                GNU GPL v2 (+ OpenSSL exemption) — the app's licence
 Build artefacts (`build/work/`, `build/Built/`, `build/_pkg/`, `*.stale*`,
 `__pycache__/`) are git-ignored.
 
+### RISC OS filetypes — the `,xxx` suffix
+
+Git/GitHub don't store RISC OS filetypes, so every RISC OS file under
+`app/!RDPClient/` and `dist_extras/` carries a **`,xxx` filetype suffix** in its
+name (RISC OS convention): e.g. `!Run,feb` (Obey), `Templates,fec` (Template),
+`!Sprites,ff9` (Sprite), `!!DeepKeys,ffa` (Module), `ClipStore,ff8` (Absolute),
+and source/text as `,fff` (Text). Cloning onto RISC OS through a filer that
+decodes `,xxx` restores every type automatically. The build tooling is
+suffix-aware, so the suffixes never reach the compiler or the deployed app:
+
+- `package.py` **strips** the suffix when building `app_base.zip` (the compiler
+  sees plain leafnames like `c/Display`).
+- `buildapp.py`'s deploy zip **strips** the suffix from the archive name and uses
+  it as the **authoritative filetype** embedded in `Built/RDPClient_app.zip`
+  (so that zip also unzips with correct types, suffix-free, on RISC OS).
+
+Build tooling (`build/*.py`, `plan.json`) and `docs/` are host-side files and are
+not suffixed.
+
 ---
 
 ## Requirements

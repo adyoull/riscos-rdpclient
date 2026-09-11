@@ -316,10 +316,20 @@ def make_riscos_zip(src_dir, zip_path):
             if fn == ".DS_Store" or ".bak" in fn:
                 continue
             arc = os.path.relpath(full, src_dir).replace(os.sep, "/")
+            # A ,xxx RISC OS type suffix on the source is authoritative: strip it
+            # from the archive name and use it for the embedded filetype. Files
+            # with no suffix (e.g. the linked RDPClient binary) fall back to the
+            # filename->type map.
+            m = re.search(r',([0-9A-Fa-f]{3})$', arc)
+            if m:
+                ftype = int(m.group(1), 16)
+                arc = arc[:m.start()]
+            else:
+                ftype = _riscos_filetype(arc)
             zi = zipfile.ZipInfo(arc)
             zi.compress_type = zipfile.ZIP_DEFLATED
             zi.external_attr = 0o644 << 16
-            zi.extra = _riscos_extra(_riscos_filetype(arc))
+            zi.extra = _riscos_extra(ftype)
             with open(full, "rb") as fh:
                 zf.writestr(zi, fh.read())
     zf.close()

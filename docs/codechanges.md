@@ -6,6 +6,23 @@ DEVELOPER_addendum.md / REBUILD_RECIPE.md (background).
 
 ---
 
+## 2026-09-11
+
+### GitHub repository + RISC OS filetype suffixes
+- Assembled this standalone, reproducible git repo (`app/` source of truth,
+  `build/` kit, `dist_extras/`, `docs/`, `LICENSE`, `README.md`).
+- `build/package.py` regenerates `build/app_base.zip` from `app/` + `build/libs`;
+  verified it reproduces the known-good bundle **byte-for-byte**.
+- Added **`,xxx` RISC OS filetype suffixes** to every file under `app/!RDPClient/`
+  and `dist_extras/` (117 files), so GitHub/clone preserves types. Made the
+  pipeline suffix-aware: `package.py` strips the suffix for `app_base.zip`
+  (plain leafnames), and `buildapp.py`'s `make_riscos_zip` strips it from the
+  archive name and uses it as the authoritative embedded filetype. Verified the
+  deploy zip emits base names with correct types (!Run &FEB, RDPClient &FF8,
+  Templates &FEC, sprites &FF9, !!DeepKeys &FFA, ClipStore &FF8, text &FFF).
+- `build/buildapp.py` paths adjusted for the repo layout (`../app/!RDPClient`,
+  `../dist_extras`).
+
 ## 2026-09-10
 
 ### Build reproducibility — critical fixes put back into SOURCE
