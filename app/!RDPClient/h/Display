@@ -1,0 +1,370 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Display.h                                               *
+ *                                                                      *
+ *     Purpose: Display Window or Full Screen access.                   *
+ *                                                                      *
+ ************************************************************************/
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+#ifndef __dl_sprite_h
+#include "DeskLib:Sprite.h"
+#endif
+
+#define display_mode_WINDOW     0
+#define display_mode_FULLSCREEN 1
+#define display_mode_SINGLETASK 2
+
+#define fullscreen_bringtofront_MOUSECLICK 0
+#define fullscreen_bringtofront_KEYPRESS   1
+
+ /*
+  * display information
+  */
+typedef struct {
+    char                *spritearea;
+    int                 image;
+    int                 linebytes;
+} display_dsa_block;
+
+typedef struct {
+    int                 display_mode;
+    BOOL                update_palette;
+    window_handle       current_window;
+    window_handle       window;
+    window_handle       fullscreen;
+    BOOL                window_open;
+    BOOL                window_opened_before;
+    BOOL                input_focus;
+    mode_select_block   wimpmode;
+    BOOL                requested_modechange;
+    spritelib_block     *sprite;             /* updates go here */
+    spritelib_block     *display_sprite;     /* display buffer sprite */
+    spritelib_block     *screen_sprite;      /* direct screen access sprite */
+    
+    BOOL                singletask;
+    unsigned char       *cache;
+    int                 cache_size;
+    wimp_point          plotcoord;           /* coord to plot at in window */
+    sprite_scalefactors screenscale;         /* scale factors used on screen */
+    char                *pixtranstable;      /* ptr to pixel trans table or 0 if not needed */
+    char                pixtransbuffer[256]; /* buffer for pixel trans table */
+    wimp_point          pointer_coord;
+    pointer_block       *pointer;
+    char                *pointer_pixtranstable; /* ptr to pixel trans table or 0 if not needed */
+    char                pointer_pixtransbuffer[256]; /* buffer for pixel trans table */
+} display_block;
+
+typedef struct {
+    BOOL                used;
+    unsigned int        number;
+    wimp_point          top_left;
+    wimp_point          bottom_right;
+    wimp_point          size;
+    int                 area;
+    unsigned int        time;
+} redraw_rectangle_block;
+
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Display_Init(void);
+
+
+ /*
+  * Returns TRUE if Display has been called
+  */
+extern BOOL Display_Called(void);
+
+
+ /*
+  * Set display mode
+  */
+extern void Display_SetDisplayMode(int mode);
+
+
+ /*
+  * Get current display mode
+  */
+extern int Display_GetDisplayMode(void);
+
+
+ /*
+  * Set fullscreen mode bring to front option
+  */
+extern void Display_SetFullscreenBringToFront(int option);
+
+
+ /*
+  * Get current fullwindow mode bring to front option
+  */
+extern int Display_GetFullscreenBringToFront(void);
+
+
+ /*
+  * Initialise display environment for supplied image type
+  */
+extern BOOL Display_Create(int width, int height, int bpp);
+
+
+ /*
+  * Set display window title
+  */
+extern void Display_SetWindowTitle(char *title);
+
+
+ /*
+  * Set whether screen palette is updated to reflect Display palette
+  * when running both at 8bit
+  */
+extern void Display_SetUpdatePalette(BOOL update_palette);
+
+
+ /*
+  * Get whether screen palette is updated to reflect Display palette
+  * when running both at 8bit
+  */
+extern BOOL Display_GetUpdatePalette(void);
+
+
+ /*
+  * Returns TRUE if in single tasking mode
+  */
+extern BOOL Display_SingleTask(void);
+
+
+ /*
+  * Open display window
+  */
+extern BOOL Display_OpenWindow(void);
+
+
+ /*
+  * Close display window
+  */
+extern void Display_CloseWindow(void);
+
+
+ /*
+  * Destroy everything
+  */
+extern void Display_Destroy(void);
+
+
+ /*
+  * Returns TRUE when the Display has input focus
+  */
+extern BOOL Display_HasInputFocus(void);
+
+
+ /*
+  * Returns window handle of currently displayed window
+  */
+extern window_handle Display_CurrentWindowHandle(void);
+
+
+ /*
+  * Set custom 8bit image palette colours
+  */
+extern void Display_SetCustomPalette(palette_entry *palette);
+
+
+ /*
+  * Get custom 8bit image palette colours
+  */
+extern palette_entry *Display_GetCustomPalette(void);
+
+
+ /*
+  * Set clip area of the Display - this sets a limiting rectangle where output
+  * can only be drawn to
+  */
+extern void Display_SetClipArea(int origin_x, int origin_y, int size_x, int size_y);
+
+
+ /*
+  * Reset clip area to whole of the Display
+  */
+extern void Display_ResetClipArea(void);
+
+
+ /*
+  * Plot area of sprite from source_x, source_y to source_width, source_height
+  * to display at coords dest_x, dest_y
+  */
+extern void Display_PlotSprite(int gfx_op,
+                               int dest_x, int dest_y,
+                               spritelib_block *source_sprite,
+                               int source_x, int source_y,
+                               int source_width, int source_height);
+
+
+ /*
+  * Plot area of source_data from top left to source_width, source_height
+  * to display at coordinate dest_x, dest_y (top left)
+  */
+extern void Display_PlotData(int gfx_op,
+                             int dest_x, int dest_y,
+                             unsigned char *source_data,
+                             int source_x, int source_y,
+                             int source_width, int source_height,
+                             int source_image_width, int source_image_height);
+
+
+ /*
+  * Plot rectangle of colour 'colour'
+  */
+extern void Display_PlotRectangle(int gfx_op,
+                                  int x, int y,
+                                  int width, int height,
+                                  int colour,
+                                  BOOL update);
+
+
+ /*
+  * Plot a single pixel wide line of colour 'colour'
+  */
+extern void Display_PlotLine(int gfx_op,
+                             int start_x, int start_y,
+                             int finish_x, int finish_y,
+                             int colour,
+                             BOOL update);
+
+
+ /*
+  * Plot 1 bit per pixel source_sprite to Display.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  * Where the source_sprite is 1, the dest_sprite is set to foreground_colour.
+  * If set_background is TRUE, where the source_sprite is 0, the dest_sprite is set
+  * to background_colour.
+  */
+extern void Display_PlotSpriteBitMask(int gfx_op,
+                                      int dest_x, int dest_y,
+                                      spritelib_block *source_sprite,
+                                      int source_x, int source_y,
+                                      int plot_origin_x, int plot_origin_y,
+                                      int plot_width, int plot_height,
+                                      int foreground_colour,
+                                      int background_colour, BOOL set_background,
+                                      BOOL update);
+
+
+ /*
+  * Plot source_sprite to Display.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  */
+extern void Display_PlotSpriteTiled(int gfx_op,
+                                    int dest_x, int dest_y,
+                                    spritelib_block *source_sprite,
+                                    int source_x, int source_y,
+                                    int plot_origin_x, int plot_origin_y,
+                                    int plot_width, int plot_height,
+                                    BOOL update);
+
+
+ /*
+  * Copy rectangle area of screen to another place
+  */
+extern void Display_CopyRectangle(int gfx_op,
+                                  int dest_x, int dest_y,
+                                  int source_x, int source_y,
+                                  int width, int height);
+
+
+ /*
+  * Refresh rectangle of Display from Sprite
+  */
+extern void Display_Update(int x, int y,
+                           int width, int height);
+
+
+ /*
+  * Converts screen coords (origin bottom left) to Display coords
+  * (origin top left of Display).
+  * TRUE is returned if the coords are within the visible area of the display
+  */
+extern BOOL Display_ScreenToDisplayCoords(wimp_point *screen_coord, wimp_point *display_coord);
+
+
+ /*
+  * Converts Display coords (origin top left of Display) to screen coords
+  * (origin bottom left).
+  */
+extern void Display_DisplayToScreenCoords(wimp_point *display_coord, wimp_point *screen_coord);
+
+
+ /*
+  * Save area of screen into display cache at offset
+  */
+extern void Display_SaveToCache(unsigned int offset,
+                                int x, int y, int width, int height);
+
+
+ /*
+  * Restore are of screen from display cache at offset
+  */
+extern void Display_RestoreFromCache(unsigned int offset,
+                                     int x, int y, int width, int height);
+
+ /*
+  * Called frequently
+  */
+extern void Display_Poll(void);
+
+
+ /*
+  * Save Display as Sprite
+  */
+extern BOOL Display_ScreenSave(char *filename);
+
+
+ /*
+  * Return size of Display sprite
+  */
+extern int Display_ScreenSpriteSize(void);
+
+
+ /*
+  * Set pointer to that supplied or turn off pointer by supplying NULL
+  */
+extern void Display_SetPointer(pointer_block *pointer);
+
+
+ /*
+  * Move screen position of pointer to x, y
+  */
+extern void Display_MovePointer(int x, int y);
+
+
+ /*
+  * Move screen position of pointer to x, y and update stored pointer position
+  */
+extern void Display_UpdatePointerPosition(int x, int y);
+
+
+ /*
+  * Ensures that the window is on top of the stack.
+  * Return TRUE if action performed.
+  */
+extern BOOL Display_EnsureWindowOnTopWhenFullscreen(int method);
+
+
+ /*
+  * Validates that the display resolution and bpp are available as
+  * screenmodes
+  */
+extern void Display_Validate(BOOL *valid_res, BOOL *valid_bpp);
+
+
+
+extern void Display_Test(void);
+

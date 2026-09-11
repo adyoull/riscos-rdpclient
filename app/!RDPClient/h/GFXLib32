@@ -1,0 +1,26 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib32.h                                              *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 24bit images.         *
+ *                                                                      *
+ ************************************************************************/
+
+
+extern void GFXLib_PlotDataToSprite_32_Copy(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotDataToSprite_FlipVertical_32_Copy(int source_linebytes,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start);

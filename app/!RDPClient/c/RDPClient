@@ -1,0 +1,1088 @@
+/************************************************************************
+ *                                                                      *
+ *        File: RDPClient.c                                             *
+ *                                                                      *
+ *     Purpose: Core of program.                                        *
+ *              Initialises and loads resources.                        *
+ *              Handles IconBar icon and menu.                          *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Dialog.h"            /* High-level dialogue windows     */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:GFX.h"               /* Graphics routines (GFX_Wait)    */
+#include "DeskLib:Handler.h"           /* Default/example event handlers  */
+#include "DeskLib:Hourglass.h"         /* Hourglass module interfaces     */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Screen.h"            /* Getting screen size info, etc   */
+#include "DeskLib:Sound.h"             /* Sound System control            */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Slider.h"            /* "Easy" slider handling          */
+#include "DeskLib:Kbd.h"               /* Read hotkeys                    */
+#include "DeskLib:Time.h"              /* "TIME"                          */
+#include "DeskLib:KernelSWIs.h"        /* OS_Byte                         */
+#include "DeskLib:Dialog2.h"           /* windows on menus made easy      */
+#include "DeskLib:Debug.h"
+#include "DeskLib:Url.h"
+#include "DeskLib:Save.h"
+
+
+#include <signal.h>
+
+#include "kernel.h"
+#include "MySwis.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "Utils.h"
+#include "Net.h"
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Die.h"
+#include "Display.h"
+#include "UI.h"
+#include "rdesktop.h"
+#include "Keyboard.h"
+#include "Mouse.h"
+#include "Choices.h"
+#include "Status.h"
+#include "RDPClient.h"
+#include "MemMan.h"
+#include "Sound.h"
+#include "Log.h"
+#include "CacheIO.h"
+#include "Clipboard.h"
+
+#include "rdesktop/rdesktop.h"
+
+/* Set to TRUE to quit the app.    */
+extern BOOL rdpclient_quit = FALSE;
+static BOOL quit_by_menu = FALSE;
+
+/* TRUE if connected to a server */
+extern BOOL rdpclient_connected = FALSE;
+
+/* user iconsprites sprite area */
+extern sprite_area usericonsprites = NULL;
+
+/* TRUE when 3D templates are being used */
+extern BOOL threedlook = FALSE;
+
+/* validation string for iconbar icon */
+extern char *rdpclient_baricon_validation = '\0';
+
+/* text string for iconbar icon */
+extern char *rdpclient_baricon_text = '\0';
+
+/* main iconbar menu */
+static menu_ptr mainmenu = NULL;
+
+/* Scroll settings submenu (C) 2026 Andrew Youll */
+static menu_ptr scrollmenu = NULL;
+
+/* iconbar icon handle */
+static icon_handle bariconhandle = NULL;
+
+/* about this program window */
+static dialog2_block *dialog2_proginfo = NULL;
+
+/* save screen window */
+static window_handle save_window = NULL;
+static save_saveblock *saveblock = NULL;
+
+/* Defines for the positions at which items appear on the menus. */
+#define mainmenu_INFO        0
+#define mainmenu_WINDOW      1
+#define mainmenu_FULLWINDOW  2
+#define mainmenu_FULLSCREEN  3
+#define mainmenu_SAVESCREEN  4
+#define mainmenu_VIEWLOG     5
+#define mainmenu_STATUS      6
+#define mainmenu_SCROLL      7   /* (C) 2026 Andrew Youll -- scroll settings  */
+#define mainmenu_QUIT        8
+
+/* Scroll submenu item positions (C) 2026 Andrew Youll */
+#define scrollmenu_INVERT    0
+#define scrollmenu_SLOWER    1
+#define scrollmenu_FASTER    2
+
+#define icon_PROGVERSION        8
+#define icon_RDESKTOPVERSION    10
+#define icon_RDPCLIENTWEBSITE   13
+#define icon_RDESKTOPWEBSITE    14
+#define icon_RDPCLIENTUNDERLINE 15
+#define icon_RDESKTOPUNDERLINE  16
+
+#define icon_SAVE_ICON          0
+#define icon_SAVE_FILENAME      1
+#define icon_SAVE_OK            2
+#define icon_SAVE_CANCEL        3
+
+/* default Wimp_PollIdle time */
+#define idle_TIME 40
+
+/* icon sprites for iconbar icon */
+#define iconbaricon_CONNECTED    "Srdpclient_c"
+#define iconbaricon_NOTCONNECTED "Srdpclient_nc"
+
+/* task name of Clipboard Store */
+#define clipboardstore_TASKNAME  "Clipboard Store"
+
+/* current Wimp_PollIdle time */
+extern unsigned int idletime = idle_TIME;
+
+/* startup command for the Desktop Boot file */
+static char startup_command[300];
+
+static BOOL CloseWindow(event_pollblock *event, void *reference);
+static BOOL Handler_Quit(event_pollblock *event, void *reference);
+static BOOL Menuwarn_mainmenu(event_pollblock *event, void *reference);
+static void Popup_proginfo(dialog2_block *dialog2);
+static void Popup_save(void);
+static BOOL Handler_MyModeChange(event_pollblock *event, void *reference);
+static BOOL Save_FileSaver(char *filename, void *ref);
+static BOOL Click_baricon(event_pollblock *event, void *reference);
+static BOOL Click_proginfo(event_pollblock *event, void *reference);
+static BOOL MenuChoice_mainmenu(event_pollblock *event, void *reference);
+static void setup_menus(void);
+static void setup_templates(void);
+static void setup_save_window(void);
+static void set_menu_shade(BOOL shaded);
+static void build_startupcommand(void);
+static BOOL save_desktop(event_pollblock *event, void *reference);
+static void update_underline_icon_size(window_handle window,
+                                       icon_handle texticon, icon_handle underlineicon,
+                                       BOOL resize_left);
+static void validate_screen_modes(void);
+static void atexit_handler(void);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void RDPClient_IconBarSetText(char *newtext)
+{
+ /*
+  * Update text on IconBar Icon
+  */
+  strncpy(rdpclient_baricon_text, newtext, baricon_TEXT_SIZE);
+  rdpclient_baricon_text[baricon_TEXT_SIZE-1] = '\0';
+
+  /*Wimp_SetIconState(window_ICONBAR, bariconhandle, 0, 0);*/
+
+  Event_Release(event_CLICK, -2, bariconhandle, Click_baricon, NULL);
+
+  Wimp_DeleteIcon(window_ICONBAR, bariconhandle);
+
+  bariconhandle = Utils_BarIconText(rdpclient_baricon_validation, rdpclient_baricon_text,
+                                    baricon_TEXT_SIZE, iconbar_RIGHT);
+
+  Event_Claim(event_CLICK, -2, bariconhandle, Click_baricon, NULL);
+}
+
+/******************************************************************************/
+
+extern void RDPClient_IconBarSetState(BOOL connected)
+{
+ /*
+  * Update sprite on IconBar Icon to reflect connected state
+  */
+
+  rdpclient_connected = connected;
+
+  Wimp_SetIconState(-2, bariconhandle, icon_NEEDSHELP, icon_NEEDSHELP);
+
+  if(connected)
+     strcpy(rdpclient_baricon_validation, iconbaricon_CONNECTED);
+  else
+     strcpy(rdpclient_baricon_validation, iconbaricon_NOTCONNECTED);
+
+  Wimp_SetIconState(-2, bariconhandle, 0, icon_NEEDSHELP);
+
+
+  set_menu_shade(!connected);
+}
+
+/******************************************************************************/
+
+extern void RDPClient_MenuSetDisplayMode(int display_mode)
+{
+ /*
+  * Set selected display mode in iconbar menu
+  */
+  int window_ticked, window_shaded;
+  int fullwindow_ticked, fullwindow_shaded;
+  int fullscreen_ticked, fullscreen_shaded;
+
+  Menu_GetFlags(mainmenu, mainmenu_WINDOW, &window_ticked, &window_shaded);
+  Menu_GetFlags(mainmenu, mainmenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
+  Menu_GetFlags(mainmenu, mainmenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
+
+  switch(display_mode)
+  {
+    case display_mode_WINDOW:
+      window_ticked = 1;
+      fullwindow_ticked = 0;
+      fullscreen_ticked = 0;
+      break;
+
+    case display_mode_FULLSCREEN:
+      window_ticked = 0;
+      fullwindow_ticked = 1;
+      fullscreen_ticked = 0;
+      break;
+
+    case display_mode_SINGLETASK:
+      window_ticked = 0;
+      fullwindow_ticked = 0;
+      fullscreen_ticked = 1;
+      break;
+  }
+
+  Menu_SetFlags(mainmenu, mainmenu_WINDOW, window_ticked, window_shaded);
+  Menu_SetFlags(mainmenu, mainmenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
+  Menu_SetFlags(mainmenu, mainmenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
+
+}
+
+/******************************************************************************/
+
+extern event_type RDPClient_PollNull(void)
+{
+ /*
+  * Call WimpPoll and return immediately
+  */
+  event_pollmask event_nonullmask;
+
+  event_nonullmask.value = event_mask.value & 0xFFFFFFFE;
+
+  Wimp_PollIdle(event_nonullmask, &event_lastevent, Time_Monotonic());
+
+  Event_Process(&event_lastevent);
+
+  MemMan_PollMemoryManagement();
+
+  Clipboard_Poll();
+  
+  return(event_lastevent.type);
+}
+
+/******************************************************************************/
+
+extern event_type RDPClient_PollNullLoop(int null_polls)
+{
+ /*
+  * Call WimpPoll and return after null_polls number of NULL events
+  */
+  int index = null_polls;
+  event_type event;
+
+  while(index > 0){
+
+     event = RDPClient_PollNull();
+
+     if(event == event_NULL)
+        index--;
+  }
+
+  return(event);
+}
+
+/******************************************************************************/
+
+extern void RDPClient_SetSaveWindowProperties(BOOL is_menu, int filetype, int estimatedsize,
+                                              char *filename, int save_type)
+{
+ /*
+  * Set properties of Save window.
+  * Called before displaying window
+  */
+  saveblock->flags.data.is_menu = (is_menu ? 1 : 0);
+  
+  Save_SetFiletype(saveblock, filetype);
+
+  saveblock->estimatedsize = estimatedsize;
+
+  Icon_SetText(save_window, icon_SAVE_FILENAME, filename);
+
+  saveblock->ref = (void *)save_type;
+
+}
+
+/******************************************************************************/
+
+extern void RDPClient_OpenSaveWindow(window_openpos openpos)
+{
+ /*
+  * Open Save window
+  */
+  Window_Show(save_window, openpos);
+}
+
+/******************************************************************************/
+
+extern void RDPClient_HideSaveWindow(void)
+{
+ /*
+  * Closes Save window
+  */
+  Window_Hide(save_window);
+}
+
+/******************************************************************************
+ *                             message handlers                               *
+ ******************************************************************************/
+
+static BOOL CloseWindow(event_pollblock *event, void *reference)
+/*  Handler attached to all closewindow events.
+ * fall through causes BEEP when window is closed which indicates that I have
+ * not installed a close window hander for that window
+ */
+{
+  /*Sound_SysBeep();*/
+
+  if(event->type == event_CLOSE){
+
+     /*Sound_SysBeep();*/
+     Window_Delete(event->data.words[0]);
+     
+  } 
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL Handler_Quit(event_pollblock *event, void *reference)
+{
+ /*
+  * when quit message received set quit flag to TRUE so die handler does not
+  * activate
+  */
+  
+  rdpclient_quit = TRUE;
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+static BOOL Menuwarn_mainmenu(event_pollblock *event, void *reference)
+{
+ /*
+  * called to display "about this program" window or "save" window
+  */
+
+  if(menu_currentopen != mainmenu)
+     return(FALSE);
+
+  if(event->data.message.data.menuwarn.selection[0] == mainmenu_INFO){
+     Dialog2_OpenDialogMenuLeaf(event, dialog2_proginfo);
+     return(TRUE);
+  }
+
+  if(event->data.message.data.menuwarn.selection[0] == mainmenu_SAVESCREEN){
+     if(save_window != NULL){
+        Popup_save();
+        Wimp_CreateSubMenu((menu_ptr)save_window,
+                           event->data.message.data.menuwarn.openpos.x,
+                           event->data.message.data.menuwarn.openpos.y);
+        return(TRUE);
+     }
+     else
+        return(FALSE);
+  }
+
+ /*
+  * (C) 2026 Andrew Youll -- let DeskLib open the code-attached Scroll submenu
+  * itself (do not claim its submenu-warning).
+  */
+  if(event->data.message.data.menuwarn.selection[0] == mainmenu_SCROLL)
+     return(FALSE);
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static void Popup_proginfo(dialog2_block *dialog2)
+{
+ /*
+  * called when "about this program" window is displayed to set the correct
+  * version text
+  */
+  char version[100];
+
+  Msgs_Lookup("info.version", version, 90);
+  Icon_SetText(dialog2->window, icon_PROGVERSION, version);
+
+  Msgs_Lookup("info.rversion", version, 90);
+  Icon_SetText(dialog2->window, icon_RDESKTOPVERSION, version);
+
+  update_underline_icon_size(dialog2->window,
+                             icon_RDPCLIENTWEBSITE, icon_RDPCLIENTUNDERLINE, FALSE);
+  update_underline_icon_size(dialog2->window,
+                             icon_RDESKTOPWEBSITE, icon_RDESKTOPUNDERLINE, TRUE);
+
+  Event_Claim(event_CLICK, dialog2->window, event_ANY, Click_proginfo, dialog2);
+}
+
+/******************************************************************************/
+
+static void Popup_save(void)
+{
+ /*
+  * called when "save" window is displayed
+  */
+
+  RDPClient_SetSaveWindowProperties(TRUE, filetype_SPRITE, Display_ScreenSpriteSize(),
+                                    "Screen", save_type_SCREEN);
+
+}
+
+/******************************************************************************/
+
+static BOOL Handler_MyModeChange(event_pollblock *event, void *reference)
+{
+  Screen_CacheModeInfo();
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+static BOOL Save_FileSaver(char *filename, void *ref)
+{
+  int save_type = (int)ref;
+  BOOL success = FALSE;
+
+  switch(save_type)
+  {
+    case save_type_SCREEN:
+      success = Display_ScreenSave(filename);
+      break;
+
+    case save_type_LOG:
+      success = Log_Save(filename);
+      break;
+  }
+
+  return(success);
+}
+
+/******************************************************************************
+ *                              Click handlers                                *
+ ******************************************************************************/
+
+static BOOL Click_baricon(event_pollblock *event, void *reference)
+{
+ /*
+  * called when mouse click on iconbar icon is made.
+  * opens "Create new image" with the select button.
+  * opens iconbar menu with the menu button.
+  * opens debug window with the adjust button
+  */
+
+  if(event->data.mouse.button.data.menu){
+     Menu_SetFlags(mainmenu, mainmenu_SAVESCREEN, 0, ((Display_ScreenSpriteSize() > 0) ? 0 : 1));
+     validate_screen_modes();
+    /*
+     * (C) 2026 Andrew Youll -- reflect the current scroll-invert state in the
+     * Scroll submenu tick each time the menu is opened.
+     */
+     if(scrollmenu != NULL)
+        Menu_SetFlags(scrollmenu, scrollmenu_INVERT,
+                      (Mouse_GetWheelInvert() ? 1 : 0), 0);
+     Menu_Show(mainmenu, event->data.mouse.pos.x,-1);
+  }
+
+  if(event->data.mouse.button.data.select)
+     Display_OpenWindow();
+
+  if(event->data.mouse.button.data.adjust)
+     Display_CloseWindow();
+
+/*
+  if(event->data.mouse.button.data.adjust)
+     Display_Test();
+*/
+/*
+     int index;
+     unsigned int start, end;
+
+     while((start = Time_Monotonic()) == 0);
+
+     for(index = 1; index <= 1000; index++){
+       
+     }
+
+     while((end = Time_Monotonic()) == 0);
+     fprintf(stderr, "mouse poll %i\n", end - start);
+*/
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL Click_proginfo(event_pollblock *event, void *reference)
+{
+ /*
+  * called when a mouse click on the Program Info window is made
+  */
+  char url_text[100];
+  BOOL launch;
+  dialog2_block *dialog2 = (dialog2_block *)reference;
+
+  launch = FALSE;
+
+  switch(event->data.mouse.icon)
+  {
+    case icon_RDPCLIENTWEBSITE:
+      Msgs_Lookup("info.rdpclurl", url_text, 90);
+      launch = TRUE;
+      break;
+
+    case icon_RDESKTOPWEBSITE:
+      Msgs_Lookup("info.rdeskurl", url_text, 90);
+      launch = TRUE;
+      break;
+  }
+
+  if(launch){
+     Url_Launch(url_text, NULL, NULL);
+     if(!event->data.mouse.button.data.adjust)
+        Dialog2_CloseDialog(dialog2);
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                           menu choice handlers                             *
+ ******************************************************************************/
+
+static BOOL MenuChoice_mainmenu(event_pollblock *event, void *reference)
+{
+ /*
+  * called when menu selection of the iconbar menu is made
+  */
+  mouse_block ptr;
+
+  if(menu_currentopen != mainmenu){
+     /* Only respond to the mainmenu  */
+     return(FALSE);
+  }
+
+  switch(event->data.selection[0])
+  {
+    case mainmenu_WINDOW:
+      Display_SetDisplayMode(display_mode_WINDOW);
+      break;
+
+    case mainmenu_FULLWINDOW:
+      Display_SetDisplayMode(display_mode_FULLSCREEN);
+      break;
+
+    case mainmenu_FULLSCREEN:
+      Display_SetDisplayMode(display_mode_SINGLETASK);
+      break;
+
+    case mainmenu_STATUS:
+      Status_Open();
+      break;
+
+    case mainmenu_VIEWLOG:
+      Log_OpenWindow();
+      break;
+
+   /*
+    * (C) 2026 Andrew Youll -- Scroll settings submenu.
+    */
+    case mainmenu_SCROLL:
+      switch(event->data.selection[1])
+      {
+        case scrollmenu_INVERT:
+          Mouse_SetWheelInvert(!Mouse_GetWheelInvert());
+          Menu_SetFlags(scrollmenu, scrollmenu_INVERT,
+                        (Mouse_GetWheelInvert() ? 1 : 0), 0);
+          break;
+
+        case scrollmenu_SLOWER:
+          Mouse_WheelSpeedSlower();
+          break;
+
+        case scrollmenu_FASTER:
+          Mouse_WheelSpeedFaster();
+          break;
+      }
+      break;
+
+    case mainmenu_QUIT:
+      rdpclient_quit = TRUE;
+      quit_by_menu = TRUE;
+      break;
+  }
+
+  Wimp_GetPointerInfo(&ptr);               /* If ADJUST was used to select, */
+  if (ptr.button.data.adjust)              /* then we keep the menu open.   */
+    Menu_ShowLast();
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                                    main()                                  *
+ ******************************************************************************/
+
+int main(int argc, char *argv[])
+{
+  char          appname[100];
+  unsigned int  polltime;
+/*  event_pollmask event_nonullmask; */
+  event_pollblock event_fakenull;
+
+  quit_by_menu = FALSE;
+
+ /* 
+  * resources in <RDPClient$Dir>
+  */
+  Resource_Initialise("RDPClient");
+
+ /*
+  * create startup command for Desktop Boot file
+  */
+  build_startupcommand();
+
+ /*
+  * load messages file and look up application name
+  */
+  Msgs_LoadFile("messages");
+  Msgs_Lookup("app.name", appname, 64);
+
+ /*
+  * initialise event and messages systems
+  */
+  Event_Initialise(appname);
+  EventMsg_Initialise();
+
+  Debug_Initialise();
+
+ /*
+  * initialise shifting heap memory manager
+  */
+  /* this is defered until the options have been read */
+
+ /*
+  * store current screen description and install event hander to keep it updated
+  */
+  Screen_CacheModeInfo();
+  EventMsg_Claim(message_MODECHANGE, event_ANY, Handler_MyModeChange, NULL);
+
+ /*
+  * install default event handlers
+  */
+  Event_Claim(event_REDRAW, event_ANY, event_ANY, Handler_NullRedraw, NULL);
+  Event_Claim(event_OPEN, event_ANY, event_ANY, Handler_OpenWindow, NULL);
+
+ /*
+  * install savedesktop file message handler to insert startup command into
+  * Desktop Boot file
+  */
+  EventMsg_Claim(message_SAVEDESK, event_ANY, save_desktop, NULL);
+
+ /*
+  * load window definitions
+  */
+  setup_templates();
+
+ /*
+  * event handler to close windows and beep if I have messed the code up
+  */
+  Event_Claim(event_CLOSE, event_ANY, event_ANY, CloseWindow, NULL);
+
+ /*
+  * event handler to set rdpclient_quit to TRUE when program receives quit message
+  */
+  EventMsg_Claim(message_QUIT, event_ANY, Handler_Quit, NULL);
+
+ /*
+  * build menus
+  */
+  setup_menus();
+
+ /*
+  * initialise the other files
+  */
+  Choices_Init();
+  Utils_Init();
+  Net_Init();
+  SpriteLib_Init();
+  ScreenMode_Init();
+  Display_Init();
+  UI_Init();
+  Keyboard_Init();
+  Mouse_Init();
+  Pointer_Init();
+  Status_Init();
+  RDesktop_Init();
+  MemMan_Init();
+  Sound_Init();
+  Log_Init();
+  CacheIO_Init();
+  Clipboard_Init();
+  
+  setup_save_window();
+
+  atexit(atexit_handler);
+
+ /*
+  * check to see if we were started by double-clicking on a file and so load that file
+  */
+/*
+  if(!rdpclient_quit)
+     LoadSave_CheckStartupLoad(argc, argv);
+*/
+
+ /*
+  * Need to run this after intialising flex() otherwise memory is removed
+  * before it gets accessed!
+  */
+  /*
+  Die_Init();
+  */
+
+
+ /*
+  * start up rdesktop
+  * returns when finished
+  */
+  RDesktop_Main(argc, argv);
+
+ /*
+  * Gets here when finished
+  */
+  if(rdpclient_quit && !quit_by_menu){
+
+     if(Log_WindowOpen()){
+
+        rdpclient_quit = FALSE;
+
+        Log_SetQuitOnClose(TRUE);
+
+     }
+
+  }
+        
+  polltime = Time_Monotonic() + idletime;
+
+  event_fakenull.type = event_NULL;
+
+  /*  Main event handling loop.
+   */
+  while (!rdpclient_quit){
+
+    Wimp_Poll(event_mask, &event_lastevent);
+
+/*  Wimp_PollIdle(event_mask, &event_lastevent, polltime); */
+
+/*
+    if(event_lastevent.type == event_NULL)
+       Sound_SysBeep();
+*/
+
+    Event_Process(&event_lastevent);
+
+    MemMan_PollMemoryManagement();
+
+    Clipboard_Poll();
+    
+    polltime = Time_Monotonic() + idletime;
+
+  }
+
+  Template_ClearAll();
+
+  Sound_Closedown();
+
+  return(0);
+}
+
+/******************************************************************************
+ *                              setup routines                                *
+ ******************************************************************************/
+
+static void setup_menus(void)
+{
+ /*
+  * build iconbar menu
+  */
+  char menudescription[300];
+  char menutitle[40];
+
+  Msgs_Lookup("title.main", menutitle, 15);
+
+  Msgs_Lookup("menu.main", menudescription, 260);
+  mainmenu  = Menu_New(menutitle, menudescription);
+
+ /*
+  * (C) 2026 Andrew Youll -- build the Scroll settings submenu in code and
+  * attach it to the ">Scroll" entry of the iconbar menu. "Invert" toggles the
+  * scroll direction; "Slower"/"Faster" step the scroll speed.
+  */
+  scrollmenu = Menu_New("Scroll", "Invert|Slower,Faster");
+  if(scrollmenu != NULL){
+     Menu_AddSubMenu(mainmenu, mainmenu_SCROLL, scrollmenu);
+     Menu_SetFlags(scrollmenu, scrollmenu_INVERT,
+                   (Mouse_GetWheelInvert() ? 1 : 0), 0);
+  }
+
+  Menu_Warn(mainmenu, event_ANY, TRUE, Menuwarn_mainmenu, NULL);
+
+  dialog2_proginfo = Dialog2_CreateDialogBlock("ProgInfo", 42, 42, Popup_proginfo, NULL, NULL);
+
+  Event_Claim(event_MENU,  event_ANY, event_ANY, MenuChoice_mainmenu, NULL);
+
+  set_menu_shade(TRUE);
+}
+
+/******************************************************************************/
+
+static void setup_templates(void)
+{
+ /*
+  * load window and icon definition files
+  * install icon on icon bar
+  */
+  char spritefile[100];
+
+  Template_Initialise();
+  /* Template_UseOutlineFonts(); */
+
+  threedlook = TRUE; /* only 3d now */
+  Template_LoadFile("Templates");
+
+  strncpy(spritefile, resource_pathname, 39);
+  if(screen_eig.y == screen_eig.x)
+     strcat(spritefile, "Sprites22");
+  else
+     strcat(spritefile, "Sprites");
+  usericonsprites = Sprite_LoadFile(spritefile);
+
+  rdpclient_baricon_validation = malloc(baricon_VALIDATION_SIZE);
+  if(rdpclient_baricon_validation == '\0')
+    Error_OutOfMemory(TRUE, "IconBar Icon");
+
+  rdpclient_baricon_text = malloc(baricon_TEXT_SIZE);
+  if(rdpclient_baricon_text == '\0'){
+    free(rdpclient_baricon_validation);
+    Error_OutOfMemory(TRUE, "IconBar Icon");
+  }
+
+  strcpy(rdpclient_baricon_validation, iconbaricon_NOTCONNECTED);
+  strcpy(rdpclient_baricon_text, "-");
+
+  rdpclient_connected = FALSE;
+
+  bariconhandle = Utils_BarIconText(rdpclient_baricon_validation, rdpclient_baricon_text,
+                                    baricon_TEXT_SIZE, iconbar_RIGHT);
+
+  Template_UseSpriteArea(usericonsprites);
+
+  Event_Claim(event_CLICK, -2, bariconhandle, Click_baricon, NULL);
+}
+
+/******************************************************************************/
+
+static void setup_save_window(void)
+{
+ /*
+  * setup save window
+  */
+  int save_message_list[] = {message_DATASAVE, message_DATASAVEACK, message_DATALOAD,
+                             message_DATALOADACK, message_RAMFETCH, message_RAMTRANSMIT,
+                             0};
+
+  save_window = Window_Create("Save", template_TITLEMIN);
+
+  saveblock = Save_InitSaveWindowHandler(save_window, TRUE, TRUE, FALSE,
+                                         icon_SAVE_ICON, icon_SAVE_OK, icon_SAVE_CANCEL,
+                                         icon_SAVE_FILENAME, Save_FileSaver, NULL, NULL,
+                                         0, filetype_SPRITE, NULL);
+
+ /*
+  * Make sure that the Save library receives the messages
+  */
+  Wimp_AddMessages(save_message_list);
+}
+
+/******************************************************************************/
+
+static void set_menu_shade(BOOL shaded)
+{
+  int window_ticked, window_shaded;
+  int fullwindow_ticked, fullwindow_shaded;
+  int fullscreen_ticked, fullscreen_shaded;
+
+  Menu_GetFlags(mainmenu, mainmenu_WINDOW, &window_ticked, &window_shaded);
+  Menu_GetFlags(mainmenu, mainmenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
+  Menu_GetFlags(mainmenu, mainmenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
+
+  window_shaded = fullwindow_shaded = fullscreen_shaded = (shaded ? 1 : 0);
+  
+  Menu_SetFlags(mainmenu, mainmenu_WINDOW, window_ticked, window_shaded);
+  Menu_SetFlags(mainmenu, mainmenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
+  Menu_SetFlags(mainmenu, mainmenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
+
+}
+
+/******************************************************************************
+ *                              misc routines                                 *
+ ******************************************************************************/
+
+static void build_startupcommand(void)
+{
+ /*
+  * build startup command for DesktopBoot file from resource pathname
+  */
+  char resourcepath[100];
+  _kernel_swi_regs r;
+
+  strcpy(resourcepath, "/");
+  strncat(resourcepath, resource_pathname, 38);
+
+ /*
+  * remove "." from end of path
+  */
+  resourcepath[strlen(resourcepath) - 1] = 0;
+
+  r.r[0] = (int) resourcepath;
+  r.r[1] = (int) startup_command;
+  r.r[2] = 256;
+  _kernel_swi( SWI_XOS_Bit | SWI_OS_GSTrans , &r, &r );
+
+}
+
+/******************************************************************************/
+
+static BOOL save_desktop(event_pollblock *event, void *reference)
+{
+ /*
+  * save startup command to DesktopBoot file
+  */
+  file_handle channel;
+  BOOL error;
+  message_block message;
+
+  channel = (file_handle) event->data.message.data.words[0];
+
+  error = Error_Check(File_WriteBytes(channel, startup_command, strlen(startup_command)));
+
+  if(!error){
+     if(Error_Check(File_WriteByte(channel, '\n')))
+        error = TRUE;
+  }
+
+  if(error){ /* acknowledge message, never works though.... strange!! */
+
+     message.header.yourref = message.header.myref;
+     Wimp_SendMessage(event_USERMESSAGEACK, &message, message.header.sender, NULL);
+     
+  } 
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static void update_underline_icon_size(window_handle window,
+                                       icon_handle texticon, icon_handle underlineicon,
+                                       BOOL resize_left)
+{
+  icon_createblock icreate;
+  int length;
+  icon_handle newunderlineicon;
+
+  icreate.window = window;
+  Wimp_GetIconState(window, underlineicon, &icreate.icondata);
+  Wimp_DeleteIcon(window, underlineicon);
+
+  length = Utils_WimpTextLength(Icon_GetTextPtr(window, texticon));
+
+  if(length < 4)
+     length = 4;
+
+  if(resize_left){
+     length += 4;
+     icreate.icondata.workarearect.min.x = icreate.icondata.workarearect.max.x - length;
+  }
+  else{
+     /*length += 2;*/
+     icreate.icondata.workarearect.max.x = icreate.icondata.workarearect.min.x + length;
+  }
+
+  Wimp_CreateIcon(&icreate, &newunderlineicon);
+  
+}
+
+/******************************************************************************/
+
+static void validate_screen_modes(void)
+{
+  BOOL valid_res;
+  BOOL valid_bpp;
+  int fullwindow_ticked, fullwindow_shaded;
+  int fullscreen_ticked, fullscreen_shaded;
+
+  if(rdpclient_connected){
+
+     Display_Validate(&valid_res, &valid_bpp);
+
+     Menu_GetFlags(mainmenu, mainmenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
+     Menu_GetFlags(mainmenu, mainmenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
+
+     fullwindow_shaded = (!valid_res ? 1 : 0);
+
+     fullscreen_shaded = (!valid_bpp ? 1 : 0);
+  
+     Menu_SetFlags(mainmenu, mainmenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
+     Menu_SetFlags(mainmenu, mainmenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
+
+  }
+
+}
+
+/******************************************************************************/
+
+static void atexit_handler(void)
+{
+ /*
+  * close Clipboard Store if we are the last RDPClient quitting
+  */
+  message_block block;
+  task_handle taskhandle;
+
+  if(!Utils_IsTaskRunning(event_taskname, event_taskhandle)){
+
+     taskhandle = Utils_TaskHandleFromName(clipboardstore_TASKNAME, 0);
+
+     if(taskhandle != 0){
+
+        block.header.size = sizeof(message_header);
+        block.header.yourref = 0;
+        block.header.action = message_QUIT;
+        Wimp_SendMessage(event_USERMESSAGE, &block, taskhandle, 0);
+
+     }
+  }
+}

@@ -1,0 +1,141 @@
+/*
+ * SWI definitions for RDPClient
+ */
+
+#ifndef SWI_XOS_Bit
+#define SWI_XOS_Bit                     0x020000
+#endif
+
+/*#define OS_CLI                          0x000005*/
+
+/* #define SWI_OS_ReadSysInfo              0x000058 */
+/* #define SWI_OS_Module                   0x00001e */
+
+#ifndef SWI_OS_GBPB
+#define SWI_OS_GBPB                     0x00000c
+#endif
+
+#ifndef SWI_OS_WriteC
+#define SWI_OS_WriteC                   0x000000
+#endif
+
+#ifndef SWI_OS_ScreenMode
+#define SWI_OS_ScreenMode               0x000065
+#endif
+
+#define SWI_OS_ReadVDUVariables         0x000031
+
+#define SWI_Wimp_ReadPalette            0x0400e5
+#define SWI_Wimp_SetPalette             0x0400e4
+#define SWI_Wimp_SetColourMapping       0x0400f8
+#define SWI_Wimp_CreateIcon             0x0400c2
+#define SWI_Wimp_StartTask              0x0400de
+#define SWI_Wimp_SetMode                0x0400e3
+#define SWI_Wimp_GetWindowState         0x0400cb
+#define SWI_Wimp_GetIconState           0x0400ce
+#define SWI_Wimp_ForceRedraw            0x0400d1
+#define SWI_Wimp_BlockCopy              0x0400eb
+#ifndef SWI_Wimp_TextOp
+#define SWI_Wimp_TextOp                 0x0400f9
+#endif
+#define SWI_Wimp_CommandWindow          0x0400EF
+
+#define SWI_Font_ListFonts              0x040091
+#define SWI_Font_DecodeMenu             0x0400a0
+
+#define SWI_OutlineWimp_Fonthandle      0x0496C0
+#define SWI_OutlineWimp_KeyShortCut     0x0496C1
+#define SWI_OutlineWimp_Configuration   0x0496C2
+
+#define SWI_ZapRedraw_RedrawArea        0x048480 + 0x00
+#define SWI_ZapRedraw_ReadVduVars       0x048480 + 0x0e
+#define SWI_ZapRedraw_CreatePalette     0x048480 + 0x0a
+#define SWI_ZapRedraw_GetRectangle      0x048480 + 0x0f
+#define SWI_ZapRedraw_RedrawWindow      0x048480 + 0x13
+#define SWI_ZapRedraw_ConvertBitmap     0x048480 + 0x03
+#define SWI_ZapRedraw_CachedCharSize    0x048480 + 0x08
+
+#define SWI_ColourTrans_ReturnColourNumber 0x040744
+#define SWI_ColourTrans_SelectTable     0x040740
+#define SWI_ColourTrans_ReadPalette     0x04075c
+#define SWI_ColourTrans_WritePalette    0x04075d
+#define SWI_ColourTrans_InvalidateCache 0x040750
+#define SWI_ColourTrans_ReturnColourNumberForMode 0x040746
+
+#ifndef SWI_OS_File
+#define SWI_OS_File                     0x000008
+#endif
+
+#ifndef SWI_OS_ReadVarVal
+#define SWI_OS_ReadVarVal               0x000023
+#endif
+
+#ifndef SWI_Draw_Fill
+#define SWI_Draw_Fill                   0x040702
+#endif
+#ifndef SWI_Draw_Stroke
+#define SWI_Draw_Stroke                 0x040704
+#endif
+
+#ifndef SWI_OS_SetColour
+#define SWI_OS_SetColour                0x000061
+#endif
+
+#ifndef SWI_TaskManager_TaskNameFromHandle
+#define SWI_TaskManager_TaskNameFromHandle 0x042680
+#endif
+
+#ifndef SWI_OS_DynamicArea 
+#define SWI_OS_DynamicArea              0x000066
+#endif
+
+#ifndef SWI_OS_ReadDynamicArea
+#define SWI_OS_ReadDynamicArea          0x00005c
+#endif
+
+#ifndef SWI_OS_ChangeDynamicArea
+#define SWI_OS_ChangeDynamicArea        0x00002a
+#endif
+
+#define SWI_Squash_Compress             0x042700
+#define SWI_Squash_Decompress           0x042701
+
+
+#define SWI_SharedSoundBuffer_OpenStream 0x55FC0 /* Opens a stream */
+#define SWI_SharedSoundBuffer_CloseStream 0x55FC1 /* Closes and stops a stream immediately */
+#define SWI_SharedSoundBuffer_AddBlock 0x55FC2 /* Adds a block to a stream's queue */
+#define SWI_SharedSoundBuffer_PollWord 0x55FC3 /* Sets up the buffer pollword */
+#define SWI_SharedSoundBuffer_Volume 0x55FC4 /* Set the volume of output */
+#define SWI_SharedSoundBuffer_SampleRate 0x55FC5 /* Set the sample rate */
+#define SWI_SharedSoundBuffer_ReturnSSHandle 0x55FC6 /* Return the internal SharedSound handle */
+#define SWI_SharedSoundBuffer_SetBuffer 0x55FC7 /* Set the stream buffer limit */
+#define SWI_SharedSoundBuffer_BufferStats 0x52E08 /* Find out information about the buffer */
+#define SWI_SharedSoundBuffer_Pause 0x55FC9 /* Pauses playback */
+#define SWI_SharedSoundBuffer_StreamEnd 0x55FCA /* Closes a stream */
+#define SWI_SharedSoundBuffer_Flush 0x55fcc
+#define SWI_SharedSoundBuffer_BlockFilled 0x55fcd
+#define SWI_SharedSoundBuffer_ReturnStreamHandle 0x55fce
+
+
+#define SWI_StreamManager_OpenStream 0x57280
+#define SWI_StreamManager_CloseStream 0x57281
+#define SWI_StreamManager_AddBlock  0x57282
+#define SWI_StreamManager_BlockFilled 0x57283
+#define SWI_StreamManager_GetBlock  0x57284
+#define SWI_StreamManager_FreeBlocks 0x57285
+#define SWI_StreamManager_SrcPollWord 0x57286
+#define SWI_StreamManager_SetBuffer 0x57287
+#define SWI_StreamManager_BufferStats 0x57288
+#define SWI_StreamManager_Mark      0x57289
+#define SWI_StreamManager_Flush     0x5728a
+#define SWI_StreamManager_DestPollWord 0x5728b
+#define SWI_StreamManager_SetDALimits 0x5728c
+
+
+#define ViewFinder_Info                0x0547c0
+#define ViewFinder_Draw                0x0547c1
+#define ViewFinder_Patch               0x0547c2
+#define ViewFinder_Switch              0x0547c3
+#define ViewFinder_Cache               0x0547c4
+#define ViewFinder_Overlay             0x0547c5
+

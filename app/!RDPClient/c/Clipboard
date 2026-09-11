@@ -1,0 +1,1341 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Clipboard.c                                             *
+ *                                                                      *
+ *     Purpose: Interaction between client and server clipboard.        *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+#include "DeskLib:Time.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "rdesktop/rdesktop.h"
+
+#include "RDesktop.h"
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Utils.h"
+#include "Status.h"
+#include "Clipboard.h"
+
+#define message_CLIP_CLAIMENTITY       15
+#define message_CLIP_DATAREQUEST       16
+
+#define RDP_CF_TEXT CF_TEXT
+
+/*
+    struct
+    {
+      int flags;
+    } clip_claimentity;
+
+    struct
+    {
+      int window_handle;
+      int internal_handle;
+      struct coords pos;
+      int opcode;
+      int types[54];
+    } clip_datarequest;
+*/
+
+#define WIMP_SCRAP_DIR      "<Wimp$ScrapDir>"
+#define CLIPBOARD_DATA_FILE "Clipboard"
+
+#define transfer_WIMPSCRAP  "<Wimp$Scrap>"
+#define transfer_PIPE       "Pipe:$.Clipboard"
+
+#define clipboardholder_TASKNAME "Clipboard Holder"
+#define clipboardstore_TASKNAME  "Clipboard Store"
+
+#define pipe_MAX_SIZE 16384
+
+#define FORMAT_MAX_SIZE 2048
+static char *clipboard_format_data = NULL;
+static int clipboard_format_data_size = 0;
+
+static BOOL connected_to_server = FALSE;
+static BOOL clipboard_enabled = FALSE;
+static BOOL have_clipboard = FALSE; /* as far as the server is concerned */
+static BOOL actually_have_clipboard = FALSE; /* as far as RISC OS is concerned */
+static unsigned int clipboard_message_reference;
+static char clipboard_save_filename[256];
+static event_pollblock clipboard_save_event;
+static unsigned int requested_clipboard_format;
+static BOOL ignore_clipboard_holder = FALSE;
+static BOOL query_clipboard_operation = FALSE;
+static BOOL query_clipboard_send_on_empty = FALSE;
+
+/*
+ * Timeout requests for clipboard data from client apps
+ * to prevent server hanging due to waiting for the respose
+ */
+static BOOL client_clipboard_request_active = FALSE;
+unsigned int client_clipboard_request_timeout_time = 0;
+#define CLIENT_CLIPBOARD_REQUEST_TIMEOUT 1000
+
+/*
+ * Limit clipboard data size save memory
+ */
+extern unsigned int clipboard_maximum_data_size = 0;
+
+extern void cliprdr_send_text_format_announce(void);
+
+static int clipboard_redirection_mode = 0;
+
+extern void error(char *format, ...);
+
+static BOOL event_message_clip_claimentity(event_pollblock *event, void *reference);
+static BOOL event_message_clip_datarequest(event_pollblock *event, void *reference);
+static BOOL event_message_datasave(event_pollblock *event, void *reference);
+static BOOL event_message_datasaveack(event_pollblock *event, void *reference);
+static BOOL event_message_dataload(event_pollblock *event, void *reference);
+static BOOL event_message_dataloadack(event_pollblock *event, void *reference);
+static void set_have_clipboard(BOOL state);
+static BOOL check_clipboard_format(char *format_block, int size, unsigned int format);
+static void request_clipboard_data_from_server(void);
+static void save_client_paste_data(void *data, int length);
+static void *load_clipboard_data(char *filename, unsigned int *data_size, BOOL convert_lf_crlf);
+static void clipboard_claim(void);
+static unsigned int clipboard_datarequest(BOOL query, BOOL send_on_empty);
+static unsigned int clipboard_datasave(event_pollblock *event);
+static unsigned int clipboard_datasaveack(event_pollblock *event, char *filename);
+static unsigned int clipboard_datasaveack_acknowledge(event_pollblock *event);
+static unsigned int clipboard_dataload(event_pollblock *event);
+static unsigned int clipboard_dataloadack(event_pollblock *event);
+static void set_client_clipboard_request_timeout(void);
+static void query_clipboard_result(BOOL clipboard_has_data, message_datasave *datasave);
+static void choose_receive_method(int datasize, char *filename);
+static void remove_temp_file(char *filename);
+static void load_clipstore(void);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Clipboard_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  clipboard_format_data_size = 0;
+  clipboard_format_data = NULL;
+
+  clipboard_message_reference = 0;
+
+  clipboard_save_filename[0] = '\0';
+  requested_clipboard_format = 0;
+
+  ignore_clipboard_holder = FALSE;
+  connected_to_server = FALSE;
+  clipboard_enabled = FALSE;
+  query_clipboard_operation = FALSE;
+  query_clipboard_send_on_empty = FALSE;
+
+  Clipboard_SetBufferSize(16);
+  Clipboard_SetMode(clipboard_OFF);
+
+  set_have_clipboard(FALSE);
+
+}
+
+/******************************************************************************/
+
+extern BOOL Clipboard_Startup(void)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called Clipboard_Startup()\n");
+#endif
+ /*
+  * Start up clipboard handling, called by RDesktop_Main
+  * Must be called only once
+  */
+  int clipboard_message_list[] = {message_CLIP_CLAIMENTITY,
+                                  message_CLIP_DATAREQUEST,
+                                  0};
+
+  clipboard_format_data_size = 0;
+  clipboard_message_reference = 0;
+
+  if(clipboard_redirection_mode != clipboard_OFF){
+  
+     clipboard_format_data = malloc(FORMAT_MAX_SIZE);
+     if(clipboard_format_data == NULL)
+        return(FALSE);
+   
+     if(!cliprdr_init()){
+        free(clipboard_format_data);
+        return(FALSE);
+     }
+     
+     Wimp_AddMessages(clipboard_message_list);
+   
+     EventMsg_Claim((message_action)message_CLIP_CLAIMENTITY, event_ANY,
+                    event_message_clip_claimentity, NULL);
+     EventMsg_Claim((message_action)message_CLIP_DATAREQUEST, event_ANY,
+                    event_message_clip_datarequest, NULL);
+   
+     EventMsg_Claim(message_DATALOAD, event_ANY, event_message_dataload, NULL);
+     EventMsg_Claim(message_DATALOADACK, event_ANY, event_message_dataloadack, NULL);
+     EventMsg_Claim(message_DATASAVE, event_ANY, event_message_datasave, NULL);
+     EventMsg_Claim(message_DATASAVEACK, event_ANY, event_message_datasaveack, NULL);
+   
+     clipboard_enabled = TRUE;
+
+     load_clipstore();
+  }
+  
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern BOOL Clipboard_ConnectToServer(void)
+{
+ /*
+  * Connect to clipboard redirection.
+  * Must be called after connecting to server
+  */
+  connected_to_server = TRUE;
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern void Clipboard_SetMode(int mode)
+{
+ /*
+  * Set mode of clipboard redirection
+  */
+  if(mode == clipboard_OFF || mode == clipboard_PASSIVE || mode == clipboard_ACTIVE){
+
+     clipboard_redirection_mode = mode;
+
+     Status_SetClipboardMode(mode);
+  }
+}
+
+/******************************************************************************/
+
+extern int Clipboard_GetMode(void)
+{
+ /*
+  * Return mode of clipboard redirection
+  */
+
+  return(clipboard_redirection_mode);
+}
+
+/******************************************************************************/
+
+extern void Clipboard_SetBufferSize(int size)
+{
+ /*
+  * Set maximum size of clipboard data buffer in K
+  * (mimimum value possible is 16K, 0 sets buffer as unlimited)
+  */
+  if(size == 0)
+     clipboard_maximum_data_size = INT_MAX;
+  else if (size < 16)
+     clipboard_maximum_data_size = 16 * 1024;
+  else
+     clipboard_maximum_data_size = size * 1024;
+
+  Status_SetClipboardBufferSize(size);
+}
+
+/******************************************************************************/
+
+extern int Clipboard_GetBufferSize(void)
+{
+ /*
+  * Return maximum size of clipboard data buffer in K
+  * (0 = unlimited)
+  */
+  if(clipboard_maximum_data_size == INT_MAX)
+     return(0);
+  else
+     return(clipboard_maximum_data_size / 1024);
+}
+
+/******************************************************************************/
+
+extern void Clipboard_Poll(void)
+{
+ /*
+  * Called frequently
+  */
+  unsigned int time = 0;
+
+  if(!clipboard_enabled || !client_clipboard_request_active)
+     return;
+
+  while((time = Time_Monotonic()) == 0);
+
+  if(time >= client_clipboard_request_timeout_time){
+
+     client_clipboard_request_active = FALSE;
+
+     clipboard_message_reference = 0;
+
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "Timeout getting clipboard data, calling cliprdr_send_data(NULL, 0)\n");
+#endif
+    /*
+     * Timed out getting clipboard data from client to paste to
+     * server so send it nothing to release the lock on the
+     * app running on the server
+     */
+     cliprdr_send_data(NULL, 0);
+
+  }
+}
+
+/******************************************************************************/
+
+extern void ui_clip_format_announce(uint8 * data, uint32 length)
+{
+  int size;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called ui_clip_format_annouce(data=%li, length=%li)\n", data, length);
+  fhexdump(stderr, data, length);
+#endif
+ /*
+  * Called when copy to clipboard is issued on the server.
+  * 'data' holds the formats that are available.
+  */
+
+
+  if(clipboard_format_data != NULL){
+
+     if(length <= FORMAT_MAX_SIZE)
+        size = (int)length;
+     else
+        size = FORMAT_MAX_SIZE;
+
+     memcpy(clipboard_format_data, data, size);
+     clipboard_format_data_size = (int)size;
+
+  }
+
+  if(Display_GetDisplayMode() != display_mode_SINGLETASK)
+     clipboard_claim();
+}
+
+/******************************************************************************/
+
+extern void ui_clip_handle_data(uint8 * data, uint32 length)
+{
+  int actual_length;
+  uint8 *firstnull;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called ui_clip_handle_data(data=%li, length=%li)\n", data, length);
+  fhexdump(stderr, data, length);
+#endif
+ /*
+  * Called in response to cliprdr_send_data_request() call with data from server
+  * clipboard.
+  * Note: won't be called if cliprdr_send_data_request() call is made with format
+  * that is not available in server clipboard.
+  */
+
+  if(requested_clipboard_format == CF_TEXT){
+
+     actual_length = length;
+    
+    /*
+     * Translate CRLF newlines into LF newlines
+     */
+     Utils_CRLF2LF((char *)data, (unsigned int *)&actual_length);
+
+    /*
+     * Only send data up to (but not including) NULL byte, if any
+     */
+     firstnull = (uint8 *)memchr((char *) data, '\0', actual_length);
+     if(firstnull != NULL)
+        actual_length = firstnull - data;
+
+  }
+  else
+     actual_length = length;
+
+ /*
+  * Save clipboard data to client side app that requested a paste from the server
+  * clipboard.
+  */
+  if(Display_GetDisplayMode() != display_mode_SINGLETASK)
+     save_client_paste_data(data, actual_length);
+}
+
+/******************************************************************************/
+
+extern void ui_clip_request_data(uint32 format)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called ui_clip_request_data(format=%li)\n", format);
+#endif
+ /*
+  * Called when past from clipboard is issued on the server
+  */
+
+  if(!have_clipboard && Display_GetDisplayMode() != display_mode_SINGLETASK){
+    /*
+     * Request clipboard data from current holder
+     */
+     clipboard_message_reference = clipboard_datarequest(FALSE, FALSE);
+  }
+  else{
+    /*
+     * The server already has the clipboard so no data is available
+     * or we are in single tasking mode and can't get it anyway
+     */
+     cliprdr_send_data(NULL, 0);
+  }
+}
+
+/******************************************************************************/
+
+extern void ui_clip_sync(void)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called ui_clip_sync()\n");
+#endif
+
+  if(Display_GetDisplayMode() != display_mode_SINGLETASK){
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "sending clipboard_datarequest(TRUE, TRUE) to check if another app has clipboard data\n");
+#endif
+     clipboard_message_reference = clipboard_datarequest(TRUE, TRUE);
+  }
+}
+
+/******************************************************************************/
+
+extern void ui_clip_set_mode(const char *optarg)
+{
+
+}
+
+/******************************************************************************/
+
+extern void ui_clip_request_failed(void)
+{
+
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+static BOOL event_message_clip_claimentity(event_pollblock *event, void *reference)
+{
+  char task_name[64];
+  int flags;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called event_message_clip_claimentity(action=%i)\n",
+          event->data.message.header.action);
+#endif
+
+  if(event->data.message.header.action != message_CLIP_CLAIMENTITY)
+     return(FALSE);
+
+
+#ifdef clipboard_DEBUG
+  Utils_TaskNameFromHandle(task_name, sizeof(task_name), (int)event->data.message.header.sender);
+  fprintf(stderr, "sender='%i'\n", (int)event->data.message.header.sender);
+  fprintf(stderr, "task name='%s'\n", task_name);
+  fprintf(stderr, "have_clipboard=%s\n", (have_clipboard ? "TRUE" : "FALSE"));
+  fprintf(stderr, "actually_have_clipboard=%s\n", (actually_have_clipboard ? "TRUE" : "FALSE"));
+#endif
+
+  if(event->data.message.header.sender != event_taskhandle){
+
+     flags = event->data.message.data.words[0];
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "flags='%i'\n", (int)flags);
+#endif
+     if(flags & 4){
+       /*
+        * If bit 3 is set, message is clipboard claim
+        */
+
+        actually_have_clipboard = FALSE;
+     
+       /*
+        * Another app has claimed to have the clipboard.
+        * Ignore the Clipboard Holder if it was after ourselves
+        * gaining the clipboard (as we really still have it)
+        */
+        Utils_TaskNameFromHandle(task_name, sizeof(task_name),
+                                 (int)event->data.message.header.sender);
+
+#ifdef clipboard_DEBUG
+        fprintf(stderr, "clipboard claimed by '%s'\n", task_name);
+#endif
+
+        if(strcmp(task_name, clipboardholder_TASKNAME) == 0 ||
+           strcmp(task_name, clipboardstore_TASKNAME) == 0){
+          /*
+           * Only loose clipboard for messages from the
+           * Clipboard Holder (i.e. ignore other apps)
+           * to prevent double processing loosing the
+           * clipboard - but not the first time after
+           * gaining the clipboard ourselves
+           */
+           if(ignore_clipboard_holder)
+              ignore_clipboard_holder = FALSE;
+           else
+              set_have_clipboard(FALSE);
+        }
+        else
+           set_have_clipboard(FALSE);
+     }
+  }
+     
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL event_message_clip_datarequest(event_pollblock *event, void *reference)
+{
+  char task_name[64];
+  int flags;
+  int index;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called event_message_clip_datarequest(type=%i, action=%i)\n",
+          event->type, event->data.message.header.action);
+#endif
+ /*
+  * Called when another task wants the clipboard data (to paste into itself)
+  */
+  if(event->data.message.header.action != message_CLIP_DATAREQUEST)
+     return(FALSE);
+
+#ifdef clipboard_DEBUG
+  Utils_TaskNameFromHandle(task_name, sizeof(task_name), (int)event->data.message.header.sender);
+  fprintf(stderr, "size='%i'\n", event->data.message.header.size);
+  fprintf(stderr, "sender='%i'\n", (int)event->data.message.header.sender);
+  fprintf(stderr, "sender task name='%s'\n", task_name);
+  fprintf(stderr, "my ref='%i'\n", event->data.message.header.myref);
+  fprintf(stderr, "your ref='%i'\n", event->data.message.header.yourref);
+  fprintf(stderr, "window handle (0)='%i'\n", event->data.message.data.words[0]);
+  fprintf(stderr, "internal handle (1)='%i'\n", event->data.message.data.words[1]);
+  fprintf(stderr, "position x (2)='%i'\n", event->data.message.data.words[2]);
+  fprintf(stderr, "position y (3)='%i'\n", event->data.message.data.words[3]);
+  fprintf(stderr, "op code (4)='%i'\n", event->data.message.data.words[4]);
+  fprintf(stderr, "first filetype (5)='%i'\n", event->data.message.data.words[5]);
+  fprintf(stderr, "filetype(s)\n");
+  index = 5;
+  while(event->data.message.data.words[index] != -1 && index < 32)
+     fprintf(stderr, "  %03x\n", event->data.message.data.words[index++]);
+#endif
+
+  if(event->data.message.header.sender != event_taskhandle){
+
+     if(actually_have_clipboard){
+
+       /*
+        * Send datasave to start save process
+        */
+        clipboard_message_reference = clipboard_datasave(event);
+
+     }
+  }
+  else{
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "our message back\n");
+     fprintf(stderr, "clipboard_message_reference=%i, yourref=%i, myref=%i\n",
+             clipboard_message_reference, event->data.message.header.yourref,
+             event->data.message.header.myref);
+#endif
+
+     if(event->type == event_USERMESSAGEACK){
+        if(query_clipboard_operation){
+           query_clipboard_result(FALSE, NULL);
+        }
+        else{
+          /*
+           * We thought we had the clipboard but we don't
+           * The server must be sent something
+           */
+           client_clipboard_request_active = FALSE;
+           cliprdr_send_data(NULL, 0);
+           return(TRUE);
+        }
+     }
+  }
+  
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL event_message_datasave(event_pollblock *event, void *reference)
+{
+  char transfer_filename[256];
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called event_message_datasave(action=%i)\n",
+          event->data.message.header.action);
+#endif
+ /*
+  * Called in response to us sending out clip_datarequest when another task
+  * wants to save the clipboard data to us
+  */
+  if(event->data.message.header.action != message_DATASAVE)
+     return(FALSE);
+
+  if(clipboard_message_reference == 0 ||
+     (event->data.message.header.yourref != clipboard_message_reference &&
+      event->data.message.header.myref != clipboard_message_reference) ||
+      event->data.message.header.sender == event_taskhandle){
+     return(FALSE);
+  }
+
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "filetype=%03x\n", event->data.message.data.datasave.filetype);
+#endif
+
+  if(query_clipboard_operation){
+     query_clipboard_result(TRUE, &(event->data.message.data.datasave));
+     return(TRUE);
+  }
+
+  if(event->data.message.data.datasave.filetype == filetype_TEXT){
+    /*
+     * Sent response back to client app to save clipboard data to us
+     */
+     choose_receive_method(event->data.message.data.datasave.estsize, transfer_filename);
+     clipboard_message_reference = clipboard_datasaveack(event, transfer_filename);
+  }
+  else{
+    /*
+     * Clipboard contains data that is not supported so send NULL
+     * to the server and abort the data transfer
+     */
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "clipboard does not contain TEXT data, sending NULL to server\n");
+#endif
+     clipboard_message_reference = 0;
+     client_clipboard_request_active = FALSE;
+     cliprdr_send_data(NULL, 0);
+  }
+  
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL event_message_datasaveack(event_pollblock *event, void *reference)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called event_message_datasaveack(action=%i)\n",
+          event->data.message.header.action);
+#endif
+ /*
+  * Called when another task has accepted the save of clipboard data (to paste into itself)
+  */
+  if(event->data.message.header.action != message_DATASAVEACK)
+     return(FALSE);
+
+  if(clipboard_message_reference == 0 ||
+     (event->data.message.header.yourref != clipboard_message_reference &&
+      event->data.message.header.myref != clipboard_message_reference) ||
+      event->data.message.header.sender == event_taskhandle){
+     return(FALSE);
+  }
+
+  clipboard_message_reference = 0;
+
+  Utils_CopyStringNL(clipboard_save_filename, event->data.message.data.datasaveack.filename,
+                     sizeof(clipboard_save_filename));
+
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "filename='%s'\n", clipboard_save_filename);
+#endif
+
+  memcpy(&clipboard_save_event, event, sizeof(event_pollblock));
+
+ /*
+  * Acknowledge datasaveack message as we will call Wimp_Poll()
+  * and message would otherwise be send back to sending task
+  */
+  clipboard_datasaveack_acknowledge(event);
+  
+ /*
+  * Need to save data to specified file.
+  * First, ask server for clipboard data.
+  * On receipt of data, will be written to file and acknowledged
+  */
+  request_clipboard_data_from_server();
+  
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL event_message_dataload(event_pollblock *event, void *reference)
+{
+  char filename[256];
+  char *clipboard_data;
+  unsigned int clipboard_data_size;
+  BOOL sent_clipboard_data;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called event_message_dataload(action=%i)\n",
+          event->data.message.header.action);
+#endif
+ /*
+  * Sent when client app presents us with the clipboard data we requested
+  */
+  if(event->data.message.header.action != message_DATALOAD)
+     return(FALSE);
+
+  if(clipboard_message_reference == 0 ||
+     (event->data.message.header.yourref != clipboard_message_reference &&
+      event->data.message.header.myref != clipboard_message_reference) ||
+      event->data.message.header.sender == event_taskhandle){
+     return(FALSE);
+  }
+
+  
+  clipboard_message_reference = 0;
+
+  client_clipboard_request_active = FALSE;
+
+  Utils_CopyStringNL(filename, event->data.message.data.datasaveack.filename, sizeof(filename));
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "filename='%s'\n", filename);
+#endif
+
+  sent_clipboard_data = FALSE;
+
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "filetype=%03x\n", event->data.message.data.dataload.filetype);
+#endif
+
+  if(event->data.message.data.dataload.filetype == filetype_TEXT){
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "clipboard contains TEXT data, sending to server\n");
+#endif
+
+     clipboard_data = load_clipboard_data(filename, &clipboard_data_size, TRUE);
+
+     if(clipboard_data != NULL){
+
+#ifdef clipboard_DEBUG
+        fhexdump(stderr, (uint8 *)clipboard_data, clipboard_data_size);
+#endif
+        sent_clipboard_data = TRUE;
+        cliprdr_send_data((uint8 *)clipboard_data, clipboard_data_size);
+
+        free(clipboard_data);
+     }
+  }
+
+  if(!sent_clipboard_data){
+    /*
+     * Did not send any data so as must send something, send NULL instead
+     */
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "clipboard does not contain TEXT data, sending NULL to server\n");
+#endif
+     cliprdr_send_data(NULL, 0);
+  }
+
+ /*
+  * Remove temporary file if nessesary
+  */
+  remove_temp_file(filename);
+
+ /*
+  * Send response back to acknowledge load of clipboad data
+  */
+  clipboard_dataloadack(event);
+  
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL event_message_dataloadack(event_pollblock *event, void *reference)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called event_message_dataloadack(action=%i)\n",
+          event->data.message.header.action);
+#endif
+ /*
+  * Called when another task has acknowledged the load of data saved to it
+  */
+  if(event->data.message.header.action != message_DATALOADACK)
+     return(FALSE);
+
+  if(clipboard_message_reference == 0 ||
+     (event->data.message.header.yourref != clipboard_message_reference &&
+      event->data.message.header.myref != clipboard_message_reference) ||
+      event->data.message.header.sender == event_taskhandle){
+     return(FALSE);
+  }
+
+  clipboard_message_reference = 0;
+
+  return(TRUE);  
+}
+
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void set_have_clipboard(BOOL state)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called set_have_clipboard(state=%s)\n", (state ? "TRUE" : "FALSE"));
+#endif
+
+  have_clipboard = state;
+  actually_have_clipboard = state;
+
+  if(!have_clipboard && connected_to_server){
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "Called cliprdr_send_text_format_announce()\n");
+#endif
+     /* tell server that client machine has clipboard */
+     cliprdr_send_simple_native_format_announce(RDP_CF_TEXT);
+  }
+}
+
+/******************************************************************************/
+
+static BOOL check_clipboard_format(char *format_block, int size, unsigned int format)
+{
+  BOOL found;
+  unsigned int *block;
+  int total_words;
+  int index;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called check_clipboard_format(format_block=%li, size=%i, format=%i)\n",
+          format_block, size, format);
+#endif
+ /*
+  * Check if 'format' is one of the formats present in 'format_block'.
+  * If found, TRUE is returned.
+  */
+  found = FALSE;
+  block = (unsigned int *)format_block;
+  total_words = size >> 2;
+
+  if(size > 0){
+
+     index = 0;
+
+     while(index < total_words){
+
+#ifdef clipboard_DEBUG
+        fprintf(stderr, "checking %i against %i\n", format, block[index]);
+#endif
+        if(block[index] == format){
+           found = TRUE;
+           break;
+        }
+
+        index += 9;
+
+     }
+
+  }
+
+  return(found);
+}
+
+/******************************************************************************/
+
+static void request_clipboard_data_from_server(void)
+{
+  char null_char[1] = {'\0'};
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called request_clipboard_data_from_server()\n");
+#endif
+ /*
+  * Called to request clipboard data from server to send to client for a paste
+  */
+
+ /*
+  * Check clipboard has data that can be pasted
+  */
+  if(check_clipboard_format(clipboard_format_data, clipboard_format_data_size, CF_TEXT)){
+    /*
+     * Clipboard has data we can paste, so ask the server to send it to us.
+     * On receipt of data, will be written to file and acknowledged.
+     */
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "data found that's OK\n");
+#endif
+     requested_clipboard_format = CF_TEXT;
+     cliprdr_send_data_request(CF_TEXT);
+  }
+  else{
+    /*
+     * Clipboard does not have data we can paste, so send nothing straight away.
+     */
+#ifdef clipboard_DEBUG
+     fprintf(stderr, "no data found that can be used\n");
+#endif
+     save_client_paste_data(&null_char, 0);
+  }
+}
+
+/******************************************************************************/
+
+static void save_client_paste_data(void *data, int length)
+{
+  file_handle channel;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called save_client_paste_data(data=%li, length=%i)\n", data, length);
+#endif
+ /*
+  * Save supplied 'data' to data file for client side paste and acknowledge
+  * save operation.
+  */
+
+  if(clipboard_save_filename[0] != '\0'){
+
+     channel = File_Open(clipboard_save_filename, file_WRITE);
+
+     if(channel != NULL){
+     
+         File_WriteBytes(channel, data, length);
+         
+         File_Close(channel);
+
+     }
+
+     clipboard_save_filename[0] = '\0';
+
+    /*
+     * Send acknowledgement dataload
+     */
+     clipboard_message_reference = clipboard_dataload(&clipboard_save_event);
+
+  }
+}
+
+/******************************************************************************/
+
+static void *load_clipboard_data(char *filename, unsigned int *data_size, BOOL convert_lf_crlf)
+{
+  int file_size;
+  char *data;
+  file_handle channel;
+  int not_read;
+  BOOL success;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called load_clipboad_data(filename='%s')\n", filename);
+#endif
+ /*
+  * Load data from supplied 'filename' into memory and return pointer to
+  * data and 'data_size'
+  */
+
+  success = FALSE;
+  
+  file_size = File_Size(filename);
+
+  if(file_size != 0){
+
+     if(file_size > clipboard_maximum_data_size)
+        file_size = clipboard_maximum_data_size;
+
+     data = malloc((convert_lf_crlf ? file_size * 2 : file_size) + 1);
+
+     if(data != NULL){
+
+        not_read = file_size;
+
+        channel = File_Open(filename, file_READ);
+
+        if(channel != NULL){
+
+           not_read =  File_ReadBytes(channel, data, file_size);
+
+           File_Close(channel);
+           
+        }
+
+        file_size -= not_read;
+        
+        if(file_size == 0)
+           free(data);
+        else{
+           data[file_size] = '\0';
+           file_size++;
+
+           if(convert_lf_crlf)
+              Utils_LF2CRLF(data, (unsigned int *)&file_size);
+
+           success = TRUE;
+           *data_size = file_size;
+        }
+     }
+  }
+
+  if(success)
+     return(data);
+  else
+     return(NULL);
+}
+
+/******************************************************************************/
+
+static void clipboard_claim(void)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_claim()\n");
+#endif
+
+
+  set_have_clipboard(TRUE);
+
+  block.header.size = 24;
+  block.header.yourref = 0;
+  block.header.action = (message_action)message_CLIP_CLAIMENTITY;
+  block.data.words[0] = 4;               /* flags */
+
+  err = Wimp_SendMessage(event_USERMESSAGERECORDED, &block, 0, 0);
+
+  if(err != NULL)
+     error("clipboard_claim() %i '%s'", err->errnum, err->errmess);
+  else{
+    /*
+     * Clipboard Holder will capture the data so ignore first
+     * message saying that it now has our data as we still
+     * really have the clipboard (as far as the server is
+     * concerned).
+     */
+     ignore_clipboard_holder = TRUE;
+  }
+
+}
+
+/******************************************************************************/
+
+static unsigned int clipboard_datarequest(BOOL query, BOOL send_on_empty)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_datarequest(query=%s, send_on_empty=%s)\n",
+          (query ? "TRUE" : "FALSE"), (send_on_empty ? "TRUE" : "FALSE"));
+#endif
+
+
+  block.header.size = 52;
+  block.header.yourref = 0;
+  block.header.action = (message_action)message_CLIP_DATAREQUEST;
+  block.data.words[0] = Display_CurrentWindowHandle(); /* window_handle */
+  block.data.words[1] = 0;                             /* internal_handle */
+  block.data.words[2] = 0;                             /* pos.x */
+  block.data.words[3] = 0;                             /* pos.y */
+  block.data.words[4] = 4;                             /* opcode */
+  block.data.words[5] = filetype_TEXT;                 /* types[0] */
+  block.data.words[6] = -1;                            /* types[1] */
+
+  err = Wimp_SendMessage(event_USERMESSAGERECORDED, &block, 0, 0);
+
+  query_clipboard_operation = FALSE;
+  query_clipboard_send_on_empty = FALSE;
+
+  if(err != NULL)
+     error("clipboard_datarequest() %i '%s'", err->errnum, err->errmess);
+  else{
+     set_client_clipboard_request_timeout();
+     query_clipboard_operation = query;
+     query_clipboard_send_on_empty = send_on_empty;
+  }
+
+  return(block.header.myref);
+}
+
+/******************************************************************************/
+
+static unsigned int clipboard_datasave(event_pollblock *event)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_datasave()\n");
+#endif
+ /*
+  * Send datasave in response to clip_datarequest
+  */
+
+  memcpy(&block, &(event->data), sizeof(message_block));
+  
+  block.header.size = 60;
+  block.header.yourref = event->data.message.header.myref;
+  block.header.action = message_DATASAVE;
+  block.data.datasave.estsize = -1;
+  block.data.datasave.filetype = filetype_TEXT;
+  strcpy(block.data.datasave.leafname, "Clipboard");
+
+  err = Wimp_SendMessage(event_USERMESSAGERECORDED, &block,
+                         event->data.message.header.sender, 0);
+
+  if(err != NULL)
+     error("clipboard_datasave() %i '%s'", err->errnum, err->errmess);
+
+  return(block.header.myref);  
+}
+
+/******************************************************************************/
+
+static unsigned int clipboard_datasaveack(event_pollblock *event, char *filename)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_datasaveack(filename='%s')\n", filename);
+#endif
+ /*
+  * Send datasaveack in response to datasave
+  */
+
+  memcpy(&block, &(event->data), sizeof(message_block));
+  
+  block.header.size = 60;
+  block.header.yourref = event->data.message.header.myref;
+  block.header.action = message_DATASAVEACK;
+  /*block.data.datasave.estsize = -1;*/
+  block.data.datasave.filetype = filetype_TEXT;
+  strcpy(block.data.datasave.leafname, filename);
+
+  err = Wimp_SendMessage(event_USERMESSAGERECORDED, &block,
+                         event->data.message.header.sender, 0);
+
+  if(err != NULL)
+     error("clipboard_datasaveack() %i '%s'", err->errnum, err->errmess);
+  else
+     set_client_clipboard_request_timeout();
+
+  return(block.header.myref);  
+}
+
+/******************************************************************************/
+
+static unsigned int clipboard_datasaveack_acknowledge(event_pollblock *event)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_datasaveack_acknowledge()\n");
+#endif
+ /*
+  * Send datasaveack reply to acknowledge received datasaveack message
+  */
+
+  memcpy(&block, &(event->data), sizeof(message_block));
+  
+  block.header.yourref = event->data.message.header.myref;
+
+  err = Wimp_SendMessage(event_USERMESSAGEACK, &block,
+                         event->data.message.header.sender, 0);
+
+  if(err != NULL)
+     error("clipboard_datasaveack_reply() %i '%s'", err->errnum, err->errmess);
+
+  return(block.header.myref);  
+}
+
+/******************************************************************************/
+
+static unsigned int clipboard_dataload(event_pollblock *event)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_dataload()\n");
+#endif
+ /*
+  * Send dataload in response to datasaveack
+  */
+
+  memcpy(&block, &(event->data), sizeof(message_block));
+  
+  block.header.yourref = event->data.message.header.myref;
+  block.header.action = message_DATALOAD;
+
+  err = Wimp_SendMessage(event_USERMESSAGERECORDED, &block,
+                         event->data.message.header.sender, 0);
+
+  if(err != NULL)
+     error("clipboard_dataload() %i '%s'", err->errnum, err->errmess);
+
+  return(block.header.myref);  
+}
+
+/******************************************************************************/
+
+static unsigned int clipboard_dataloadack(event_pollblock *event)
+{
+  message_block block;
+  os_error *err;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called clipboard_dataloadack()\n");
+#endif
+ /*
+  * Send dataloadack in response to dataload
+  */
+
+  memcpy(&block, &(event->data), sizeof(message_block));
+  
+  block.header.yourref = event->data.message.header.myref;
+  block.header.action = message_DATALOADACK;
+
+  err = Wimp_SendMessage(event_USERMESSAGERECORDED, &block,
+                         event->data.message.header.sender, 0);
+
+  if(err != NULL)
+     error("clipboard_dataloadack() %i '%s'", err->errnum, err->errmess);
+
+  return(block.header.myref);  
+}
+
+/******************************************************************************/
+
+static void set_client_clipboard_request_timeout(void)
+{
+  unsigned int time;
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called set_client_clipboard_request_timeout()\n");
+#endif
+ /*
+  * Setup timeout of client clipboard request
+  */
+  time = 0;
+
+  while((time = Time_Monotonic()) == 0);
+
+  client_clipboard_request_active = TRUE;
+     
+  client_clipboard_request_timeout_time = time + CLIENT_CLIPBOARD_REQUEST_TIMEOUT;
+}
+
+/******************************************************************************/
+
+static void query_clipboard_result(BOOL clipboard_has_data, message_datasave *datasave)
+{
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called query_clipboard_result(clipboard_has_data=%s)\n",
+          (clipboard_has_data ? "TRUE" : "FALSE"));
+#endif
+ /*
+  * Called in response to query of client clipboard contents
+  * If clipboard has data, 'clipboard_has_data' is TRUE and 'datasave'
+  * points to a datasave_block identifying the clipboard data available.
+  */
+  client_clipboard_request_active = FALSE;
+  query_clipboard_operation = FALSE;
+  clipboard_message_reference = 0;
+
+  if(clipboard_has_data || query_clipboard_send_on_empty){
+
+    /*
+     * Tell the server we have data
+     */
+     set_have_clipboard(FALSE);
+  }
+
+  query_clipboard_send_on_empty = FALSE;
+}
+
+/******************************************************************************/
+
+static void choose_receive_method(int datasize, char *filename)
+{
+ /*
+  * Choose best method of data transfer by selecting appropreate filename
+  */
+  if(datasize <= 0)
+     strcpy(filename, transfer_WIMPSCRAP);
+/* some apps don't like pipes!
+  else if(datasize < pipe_MAX_SIZE)
+     strcpy(filename, transfer_PIPE);
+*/
+  else
+     strcpy(filename, transfer_WIMPSCRAP);
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called choose_receive_method(datasize='%i', filename='%s')\n",
+          datasize, filename);
+#endif
+}
+
+/******************************************************************************/
+
+static void remove_temp_file(char *filename)
+{
+ /*
+  * Remove temporary file (after dataload) if nessesary
+  */
+  char temp_filename[256];
+
+  Utils_CopyToLower(temp_filename, filename);
+
+  if(strstr(temp_filename, "wimp$scrap"))
+     OS_CLI("Remove <Wimp$Scrap>");
+}
+
+/******************************************************************************/
+
+static void load_clipstore(void)
+{
+ /*
+  * Load ClipStore application if required
+  */
+  BOOL load = TRUE;
+
+  if(Utils_SWINumberFromString("ClipboardHolder_Copy") != 0)
+     load = FALSE; /* Select Clipboard Holder module is present */
+
+  if(load && Utils_IsTaskRunning("Clipboard Holder", 0))
+     load = FALSE; /* Select Clipboard Holder module is running */
+
+  if(load && Utils_IsTaskRunning("Clipboard Store", 0))
+     load = FALSE; /* An instance of ClipStore is already running */
+
+  if(load)
+     Wimp_StartTask("<RDPClient$Dir>.ClipStore.!Run");
+}

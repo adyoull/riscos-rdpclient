@@ -1,0 +1,108 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Net.c                                                   *
+ *                                                                      *
+ *     Purpose: Network related routines.                               *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "sys/ioctl.h"
+#include "socklib.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+
+#define Resolver_GetHost 0x46001
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Net_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+
+}
+
+/******************************************************************************/
+
+extern int Net_GetHostName(char *hostname, int maxsize)
+{
+ /*
+  * Gets host name and fills hostname (up to maxsize).
+  * Returns 0 on success and -1 on failure
+  */
+  int success = -1;
+
+  if(OS_ReadVarVal("Inet$HostName", hostname, maxsize))
+    success = 0;
+  else{
+    /* try and return IP address if hostname not found */
+
+    if(OS_ReadVarVal("Inet$EtherIPAddr", hostname, maxsize))
+      success = 0;
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+extern BOOL Net_SetNonBlockingSocket(int socket, BOOL nonblocking)
+{
+ /*
+  * Set non blocking flag according to 'nonblocking'
+  * Return TRUE if successful or FALSE if not
+  */
+  int nonblocking_flag;
+
+  if(nonblocking)
+     nonblocking_flag = 1;
+  else
+     nonblocking_flag = 0;
+
+  if(socketioctl(socket, FIONBIO, &nonblocking_flag) < 0)
+     return(FALSE);
+  else
+     return(TRUE);
+}
+
+
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+

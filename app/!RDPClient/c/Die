@@ -1,0 +1,240 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Die.c                                                   *
+ *                                                                      *
+ *     Purpose: Displays debug when program dies.                       *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "RDPClient.h"
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Log.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+
+#define signal_MAX 10
+#define signal_CLIBDIE 20
+
+#define filename_DIR    "<Wimp$ScrapDir>.RDPClient"
+#define filename_SPRITE "<Wimp$ScrapDir>.RDPClient.Display"
+#define filename_LOG    "<Wimp$ScrapDir>.RDPClient.Log"
+#define filename_ERROR  "<Wimp$ScrapDir>.RDPClient.Error"
+
+static BOOL use_return_mode = FALSE;
+static mode_select_block return_mode;
+
+static void atexit_handler(void);
+static void die_message(int signalnumber);
+static void close_command_window(void);
+static void enable_keyboard(void);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Die_Init(void)
+{
+ /*
+  * initialisation to be done on startup, must be done just before Event_Poll
+  */
+  int signalnumber;
+
+  use_return_mode = FALSE;
+
+  atexit(atexit_handler);
+
+  for(signalnumber = 1; signalnumber <= signal_MAX; signalnumber++){
+
+     signal(signalnumber, die_message);
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void Die_SetReturnMode(mode_select_block *mode)
+{
+ /*
+  * set Wimp mode to return to from single tasking mode
+  * if program dies
+  */
+  use_return_mode = TRUE;
+
+  memcpy(&return_mode, mode, sizeof(mode_select_block));
+}
+
+/******************************************************************************/
+
+extern void Die_ClearReturnMode(void)
+{
+ /*
+  * clear use of Wimp mode to return to if program dies
+  */
+  use_return_mode = FALSE;
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+static void atexit_handler(void)
+{
+ /*
+  * if quit flag is FALSE then died rather then was killed
+  */
+
+  if(!rdpclient_quit)
+     die_message(signal_CLIBDIE);
+}
+
+/******************************************************************************/
+
+static void die_message(int signalnumber)
+{
+  char msg[300];
+  os_error error;
+  int result;
+  
+  Msgs_Lookup("err.die", msg, 199);
+
+  sprintf(error.errmess, msg, event_taskname, signalnumber);
+
+  if(use_return_mode){
+    /*
+     * ensure the keyboard works if died in full screen mode
+     */
+     enable_keyboard();
+     close_command_window();
+  }
+     
+  error.errnum = 1;
+  result = Wimp_ReportErrorR(&error, 0xB, event_taskname);
+
+  if(result == 1){
+
+     OS_CLI("CDIR "filename_DIR);
+
+    /*
+     * Save screen sprite
+     */
+     if(use_return_mode){
+
+        Sprite_ScreenSave(filename_SPRITE, TRUE);
+
+     }
+     else{
+        if(Display_ScreenSpriteSize() > 0){
+
+           Display_ScreenSave(filename_SPRITE);
+
+        }
+     }
+
+    /*
+     * Save message log
+     */
+     Log_Save(filename_LOG);
+
+    /*
+     * Redirect stderr to error file
+     */
+     freopen(filename_ERROR, "w", stderr);
+     setbuf(stderr, NULL);
+
+
+     OS_CLI("Filer_OpenDir "filename_DIR);
+
+
+     fprintf(stderr, "\n%s\n\n",error.errmess);
+
+     fprintf(stderr, "Known error types:\n");
+     fprintf(stderr, "SIGABRT     1   abort\n");
+     fprintf(stderr, "SIGFPE      2   arithmetic exception\n");
+     fprintf(stderr, "SIGILL      3   illegal instruction\n");
+     fprintf(stderr, "SIGINT      4   attention request from user\n");
+     fprintf(stderr, "SIGSEGV     5   bad memory access\n");
+     fprintf(stderr, "SIGTERM     6   termination request\n");
+     fprintf(stderr, "SIGSTAK     7   stack overflow\n");
+     fprintf(stderr, "SIGOSERROR  10  os error\n");
+     fprintf(stderr, "SIGSUB      20  subsystem failure\n");
+
+  }
+#ifdef DeskLib_DEBUG
+  else{
+
+     fprintf(stderr, "\n%s\n\n",error.errmess);
+
+     fprintf(stderr, "Known error types:\n");
+     fprintf(stderr, "SIGABRT     1   abort\n");
+     fprintf(stderr, "SIGFPE      2   arithmetic exception\n");
+     fprintf(stderr, "SIGILL      3   illegal instruction\n");
+     fprintf(stderr, "SIGINT      4   attention request from user\n");
+     fprintf(stderr, "SIGSEGV     5   bad memory access\n");
+     fprintf(stderr, "SIGTERM     6   termination request\n");
+     fprintf(stderr, "SIGSTAK     7   stack overflow\n");
+     fprintf(stderr, "SIGOSERROR  10  os error\n");
+     fprintf(stderr, "SIGSUB      20  subsystem failure\n");
+
+  }  
+#endif
+
+  rdpclient_quit = TRUE;
+
+  if(use_return_mode)
+     ScreenMode_SetCurrent(TRUE, &return_mode);
+
+#ifndef DeskLib_DEBUG
+  if(signalnumber <= signal_MAX)
+     exit(1); /* as was called by signal and not atexit */
+#endif
+
+}
+
+/******************************************************************************/
+
+static void close_command_window(void)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = -1;
+  _kernel_swi(SWI_XOS_Bit | SWI_Wimp_CommandWindow, &r, &r);
+
+}
+
+/******************************************************************************/
+
+static void enable_keyboard(void)
+{
+  int r1out;
+  int r2out;
+
+  OS_Byte(osbyte_RW_KEYBOARDDISABLEFLAG, 0x00, 0x00, &r1out, &r2out);
+  
+}

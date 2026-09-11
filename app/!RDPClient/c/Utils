@@ -1,0 +1,813 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Utils.c                                                 *
+ *                                                                      *
+ *     Purpose: General purpose routines.                               *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "Utils.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+static long random_seed; /* seed to -ve value */
+
+static double random_number(long *idum);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Utils_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+ /*
+  * Seed random number generator
+  */
+  random_seed = -(long)time(NULL);
+
+}
+
+/******************************************************************************/
+
+extern int Utils_GetOptions(int argc, char **argv, char *pszValidOpts, char **ppszParam,
+                            int *argind)
+{
+ /*
+  * Return next argument from parameter list
+  */
+    static int iArg = 1;
+    char chOpt;
+    char* psz = NULL;
+    char* pszParam = NULL;
+
+    if (iArg < argc)
+    {
+        psz = &(argv[iArg][0]);
+        if (*psz == '-' || *psz == '/')
+        {
+            // we have an option specifier
+            chOpt = argv[iArg][1];
+            if (isalnum(chOpt) || ispunct(chOpt))
+            {
+                // we have an option character
+                psz = strchr(pszValidOpts, chOpt);
+                if (psz != NULL)
+                {
+                    // option is valid, we want to return chOpt
+                    if (psz[1] == ':')
+                    {
+                        // option can have a parameter
+                        psz = &(argv[iArg][2]);
+                        if (*psz == '\0')
+                        {
+                            // must look at next argv for param
+                            if (iArg+1 < argc)
+                            {
+                                psz = &(argv[iArg+1][0]);
+                                if (*psz == '-' || *psz == '/')
+                                {
+                                    // next argv is a new option, so param
+                                    // not given for current option
+                                }
+                                else
+                                {
+                                    // next argv is the param
+                                    iArg++;
+                                    pszParam = psz;
+                                }
+                            }
+                            else
+                            {
+                                // reached end of args looking for param
+                            }
+
+                        }
+                        else
+                        {
+                            // param is attached to option
+                            pszParam = psz;
+                        }
+                    }
+                    else
+                    {
+                        // option is alone, has no parameter
+                    }
+                }
+                else
+                {
+                    // option specified is not in list of valid options
+                    chOpt = -1;
+                    pszParam = &(argv[iArg][0]);
+                }
+            }
+            else
+            {
+                // though option specifier was given, option character
+                // is not alpha or was was not specified
+                chOpt = -1;
+                pszParam = &(argv[iArg][0]);
+            }
+        }
+        else
+        {
+            // standalone arg given with no option specifier
+            chOpt = 1;
+            pszParam = &(argv[iArg][0]);
+        }
+    }
+    else
+    {
+        // end of argument list
+        chOpt = 0;
+    }
+
+    *argind = iArg;
+
+    iArg++;
+    *ppszParam = pszParam;
+    return (chOpt);
+}
+
+/******************************************************************************/
+
+extern double Utils_RandomNumberDbl(void)
+{
+ /*
+  * Return a good double value random number between 0 and 1
+  */
+
+  return(random_number(&random_seed));
+}
+
+/******************************************************************************/
+
+extern unsigned long Utils_RandomNumberULng(void)
+{
+ /*
+  * Return a good unsigned long random number
+  */
+  double random;
+
+  random = random_number(&random_seed); 
+
+  return((unsigned long)((double)ULONG_MAX * random));
+}
+
+/******************************************************************************/
+
+
+#define BARICON_XSIZE 68
+#define BARICON_YSIZE 88
+
+extern icon_handle Utils_BarIconText(char *validation_ptr, char *text_ptr,
+                                     unsigned int text_maxlen, window_handle pos)
+{
+ /*
+  * Place a sprite from a USER sprite area on the icon bar with text underneath
+  * Returns icon handle.
+  */
+  icon_createblock icreate;
+  icon_handle icon;
+  int textlength;
+  int width;
+
+  icreate.window = pos;
+  icreate.icondata.flags.value = 0x1700310B;    /* Click-able validated sprite icon */
+
+  icreate.icondata.data.indirecttext.bufflen = text_maxlen;
+  icreate.icondata.data.indirecttext.buffer = text_ptr;
+  icreate.icondata.data.indirecttext.validstring = validation_ptr;
+
+  icreate.icondata.workarearect.min.x = 0;
+  icreate.icondata.workarearect.min.y = -16;
+
+  textlength = Utils_WimpTextLength(text_ptr);
+  if(textlength < BARICON_XSIZE)
+    width = BARICON_XSIZE;
+  else
+    width = textlength;
+
+  icreate.icondata.workarearect.max.x = width;
+  icreate.icondata.workarearect.max.y = BARICON_YSIZE;
+
+  Wimp_CreateIcon(&icreate, &icon);
+  
+  return(icon);
+}
+
+/******************************************************************************/
+
+extern int Utils_WimpTextLength(char *text)
+{
+  int length;
+  BOOL system_font;
+ /*
+  * Returns length of text in OS units when plotted using the Desktop Font
+  */
+  int swi_wimp_textop;
+  _kernel_swi_regs r;
+
+  system_font = TRUE;
+
+  if(OS_SWINumberFromString("Wimp_TextOp", &swi_wimp_textop) == NULL){
+
+   /*
+    * Use Wimp_TextOp to calculate width of text as may be Outline Font
+    * or System font
+    */
+    r.r[0] = 1;         /* calculate width of string */
+    r.r[1] = (int)text; /* string */
+    r.r[2] = 0;         /* scan whole string */
+
+    if(_kernel_swi(SWI_XOS_Bit | swi_wimp_textop, &r, &r) == NULL){
+
+      system_font = FALSE;
+      length = r.r[0];
+
+    }
+  }
+
+  if(system_font){
+
+   /*
+    * Wimp_TextOp not available so assume is System font
+    * Each system font character is 16 OS units wide
+    */
+    length = strlen(text) << 4;
+
+  }
+
+  return(length);
+}
+
+/******************************************************************************/
+
+extern void Utils_ViewFinderFlags(BOOL *vf_enabled, BOOL *vf_output_mode)
+{
+  int flags;
+ /*
+  * Returns vf_enabled = TRUE if ViewFinder is present and enabled, otherwise FALSE
+  * Returns vf_output_mode = TRUE if ViewFinder is active, or FALSE if VIDC is active
+  */
+  int swi_viewfinder_info;
+  _kernel_swi_regs r;
+
+  *vf_enabled = FALSE;
+  *vf_output_mode = FALSE;
+
+  if(OS_SWINumberFromString("ViewFinder_Info", &swi_viewfinder_info) == NULL){
+
+    r.r[0] = 0;           /* return miscellaneous flags */
+    r.r[1] = (int)&flags; /* buffer for flags */
+
+    if(_kernel_swi(SWI_XOS_Bit | swi_viewfinder_info, &r, &r) == NULL){
+
+      if(flags & 1)
+         *vf_enabled = TRUE;
+      else
+         *vf_enabled = FALSE;
+
+      if(flags & 2)
+         *vf_output_mode = FALSE;
+      else
+         *vf_output_mode = TRUE;
+    }
+  }
+}
+
+/******************************************************************************/
+
+extern BOOL Utils_IsModuleLoaded(char *module_name)
+{
+  BOOL loaded;
+ /*
+  * Returns TRUE if module is loaded otherwise FALSE
+  */
+  _kernel_swi_regs r;
+  loaded = FALSE;
+
+  r.r[0] = 18;           /* lookup module name */
+  r.r[1] = (int)module_name;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_OS_Module, &r, &r) == NULL){
+     if(r.r[1] > 0)
+        loaded = TRUE;
+  }
+
+  return(loaded);
+}
+
+/******************************************************************************/
+
+extern BOOL Utils_ViewFinderModePatchLoaded(void)
+{
+ /*
+  * Returns TRUE if ViewFinder Mode Patch is loaded otherwise FALSE
+  */
+
+  return(Utils_IsModuleLoaded("VFScreenModePatch"));
+}
+
+/******************************************************************************/
+
+extern int Utils_SWINumberFromString(char *swi_name)
+{
+ /*
+  * Lookup SWI number for swi_name.
+  * Return 0 if name not found.
+  */
+  int swi_number;
+
+  if(OS_SWINumberFromString(swi_name, &swi_number) == NULL)
+     return(swi_number);
+  else
+     return(0);
+}
+
+/******************************************************************************/
+
+extern void *Utils_MemMove(void *dest, void *src, unsigned int size)
+{
+ /*
+  * Version of memmove() which does not use a temporary area
+  */
+  char *destc = (char *)dest;
+  char *srcc = (char *)src;
+  unsigned int *desti = (unsigned int *)dest;
+  unsigned int *srci = (unsigned int *)src;
+  unsigned int length4;
+  unsigned int loop;
+  unsigned int loop2;
+/*
+  unsigned int c4 = 0;
+  unsigned int c1 = 0;
+*/
+
+  if(destc < srcc){
+
+     /* copy down */
+
+     length4 = size >> 2;
+
+     /* copy as 4 byte segments */
+     for(loop = 0; loop < length4; loop++){
+         *desti++ = *srci++;
+         /*c4--;*/
+     }
+
+     srcc = (char *)srci;
+     destc = (char *)desti;
+
+     /* copy remaining bytes */
+     for(loop = (length4 << 2); loop < size; loop++){
+         *destc++ = *srcc++;
+         /*c1--;*/
+     }
+
+  }
+  else{
+
+     /* copy up - start at end and work down to avoid corrupting source on overlap */
+
+     /* copy bytes until word aligned */
+     for(loop = size; (loop > 0) && ((loop & 0x3) != 0); loop--){
+         loop2 = loop - 1;
+         destc[loop2] = srcc[loop2];
+         /*c1++;*/
+     }
+
+     /* copy rest as 4 byte segments */
+     length4 = loop >> 2;
+     for(loop = length4; loop > 0; loop--){
+         loop2 = loop - 1;
+         desti[loop2] = srci[loop2];
+         /*c4++;*/
+     }
+
+  }
+
+  /*fprintf(stderr, "copy length %i  c1 %i c4 %i\n", size, c1, c4);*/
+
+  return(dest);
+}
+
+/******************************************************************************/
+
+extern void Utils_MemMove_Flex(unsigned int dest_offset, unsigned int source_offset,
+                               void **dest, void **src, unsigned int size)
+{
+ /*
+  * Version of memmove() which does not use a temporary area and works with
+  * flex anchors.
+  */
+  char *destc = ((char *)*dest) + dest_offset;
+  char *srcc = ((char *)*src) + source_offset;
+  unsigned int loop;
+
+  if(size == 0)
+     return;
+     
+  if(destc < srcc){
+
+     /* copy down */
+
+     for(loop = 0; loop < size; loop++){
+         *destc++ = *srcc++;
+     }
+
+  }
+  else{
+
+     /* copy up - start at end and work down to avoid corrupting source on overlap */
+
+     destc = destc + (size - 1);
+     srcc = srcc + (size - 1);
+
+     for(loop = size; loop > 0; loop--){
+         *destc-- = *srcc--;
+     }
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void Utils_CopyStringNL(char *dest, char *source, int max_length)
+{
+ /*
+  * Copy NULL or newline terminated string into another NULL terminated string
+  */
+  int loop = 0;
+
+  while(loop < max_length - 1 && source[loop] != '\0' &&
+        source[loop] != '\x0A' && source[loop] != '\x0D'){
+
+     dest[loop] = source[loop];
+     loop++;
+  }
+
+  dest[loop] = '\0';
+}
+
+/******************************************************************************/
+
+extern void Utils_TaskNameFromHandle(char *taskname, int length, int taskhandle)
+{
+ /*
+  * Returns name of task corresponding to supplied taskhandle
+  */
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)taskhandle;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_TaskManager_TaskNameFromHandle, &r, &r) == NULL)
+     Utils_CopyStringNL(taskname, (char *)r.r[0], length);
+  else
+     taskname[0] = '\0';
+}
+
+/******************************************************************************/
+
+extern int Utils_EnumerateTasks(int *state, taskmanager_taskinfo *info_buffer, int buffer_size)
+{
+  int number_tasks;
+  unsigned int start_address;
+  unsigned int end_address;
+ /*
+  * Enumerates running tasks.
+  * state must be 0 for first call and passed in for subsequent calls
+  * Number of task blocks obtained is returned.
+  */
+  _kernel_swi_regs r;
+  number_tasks = 0;
+  start_address = (unsigned int)info_buffer;
+  end_address = start_address;
+
+  if(*state >= 0){
+
+     r.r[0] = (int)*state;
+     r.r[1] = (int)info_buffer;
+     r.r[2] = (int)buffer_size;
+
+     if(_kernel_swi(SWI_XOS_Bit | SWI_TaskManager_EnumerateTasks, &r, &r) == NULL){
+
+        *state = (int)r.r[0];
+
+        end_address = (unsigned int)r.r[1];
+
+        number_tasks = (end_address - start_address) / sizeof(taskmanager_taskinfo);
+     }
+  }
+
+  return(number_tasks);
+}
+
+/******************************************************************************/
+
+extern BOOL Utils_IsTaskRunning(char *taskname, task_handle ignore_taskhandle)
+{
+ /*
+  * Returns TRUE if taskname is running
+  */
+  BOOL task_found = FALSE;
+  taskmanager_taskinfo tasklist[20];
+  char running_taskname[256];
+  int index;
+  int state = 0;
+  int number = 0;
+
+  number = Utils_EnumerateTasks(&state, tasklist, sizeof(tasklist));
+
+  while(number > 0 && !task_found){
+
+     for(index = 0; index < number; index++){
+
+        if(tasklist[index].taskhandle != ignore_taskhandle){
+
+           Utils_CopyStringNL(running_taskname, tasklist[index].taskname,
+                              sizeof(running_taskname));
+
+           if(strcmp(running_taskname, taskname) == 0){
+
+              task_found = TRUE;
+              break;
+
+           }
+        }
+     }
+
+     number = Utils_EnumerateTasks(&state, tasklist, sizeof(tasklist));
+  }
+
+  return(task_found);
+}
+
+/******************************************************************************/
+
+extern task_handle Utils_TaskHandleFromName(char *taskname, task_handle ignore_taskhandle)
+{
+ /*
+  * Returns task handle from first task matching taskname
+  */
+  BOOL task_found = FALSE;
+  taskmanager_taskinfo tasklist[20];
+  char running_taskname[256];
+  int index;
+  int state = 0;
+  int number = 0;
+  task_handle taskhandle = 0;
+
+  number = Utils_EnumerateTasks(&state, tasklist, sizeof(tasklist));
+
+  while(number > 0 && !task_found){
+
+     for(index = 0; index < number; index++){
+
+        if(tasklist[index].taskhandle != ignore_taskhandle){
+
+           Utils_CopyStringNL(running_taskname, tasklist[index].taskname,
+                              sizeof(running_taskname));
+
+           if(strcmp(running_taskname, taskname) == 0){
+
+              task_found = TRUE;
+              taskhandle = tasklist[index].taskhandle;
+              break;
+
+           }
+        }
+     }
+
+     number = Utils_EnumerateTasks(&state, tasklist, sizeof(tasklist));
+  }
+
+  return(taskhandle);
+}
+/******************************************************************************/
+
+extern void Utils_CRLF2LF(char *data, unsigned int *length)
+{
+ /*
+  * Remove CRs in place and update length
+  */
+  char *dest, *src;
+  src = dest = data;
+
+  while(src < data + *length){
+
+     if(*src != '\x0d')
+        *dest++ = *src;
+
+     src++;
+  }
+
+  *length = dest - data;
+}
+
+/******************************************************************************/
+
+extern void Utils_LF2CRLF(char *data, unsigned int *length)
+{
+ /*
+  * Replace LFs with CRLF inplace and update length.
+  * Memory must already be allocated to account for string increasing in length
+  */
+  unsigned int number_lfs;
+  char *p, *p2, *end;
+
+  number_lfs = 0;
+  end = data + *length;
+  p = data;
+
+  while(p < end){
+
+    if(*p == '\x0a'){
+       if(p == data)
+          number_lfs++;
+       else if(*(p - 1) != '\x0d')
+          number_lfs++;
+    }
+    p++;
+
+  }
+
+  if(number_lfs > 0){
+
+     p = (data + *length) - 1;
+     p2 = p + number_lfs;
+
+     while(p >= data && p2 >= data){
+
+        *p2 = *p--;
+
+        if(*p2-- == '\x0a'){
+           if(p < data)
+              *p2-- = '\x0d';
+           else if(*p != '\x0d')
+              *p2-- = '\x0d';
+        }
+
+     }
+
+     *length += number_lfs;
+  }
+}
+
+/******************************************************************************/
+
+extern void Utils_CopyToLower(char *dest, char *source)
+{
+ /*
+  * Copy 'source' string to 'dest' changing all upper case letters
+  * to lower case
+  */
+  char *s;
+  char *d;
+
+  s = source;
+  d = dest;
+
+  while(*s != '\0')
+     *d++ = tolower(*s++);
+
+  *d = '\0';
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+#define IM1 2147483563
+#define IM2 2147483399
+#define AM (1.0 / IM1)
+#define IMM1 (IM1 - 1)
+#define IA1 40014
+#define IA2 40692
+#define IQ1 53668
+#define IQ2 52774
+#define IR1 12211
+#define IR2 3791
+#define NTAB 32
+#define NDIV (1 + IMM1 / NTAB)
+#define EPS 1.2e-7
+#define RNMX (1.0 - EPS)
+
+static double random_number(long *idum)
+{
+	int j;
+	long k;
+	static long idum2 = 123456789;
+	static long iy = 0;
+	static long iv[NTAB];
+	double temp;
+
+	if(*idum <= 0)
+	{
+		/*
+		 * Initialize
+		 */
+		if(-(*idum) < 1)
+		{
+			*idum = 1;
+		}
+		else
+		{
+			*idum = -(*idum);
+		}
+
+		idum2 = (*idum);
+
+		for(j = NTAB + 7; j >=0; j--)
+		{
+			k = (*idum) / IQ1;
+
+			*idum = IA1 * (*idum - k * IQ1) - k * IR1;
+
+			if(*idum < 0)
+			{
+				*idum += IM1;
+			}
+
+			if(j < NTAB)
+			{
+				iv[j] = *idum;
+			}
+		}
+
+		iy=iv[0];
+	}
+
+	k = (*idum) / IQ1;
+
+	*idum = IA1 * (*idum - k * IQ1) - k * IR1;
+
+	if(*idum < 0)
+	{
+		*idum += IM1;
+	}
+
+	k = idum2 / IQ2;
+
+	idum2 = IA2 * (idum2 - k * IQ2) - k * IR2;
+
+	if(idum2 < 0)
+	{
+		idum2 += IM2;
+	}
+
+	j = (int)(iy / NDIV);
+
+	iy = iv[j] - idum2;
+
+	iv[j] = *idum;
+
+	if(iy < 1)
+	{
+		iy += IMM1;
+	}
+
+	if((temp = AM*iy) > RNMX)
+	{
+		return RNMX;
+	}
+	else
+	{
+		return temp;
+	}
+}
+

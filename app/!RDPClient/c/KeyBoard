@@ -1,0 +1,2290 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Keyboard.c                                              *
+ *                                                                      *
+ *     Purpose: Keypress handling.                                      *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Time.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "rdesktop/rdesktop.h"
+#include "rdesktop/scancodes.h"
+
+extern int g_use_rdp5;
+
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Utils.h"
+#include "Keyboard.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#define keynumber_LEFT_SHIFT  252
+#define keynumber_RIGHT_SHIFT 249
+#define keynumber_LEFT_CTRL   251
+#define keynumber_RIGHT_CTRL  248
+#define keynumber_LEFT_LOGO   130
+#define keynumber_RIGHT_LOGO  129
+#define keynumber_LEFT_ALT    250
+#define keynumber_RIGHT_ALT   247
+#define keynumber_MENU        128
+
+
+static keyboard_modifier_block saved_modifiers;
+static keyboard_state_block saved_state;
+static keyboard_config_block keyboard_configuration;
+
+#define keyboard_BUFFER_SIZE 10
+static int keyboard_buffer_keycode[keyboard_BUFFER_SIZE];
+static unsigned int keyboard_buffer_time[keyboard_BUFFER_SIZE];
+static int keyboard_buffer_autorepeat_keycode;
+static unsigned int keyboard_buffer_autorepeat_time;
+static int keyboard_current_keycode[keyboard_BUFFER_SIZE];
+static int keyboard_buffer_count = 0;
+
+static int keyboard_autorepeat_time = 0;
+static int keyboard_autorepeat_interval = 0;
+
+#define translate_SIZE 128
+static unsigned char translate_keycode_to_physical[translate_SIZE];
+static unsigned char translate_physical_to_scancode[translate_SIZE];
+
+static BOOL goto_desktop(void);
+static BOOL goto_window(void);
+static BOOL goto_fullscreen(void);
+static BOOL goto_singletask(void);
+static int map_keycode_to_physical(int keycode);
+static int map_physical_to_scancode(int physical_key);
+static int decode_keyname_to_physical(char *keyname);
+static void build_translate_tables(void);
+static int lookup_keycode_to_physical(int keycode);
+static int lookup_physical_to_scancode(int physical_key);
+static void keyboard_buffer_clear(void);
+static int keyboard_buffer_write(void);
+static int keyboard_scan(int start_key);
+static void open_command_window(void);
+static void close_command_window(void);
+static BOOL key_down(int keynumber);
+static int scan_modifiers(void);
+static int scan_state(void);
+static void update_modifiers(int modifiers, BOOL force);
+static void read_keyboard_autorepeat(void);
+static void update_state(int state, BOOL force);
+static BOOL send_special_keys(int physical_key, int modifiers);
+static void send_winkey(uint32 ev_time, BOOL pressed, BOOL leftkey);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Keyboard_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  saved_modifiers.value = 0;
+  saved_state.value = scan_state();
+
+ /*
+  * Default key shortcuts
+  */
+  keyboard_configuration.shortcut.desktop = decode_keyname_to_physical("d");
+  keyboard_configuration.shortcut.window = decode_keyname_to_physical("w");
+  keyboard_configuration.shortcut.fullscreen = decode_keyname_to_physical("f");
+  keyboard_configuration.shortcut.singletasking = decode_keyname_to_physical("s");
+  keyboard_configuration.shortcut.bringtofront = decode_keyname_to_physical("t");
+
+  
+  read_keyboard_autorepeat();
+
+  keyboard_buffer_clear();
+
+  build_translate_tables();
+}
+
+/******************************************************************************/
+
+extern BOOL Keyboard_SetKeyShortcut(char *keyname, int keyboard_shortcut)
+{
+//fprintf(stderr, "Called Keyboard_SetKeyShortcut(keyname='%s', keyboard_shortcut=%i)\n",
+//        keyname, keyboard_shortcut);
+ /*
+  * Set keyboard_shortcut to keyname.
+  * Return TRUE if keyname and keyboard_shortcut are valid
+  */
+  int physical_key = -1;
+  char buffer[50];
+
+  if(keyboard_shortcut != keyboard_shortcut_DESKTOP &&
+     keyboard_shortcut != keyboard_shortcut_WINDOW &&
+     keyboard_shortcut != keyboard_shortcut_FULLSCREEN &&
+     keyboard_shortcut != keyboard_shortcut_SINGLETASKING &&
+     keyboard_shortcut != keyboard_shortcut_BRINGTOFRONT)
+     return(FALSE);
+
+  if(strlen(keyname) < sizeof(buffer) - 1){
+
+     Utils_CopyToLower(buffer, keyname);
+
+     physical_key = decode_keyname_to_physical(buffer);
+
+  }
+
+  if(physical_key != -1){
+
+     switch(keyboard_shortcut){
+        case keyboard_shortcut_DESKTOP:
+          keyboard_configuration.shortcut.desktop = physical_key;
+          break;
+
+        case keyboard_shortcut_WINDOW:
+          keyboard_configuration.shortcut.window = physical_key;
+          break;
+
+        case keyboard_shortcut_FULLSCREEN:
+          keyboard_configuration.shortcut.fullscreen = physical_key;
+          break;
+
+        case keyboard_shortcut_SINGLETASKING:
+          keyboard_configuration.shortcut.singletasking = physical_key;
+          break;
+
+        case keyboard_shortcut_BRINGTOFRONT:
+          keyboard_configuration.shortcut.bringtofront = physical_key;
+          break;
+     }
+  }
+
+  return(physical_key != -1);
+}
+
+/******************************************************************************/
+
+extern void Keyboard_SingleTask(void)
+{
+ /*
+  * Set up keyboard for single tasking mode
+  */
+  int r1out;
+  int r2out;
+
+  read_keyboard_autorepeat();
+
+  keyboard_buffer_clear();
+
+ /*
+  * Open a Wimp Command Window to stop the window manager reading keypresses
+  */
+  open_command_window();
+
+ /*
+  * Disable the keyboard buffer
+  */
+  OS_Byte(osbyte_RW_KEYBOARDDISABLEFLAG, 0x01, 0x00, &r1out, &r2out);
+
+}
+
+/******************************************************************************/
+
+extern void Keyboard_MultiTask(void)
+{
+ /*
+  * Set up keyboard for multi tasking mode
+  */
+  int r1out;
+  int r2out;
+
+  close_command_window();
+
+ /*
+  * Enable the keyboard buffer
+  */
+  OS_Byte(osbyte_RW_KEYBOARDDISABLEFLAG, 0x00, 0x00, &r1out, &r2out);
+
+}
+
+/******************************************************************************/
+
+extern void Keyboard_KeyPress(key_press keycode, int deepkeys)
+{
+ /*
+  * Process KeyPress events
+  */
+  int physical_key;
+  int scancode;
+  uint32 ev_time;
+  keyboard_modifier_block modifiers;
+  BOOL singletask = Display_SingleTask();
+  BOOL ignore = FALSE;
+
+  if(singletask){
+
+     physical_key = lookup_keycode_to_physical(keycode);
+
+     modifiers.value = scan_modifiers();
+
+  }
+  else{
+
+     physical_key = (deepkeys & 0xFFFF0000) >> 16;
+
+     modifiers.value = (deepkeys & 0x1FF);
+  }
+
+ /*
+  * Ensure that state keys are correct
+  */
+  update_state(scan_state(), FALSE);
+
+ /*
+  * Send modifier keys
+  */
+  update_modifiers(modifiers.value, FALSE);
+
+/*
+  if(modifiers.data.left_shift)
+     fprintf(stderr, "Left Shift ");
+
+  if(modifiers.data.right_shift)
+     fprintf(stderr, "Right Shift ");
+
+  if(modifiers.data.left_ctrl)
+     fprintf(stderr, "Left Ctrl ");
+
+  if(modifiers.data.right_ctrl)
+     fprintf(stderr, "Right Ctrl ");
+
+  if(modifiers.data.left_alt)
+     fprintf(stderr, "Left Alt ");
+
+  if(modifiers.data.right_alt)
+     fprintf(stderr, "Right Alt ");
+
+  if(modifiers.data.left_logo)
+     fprintf(stderr, "Left Logo ");
+
+  if(modifiers.data.right_logo)
+     fprintf(stderr, "Right Logo ");
+
+  if(modifiers.data.menu)
+     fprintf(stderr, "Menu ");
+*/
+
+  if(singletask){
+     if(keycode == -1)
+        return;
+  }
+  else{
+
+     if(keycode == 0x1C0 || keycode == 0x1D0 || keycode == 0x1E0){
+        /* Logo keys generate a KeyPress event even though they are a modifier */
+        return;
+     }
+  }
+
+ /*
+  * Special RDPClient key presses
+  */
+  if((modifiers.data.left_shift == 1 || modifiers.data.right_shift == 1) &&
+     (modifiers.data.left_ctrl == 1 || modifiers.data.right_ctrl == 1)){
+
+     if(physical_key == keyboard_configuration.shortcut.desktop){
+       /*
+        * Return to the Desktop
+        */
+        ignore = goto_desktop();
+     }
+     else if(physical_key == keyboard_configuration.shortcut.window){
+       /*
+        * Go to Window mode
+        */
+        ignore = goto_window();
+     }
+     else if(physical_key == keyboard_configuration.shortcut.fullscreen){
+       /*
+        * Go to Fullscreen mode
+        */
+        goto_fullscreen();
+     }
+     else if(physical_key == keyboard_configuration.shortcut.singletasking){
+       /*
+        * Go to Single tasking mode
+        */
+        goto_singletask();
+     }
+     else if(physical_key == keyboard_configuration.shortcut.bringtofront){
+       /*
+        * Bring window to front
+        */
+        if(Display_EnsureWindowOnTopWhenFullscreen(fullscreen_bringtofront_KEYPRESS))
+           ignore = TRUE;
+     }
+  }
+//fprintf(stderr, "keycode %i   physical_key %i\n", keycode, physical_key);
+
+  if(!ignore){
+
+     if(!send_special_keys(physical_key, modifiers.value)){
+
+       /*
+        * Send normal keypress (after modifiers)
+        */
+        scancode = lookup_physical_to_scancode(physical_key);
+
+        if(scancode != -1){
+
+           ev_time = time(NULL);
+           rdp_send_scancode(ev_time, RDP_KEYPRESS, scancode);
+
+           rdp_send_scancode(ev_time, RDP_KEYRELEASE, scancode);
+        }
+     }
+  }
+
+//fprintf(stderr, "Keypress %X '%c' ", keycode, keycode);
+//
+//fprintf(stderr, "  physical = %i\n", physical_key);
+
+}
+
+/******************************************************************************/
+
+extern void Keyboard_Poll(void)
+{
+ /*
+  * Called at various times to handle checking for keys being released
+  */
+  int keycode;
+  BOOL singletask = Display_SingleTask();
+
+  if(Display_HasInputFocus()){
+
+     keycode = -1;
+
+     if(singletask)
+        keycode = keyboard_buffer_write();
+        
+     if(keycode != -1){
+       /*
+        * Waiting keypress event from single task mode
+        */
+        Keyboard_KeyPress((key_press)keycode, 0);
+     }
+     else{
+       /*
+        * Multitask mode or no single task keypress event
+        */
+
+       /*
+        * Update state keys to allow them to be pressed and released
+        * on their own
+        */
+        update_state(scan_state(), FALSE);
+
+       /*
+        * Update modifiers to allow them to be pressed and released
+        * on their own
+        */
+        update_modifiers(scan_modifiers(), FALSE);
+     }
+  }
+  else{
+    /*
+     * If we don't have input focus, ensure that all modifier keys are not pressed
+     * Note: the state keys are left alone
+     */
+     update_modifiers(0, FALSE);
+  }
+}
+
+/******************************************************************************/
+
+extern void Keyboard_LooseFocus(void)
+{
+ /*
+  * Called when the Display looses input focus
+  */
+
+ /*
+  * When losing focus, force all modifier keys to be not pressed
+  */
+  update_modifiers(0, TRUE);
+
+//fprintf(stderr, "LooseFocus\n");
+}
+
+/******************************************************************************/
+
+extern void Keyboard_GainFocus(void)
+{
+ /*
+  * Called when the Display gains input focus
+  */
+
+ /*
+  * When gaining focus, force all state keys to be up first
+  */
+  /* NO!
+  update_state(0, TRUE);
+  */
+  
+ /*
+  * and then set the correct state
+  */  
+  update_state(scan_state(), FALSE);
+
+ /*
+  * When gaining focus, force all modifiers to be up first
+  */
+  update_modifiers(0, TRUE);
+
+ /*
+  * and then set the correct state
+  */  
+  update_modifiers(scan_modifiers(), FALSE);
+  
+//fprintf(stderr, "GainFocus\n");
+}
+
+/******************************************************************************/
+
+extern int Keyboard_GetState(void)
+{
+ /*
+  * Return state of keyboard modifier keys
+  */
+  return(saved_state.value);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static BOOL goto_desktop(void)
+{
+ /*
+  * Return to the Desktop
+  */
+  int display_mode = Display_GetDisplayMode();
+  BOOL ignore = FALSE;
+  
+  if(display_mode == display_mode_FULLSCREEN || display_mode == display_mode_SINGLETASK){
+     Display_CloseWindow();
+     ignore = TRUE;
+  }
+
+  return(ignore);
+}
+
+/******************************************************************************/
+
+static BOOL goto_window(void)
+{
+ /*
+  * Go to Window mode
+  */
+  int display_mode = Display_GetDisplayMode();
+  BOOL ignore = FALSE;
+
+  if(display_mode != display_mode_WINDOW){
+     Display_SetDisplayMode(display_mode_WINDOW);
+     ignore = TRUE;
+  }
+
+  return(ignore);
+}
+
+/******************************************************************************/
+
+static BOOL goto_fullscreen(void)
+{
+ /*
+  * Go to Fullscreen mode
+  */
+  int display_mode = Display_GetDisplayMode();
+  BOOL ignore = FALSE;
+  BOOL valid_res;
+  BOOL valid_bpp;
+
+  if(display_mode != display_mode_FULLSCREEN){
+  
+     Display_Validate(&valid_res, &valid_bpp);
+
+     if(valid_res){
+        Display_SetDisplayMode(display_mode_FULLSCREEN);
+        ignore = TRUE;
+     }
+  }
+
+  return(ignore);
+}
+
+/******************************************************************************/
+
+static BOOL goto_singletask(void)
+{
+ /*
+  * Go to Single tasking mode
+  */
+  int display_mode = Display_GetDisplayMode();
+  BOOL ignore = FALSE;
+  BOOL valid_res;
+  BOOL valid_bpp;
+
+  if(display_mode != display_mode_SINGLETASK){
+
+     Display_Validate(&valid_res, &valid_bpp);
+
+     if(valid_bpp){
+        Display_SetDisplayMode(display_mode_SINGLETASK);
+        ignore = TRUE;
+     }
+  }
+
+  return(ignore);
+}
+
+/******************************************************************************/
+
+static int map_keycode_to_physical(int keycode)
+{
+  int physical_key;
+
+  switch(keycode)
+  {
+    case 112:
+      physical_key = 0; /* ESC */
+      break;
+
+    case 113:
+      physical_key = 1; /* F1 */
+      break;
+
+    case 114:
+      physical_key = 2; /* F2 */
+      break;
+
+    case 115:
+      physical_key = 3; /* F3 */
+      break;
+
+    case 20:
+      physical_key = 4; /* F4 */
+      break;
+
+    case 116:
+      physical_key = 5; /* F5 */
+      break;
+
+    case 117:
+      physical_key = 6; /* F6 */
+      break;
+
+    case 22:
+      physical_key = 7; /* F7 */
+      break;
+
+    case 118:
+      physical_key = 8; /* F8 */
+      break;
+
+    case 119:
+      physical_key = 9; /* F9 */
+      break;
+
+    case 30:
+      physical_key = 10; /* F10 */
+      break;
+
+    case 28:
+      physical_key = 11; /* F11 */
+      break;
+
+    case 29:
+      physical_key = 12; /* F12 */
+      break;
+
+    case 32:
+      physical_key = 13; /* Print Screen */
+      break;
+
+    case 31:
+      physical_key = 14; /* Scroll Lock */
+      break;
+
+    case 44:
+      physical_key = 15; /* Break / Pause */
+      break;
+
+    case 45:
+      physical_key = 16; /* Grave */
+      break;
+
+    case 48:
+      physical_key = 17; /* 1 */
+      break;
+
+    case 49:
+      physical_key = 18; /* 2 */
+      break;
+
+    case 17:
+      physical_key = 19; /* 3 */
+      break;
+
+    case 18:
+      physical_key = 20; /* 4 */
+      break;
+
+    case 19:
+      physical_key = 21; /* 5 */
+      break;
+
+    case 24:
+      physical_key = 22; /* 6 */
+      break;
+
+    case 36:
+      physical_key = 23; /* 7 */
+      break;
+
+    case 21:
+      physical_key = 24; /* 8 */
+      break;
+
+    case 38:
+      physical_key = 25; /* 9 */
+      break;
+
+    case 39:
+      physical_key = 26; /* 0 */
+      break;
+
+    case 23:
+      physical_key = 27; /* Minus */
+      break;
+
+    case 93:
+      physical_key = 28; /* Equal */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 29;
+      break;
+    */
+    case 47:
+      physical_key = 30; /* Backspace */
+      break;
+
+    case 61:
+      physical_key = 31; /* Insert */
+      break;
+
+    case 62:
+      physical_key = 32; /* Home */
+      break;
+
+    case 63:
+      physical_key = 33; /* Page Up */
+      break;
+
+    case 77:
+      physical_key = 34; /* Num Lock */
+      break;
+
+    case 74:
+      physical_key = 35; /* Numeric Slash */
+      break;
+
+    case 91:
+      physical_key = 36; /* Numeric Star */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 37;
+      break;
+    */
+    case 96:
+      physical_key = 38; /* Tab */
+      break;
+
+    case 16:
+      physical_key = 39; /* Q */
+      break;
+
+    case 33:
+      physical_key = 40; /* W */
+      break;
+
+    case 34:
+      physical_key = 41; /* E */
+      break;
+
+    case 51:
+      physical_key = 42; /* R */
+      break;
+
+    case 35:
+      physical_key = 43; /* T */
+      break;
+
+    case 68:
+      physical_key = 44; /* Y */
+      break;
+
+    case 53:
+      physical_key = 45; /* U */
+      break;
+
+    case 37:
+      physical_key = 46; /* I */
+      break;
+
+    case 54:
+      physical_key = 47; /* O */
+      break;
+
+    case 55:
+      physical_key = 48; /* P */
+      break;
+
+    case 56:
+      physical_key = 49; /* Bracket Left */
+      break;
+
+    case 88:
+      physical_key = 50; /* Bracket Right */
+      break;
+
+    case 120:
+      physical_key = 51; /* hash key [#] between ['] and [enter] */
+      break;
+
+    case 89:
+      physical_key = 52; /* Delete */
+      break;
+
+    case 105:
+      physical_key = 53; /* End */
+      break;
+
+    case 78:
+      physical_key = 54; /* Page Down */
+      break;
+
+    case 27:
+      physical_key = 55; /* Numeric 7 */
+      break;
+
+    case 42:
+      physical_key = 56; /* Numeric 8 */
+      break;
+
+    case 43:
+      physical_key = 57; /* Numeric 9 */
+      break;
+
+    case 59:
+      physical_key = 58; /* Numeric Minus */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 59;
+      break;
+    */
+    case 65:
+      physical_key = 60; /* A */
+      break;
+
+    case 81:
+      physical_key = 61; /* S */
+      break;
+
+    case 50:
+      physical_key = 62; /* D */
+      break;
+
+    case 67:
+      physical_key = 63; /* F */
+      break;
+
+    case 83:
+      physical_key = 64; /* G */
+      break;
+
+    case 84:
+      physical_key = 65; /* H */
+      break;
+
+    case 69:
+      physical_key = 66; /* J */
+      break;
+
+    case 70:
+      physical_key = 67; /* K */
+      break;
+
+    case 86:
+      physical_key = 68; /* L */
+      break;
+
+    case 72:
+      physical_key = 69; /* Semicolon */
+      break;
+
+    case 79:
+      physical_key = 70; /* Apostrophe */
+      break;
+
+    case 73:
+      physical_key = 71; /* Enter */
+      break;
+
+    case 122:
+      physical_key = 72; /* Numeric 4 */
+      break;
+
+    case 123:
+      physical_key = 73; /* Numeric 5 */
+      break;
+
+    case 26:
+      physical_key = 74; /* Numeric 6 */
+      break;
+
+    case 58:
+      physical_key = 75; /* Numeric Plus */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 76;
+      break;
+    */
+    case 94:
+      physical_key = 77; /* backslash [\] between left shift and [z] */
+      break;
+
+    case 97:
+      physical_key = 78; /* Z */
+      break;
+
+    case 66:
+      physical_key = 79; /* X */
+      break;
+
+    case 82:
+      physical_key = 80; /* C */
+      break;
+
+    case 99:
+      physical_key = 81; /* V */
+      break;
+
+    case 100:
+      physical_key = 82; /* B */
+      break;
+
+    case 85:
+      physical_key = 83; /* N */
+      break;
+
+    case 101:
+      physical_key = 84; /* M */
+      break;
+
+    case 102:
+      physical_key = 85; /* Comma */
+      break;
+
+    case 103:
+      physical_key = 86; /* Dot */
+      break;
+
+    case 104:
+      physical_key = 87; /* Forward Slash */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 88;
+      break;
+    */
+    case 57:
+      physical_key = 89; /* Up Arrow */
+      break;
+
+    case 107:
+      physical_key = 90; /* Numeric 1 */
+      break;
+
+    case 124:
+      physical_key = 91; /* Numeric 2 */
+      break;
+
+    case 108:
+      physical_key = 92; /* Numeric 3 */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 93;
+      break
+    */
+    /* This key does not exist
+    case :
+      physical_key = 94;
+      break;
+    */
+    case 98:
+      physical_key = 95; /* Space */
+      break;
+
+    /* This key does not exist
+    case :
+      physical_key = 96;
+      break;
+    */
+    /* This key does not exist
+    case :
+      physical_key = 97;
+      break;
+    */
+    case 25:
+      physical_key = 98; /* Left Arrow */
+      break;
+
+    case 41:
+      physical_key = 99; /* Down Arrow */
+      break;
+
+    case 121:
+      physical_key = 100; /* Right Arrow */
+      break;
+
+    case 106:
+      physical_key = 101; /* Numeric 0 */
+      break;
+
+    case 76:
+      physical_key = 102; /* Numeric Dot */
+      break;
+
+    case 60:
+      physical_key = 103; /* Numeric Enter */
+      break;
+
+    /* This key does not exist
+    case 104:
+      physical_key = ;
+      break;
+    */
+
+    default:
+      physical_key = -1;
+      break;
+  }
+
+  return(physical_key);
+}
+
+/******************************************************************************/
+
+static int map_physical_to_scancode(int physical_key)
+{
+  int scancode;
+
+  switch(physical_key)
+  {
+    case 0:
+      scancode = SCANCODE_CHAR_ESC;
+      break;
+
+    case 1:
+      scancode = SCANCODE_CHAR_F1;
+      break;
+
+    case 2:
+      scancode = SCANCODE_CHAR_F2;
+      break;
+
+    case 3:
+      scancode = SCANCODE_CHAR_F3;
+      break;
+
+    case 4:
+      scancode = SCANCODE_CHAR_F4;
+      break;
+
+    case 5:
+      scancode = SCANCODE_CHAR_F5;
+      break;
+
+    case 6:
+      scancode = SCANCODE_CHAR_F6;
+      break;
+
+    case 7:
+      scancode = SCANCODE_CHAR_F7;
+      break;
+
+    case 8:
+      scancode = SCANCODE_CHAR_F8;
+      break;
+
+    case 9:
+      scancode = SCANCODE_CHAR_F9;
+      break;
+
+    case 10:
+      scancode = SCANCODE_CHAR_F10;
+      break;
+
+    case 11:
+      scancode = SCANCODE_CHAR_F11;
+      break;
+
+    case 12:
+      scancode = SCANCODE_CHAR_F12;
+      break;
+
+    /* Print Screen
+    case 13:
+      scancode = ;
+      break;
+    */
+
+    /* Scroll Lock - Not sent
+    case 14:
+      scancode = ;
+      break;
+    */
+
+    /* Break / Pause
+    case 15:
+      scancode = ;
+      break;
+    */
+    case 16:
+      scancode = SCANCODE_CHAR_GRAVE;
+      break;
+
+    case 17:
+      scancode = SCANCODE_CHAR_1;
+      break;
+
+    case 18:
+      scancode = SCANCODE_CHAR_2;
+      break;
+
+    case 19:
+      scancode = SCANCODE_CHAR_3;
+      break;
+
+    case 20:
+      scancode = SCANCODE_CHAR_4;
+      break;
+
+    case 21:
+      scancode = SCANCODE_CHAR_5;
+      break;
+
+    case 22:
+      scancode = SCANCODE_CHAR_6;
+      break;
+
+    case 23:
+      scancode = SCANCODE_CHAR_7;
+      break;
+
+    case 24:
+      scancode = SCANCODE_CHAR_8;
+      break;
+
+    case 25:
+      scancode = SCANCODE_CHAR_9;
+      break;
+
+    case 26:
+      scancode = SCANCODE_CHAR_0;
+      break;
+
+    case 27:
+      scancode = SCANCODE_CHAR_MINUS;
+      break;
+
+    case 28:
+      scancode = SCANCODE_CHAR_EQUAL;
+      break;
+
+    /* This key does not exist
+    case 29:
+      scancode = ;
+      break;
+    */
+    case 30:
+      scancode = SCANCODE_CHAR_BACKSPACE;
+      break;
+
+    case 31:
+      scancode = SCANCODE_CHAR_INSERT;
+      break;
+
+    case 32:
+      scancode = SCANCODE_CHAR_HOME;
+      break;
+
+    case 33:
+      scancode = SCANCODE_CHAR_PAGEUP;
+      break;
+
+    /* Num Lock - Not sent
+    case 34:
+      scancode = ;
+      break;
+    */
+    case 35:
+      scancode = SCANCODE_CHAR_NUMERICSLASH;
+      break;
+
+    case 36:
+      scancode = SCANCODE_CHAR_NUMERICSTAR;
+      break;
+    /*
+    case 37:
+      scancode = ;
+      break;
+    */
+    case 38:
+      scancode = SCANCODE_CHAR_TAB;
+      break;
+
+    case 39:
+      scancode = SCANCODE_CHAR_Q;
+      break;
+
+    case 40:
+      scancode = SCANCODE_CHAR_W;
+      break;
+
+    case 41:
+      scancode = SCANCODE_CHAR_E;
+      break;
+
+    case 42:
+      scancode = SCANCODE_CHAR_R;
+      break;
+
+    case 43:
+      scancode = SCANCODE_CHAR_T;
+      break;
+
+    case 44:
+      scancode = SCANCODE_CHAR_Y;
+      break;
+
+    case 45:
+      scancode = SCANCODE_CHAR_U;
+      break;
+
+    case 46:
+      scancode = SCANCODE_CHAR_I;
+      break;
+
+    case 47:
+      scancode = SCANCODE_CHAR_O;
+      break;
+
+    case 48:
+      scancode = SCANCODE_CHAR_P;
+      break;
+
+    case 49:
+      scancode = SCANCODE_CHAR_BRACKETLEFT;
+      break;
+
+    case 50:
+      scancode = SCANCODE_CHAR_BRACKETRIGHT;
+      break;
+
+    case 51:
+      scancode = SCANCODE_KEY_42; /* hash key [#] between ['] and [enter] */
+      break;
+
+    case 52:
+      scancode = SCANCODE_CHAR_DELETE;
+      break;
+
+    case 53:
+      scancode = SCANCODE_CHAR_END;
+      break;
+
+    case 54:
+      scancode = SCANCODE_CHAR_PAGEDOWN;
+      break;
+
+    case 55:
+      scancode = SCANCODE_CHAR_NUMERIC7;
+      break;
+
+    case 56:
+      scancode = SCANCODE_CHAR_NUMERIC8;
+      break;
+
+    case 57:
+      scancode = SCANCODE_CHAR_NUMERIC9;
+      break;
+
+    case 58:
+      scancode = SCANCODE_CHAR_NUMERICMINUS;
+      break;
+    /*
+    case 59:
+      scancode = ;
+      break;
+    */
+    case 60:
+      scancode = SCANCODE_CHAR_A;
+      break;
+
+    case 61:
+      scancode = SCANCODE_CHAR_S;
+      break;
+
+    case 62:
+      scancode = SCANCODE_CHAR_D;
+      break;
+
+    case 63:
+      scancode = SCANCODE_CHAR_F;
+      break;
+
+    case 64:
+      scancode = SCANCODE_CHAR_G;
+      break;
+
+    case 65:
+      scancode = SCANCODE_CHAR_H;
+      break;
+
+    case 66:
+      scancode = SCANCODE_CHAR_J;
+      break;
+
+    case 67:
+      scancode = SCANCODE_CHAR_K;
+      break;
+
+    case 68:
+      scancode = SCANCODE_CHAR_L;
+      break;
+
+    case 69:
+      scancode = SCANCODE_CHAR_SEMICOLON;
+      break;
+
+    case 70:
+      scancode = SCANCODE_CHAR_APOSTROPHE;
+      break;
+
+    case 71:
+      scancode = SCANCODE_CHAR_ENTER;
+      break;
+
+    case 72:
+      scancode = SCANCODE_CHAR_NUMERIC4;
+      break;
+
+    case 73:
+      scancode = SCANCODE_CHAR_NUMERIC5;
+      break;
+
+    case 74:
+      scancode = SCANCODE_CHAR_NUMERIC6;
+      break;
+
+    case 75:
+      scancode = SCANCODE_CHAR_NUMERICPLUS;
+      break;
+    /*
+    case 76:
+      scancode = ;
+      break;
+    */
+    case 77:
+      scancode = SCANCODE_KEY_45; /* backslash [\] between left shift and [z] */ 
+      break;
+
+    case 78:
+      scancode = SCANCODE_CHAR_Z;
+      break;
+
+    case 79:
+      scancode = SCANCODE_CHAR_X;
+      break;
+
+    case 80:
+      scancode = SCANCODE_CHAR_C;
+      break;
+
+    case 81:
+      scancode = SCANCODE_CHAR_V;
+      break;
+
+    case 82:
+      scancode = SCANCODE_CHAR_B;
+      break;
+
+    case 83:
+      scancode = SCANCODE_CHAR_N;
+      break;
+
+    case 84:
+      scancode = SCANCODE_CHAR_M;
+      break;
+
+    case 85:
+      scancode = SCANCODE_CHAR_COMMA;
+      break;
+
+    case 86:
+      scancode = SCANCODE_CHAR_DOT;
+      break;
+
+    case 87:
+      scancode = SCANCODE_CHAR_SLASH;
+      break;
+    /*
+    case 88:
+      scancode = ;
+      break;
+    */
+    case 89:
+      scancode = SCANCODE_CHAR_UPARROW;
+      break;
+
+    case 90:
+      scancode = SCANCODE_CHAR_NUMERIC1;
+      break;
+
+    case 91:
+      scancode = SCANCODE_CHAR_NUMERIC2;
+      break;
+
+    case 92:
+      scancode = SCANCODE_CHAR_NUMERIC3;
+      break;
+    /*
+    case 93:
+      scancode = ;
+      break
+
+    case 94:
+      scancode = ;
+      break;
+    */
+    case 95:
+      scancode = SCANCODE_CHAR_SPACE;
+      break;
+    /*
+    case 96;
+      scancode = ;
+      break;
+    case 97:
+      scancode = ;
+      break;
+    */
+    case 98:
+      scancode = SCANCODE_CHAR_LARROW;
+      break;
+
+    case 99:
+      scancode = SCANCODE_CHAR_DNARROW;
+      break;
+
+    case 100:
+      scancode = SCANCODE_CHAR_RARROW;
+      break;
+
+    case 101:
+      scancode = SCANCODE_CHAR_NUMERIC0;
+      break;
+
+    case 102:
+      scancode = SCANCODE_CHAR_NUMERICDOT;
+      break;
+
+    case 103:
+      scancode = SCANCODE_CHAR_NUMERICENTER;
+      break;
+    /*
+    case 104:
+      scancode = ;
+      break;
+    */
+
+    default:
+      scancode = -1;
+      break;
+  }
+
+  return(scancode);
+}
+
+/******************************************************************************/
+
+static int decode_keyname_to_physical(char *keyname)
+{
+  int physical_key;
+
+  if(strcmp("esc", keyname) == 0)
+     physical_key = 0; /* ESC */
+  else if(strcmp("f1", keyname) == 0)
+     physical_key = 1; /* F1 */
+  else if(strcmp("f2", keyname) == 0)
+     physical_key = 2; /* F2 */
+  else if(strcmp("f3", keyname) == 0)
+     physical_key = 3; /* F3 */
+  else if(strcmp("f4", keyname) == 0)
+     physical_key = 4; /* F4 */
+  else if(strcmp("f5", keyname) == 0)
+     physical_key = 5; /* F5 */
+  else if(strcmp("f6", keyname) == 0)
+     physical_key = 6; /* F6 */
+  else if(strcmp("f7", keyname) == 0)
+     physical_key = 7; /* F7 */
+  else if(strcmp("f8", keyname) == 0)
+     physical_key = 8; /* F8 */
+  else if(strcmp("f9", keyname) == 0)
+     physical_key = 9; /* F9 */
+  else if(strcmp("f10", keyname) == 0)
+     physical_key = 10; /* F10 */
+  else if(strcmp("f11", keyname) == 0)
+     physical_key = 11; /* F11 */
+  else if(strcmp("f12", keyname) == 0)
+     physical_key = 12; /* F12 */
+  else if(strcmp("prtsc", keyname) == 0)
+     physical_key = 13; /* Print Screen */
+  else if(strcmp("scrloc", keyname) == 0)
+     physical_key = 14; /* Scroll Lock */
+  else if(strcmp("break", keyname) == 0)
+     physical_key = 15; /* Break / Pause */
+  else if(strcmp("`", keyname) == 0)
+     physical_key = 16; /* Grave */
+  else if(strcmp("1", keyname) == 0)
+     physical_key = 17; /* 1 */
+  else if(strcmp("2", keyname) == 0)
+     physical_key = 18; /* 2 */
+  else if(strcmp("3", keyname) == 0)
+     physical_key = 19; /* 3 */
+  else if(strcmp("4", keyname) == 0)
+     physical_key = 20; /* 4 */
+  else if(strcmp("5", keyname) == 0)
+     physical_key = 21; /* 5 */
+  else if(strcmp("6", keyname) == 0)
+     physical_key = 22; /* 6 */
+  else if(strcmp("7", keyname) == 0)
+     physical_key = 23; /* 7 */
+  else if(strcmp("8", keyname) == 0)
+     physical_key = 24; /* 8 */
+  else if(strcmp("9", keyname) == 0)
+     physical_key = 25; /* 9 */
+  else if(strcmp("0", keyname) == 0)
+     physical_key = 26; /* 0 */
+  else if(strcmp("-", keyname) == 0)
+     physical_key = 27; /* Minus */
+  else if(strcmp("=", keyname) == 0)
+     physical_key = 28; /* Equal */
+  else if(strcmp("bs", keyname) == 0)
+     physical_key = 30; /* Backspace */
+  else if(strcmp("ins", keyname) == 0)
+     physical_key = 31; /* Insert */
+  else if(strcmp("home", keyname) == 0)
+     physical_key = 32; /* Home */
+  else if(strcmp("pgup", keyname) == 0)
+     physical_key = 33; /* Page Up */
+  else if(strcmp("numlock", keyname) == 0)
+     physical_key = 34; /* Num Lock */
+  else if(strcmp("n/", keyname) == 0)
+     physical_key = 35; /* Numeric Slash */
+  else if(strcmp("n*", keyname) == 0)
+     physical_key = 36; /* Numeric Star */
+  else if(strcmp("tab", keyname) == 0)
+     physical_key = 38; /* Tab */
+  else if(strcmp("q", keyname) == 0)
+     physical_key = 39; /* Q */
+  else if(strcmp("w", keyname) == 0)
+     physical_key = 40; /* W */
+  else if(strcmp("e", keyname) == 0)
+     physical_key = 41; /* E */
+  else if(strcmp("r", keyname) == 0)
+     physical_key = 42; /* R */
+  else if(strcmp("t", keyname) == 0)
+     physical_key = 43; /* T */
+  else if(strcmp("y", keyname) == 0)
+     physical_key = 44; /* Y */
+  else if(strcmp("u", keyname) == 0)
+     physical_key = 45; /* U */
+  else if(strcmp("i", keyname) == 0)
+     physical_key = 46; /* I */
+  else if(strcmp("o", keyname) == 0)
+     physical_key = 47; /* O */
+  else if(strcmp("p", keyname) == 0)
+     physical_key = 48; /* P */
+  else if(strcmp("[", keyname) == 0)
+     physical_key = 49; /* Bracket Left */
+  else if(strcmp("]", keyname) == 0)
+     physical_key = 50; /* Bracket Right */
+  else if(strcmp("#", keyname) == 0)
+     physical_key = 51; /* hash key [#] between ['] and [enter] */
+  else if(strcmp("del", keyname) == 0)
+     physical_key = 52; /* Delete */
+  else if(strcmp("end", keyname) == 0)
+     physical_key = 53; /* End */
+  else if(strcmp("pgdn", keyname) == 0)
+     physical_key = 54; /* Page Down */
+  else if(strcmp("n7", keyname) == 0)
+     physical_key = 55; /* Numeric 7 */
+  else if(strcmp("n8", keyname) == 0)
+     physical_key = 56; /* Numeric 8 */
+  else if(strcmp("n9", keyname) == 0)
+     physical_key = 57; /* Numeric 9 */
+  else if(strcmp("n-", keyname) == 0)
+     physical_key = 58; /* Numeric Minus */
+  else if(strcmp("a", keyname) == 0)
+     physical_key = 60; /* A */
+  else if(strcmp("s", keyname) == 0)
+     physical_key = 61; /* S */
+  else if(strcmp("d", keyname) == 0)
+     physical_key = 62; /* D */
+  else if(strcmp("f", keyname) == 0)
+     physical_key = 63; /* F */
+  else if(strcmp("g", keyname) == 0)
+     physical_key = 64; /* G */
+  else if(strcmp("h", keyname) == 0)
+     physical_key = 65; /* H */
+  else if(strcmp("j", keyname) == 0)
+     physical_key = 66; /* J */
+  else if(strcmp("k", keyname) == 0)
+     physical_key = 67; /* K */
+  else if(strcmp("l", keyname) == 0)
+     physical_key = 68; /* L */
+  else if(strcmp(";", keyname) == 0)
+     physical_key = 69; /* Semicolon */
+  else if(strcmp("'", keyname) == 0)
+     physical_key = 70; /* Apostrophe */
+  else if(strcmp("ret", keyname) == 0)
+     physical_key = 71; /* Enter */
+  else if(strcmp("n4", keyname) == 0)
+     physical_key = 72; /* Numeric 4 */
+  else if(strcmp("n5", keyname) == 0)
+     physical_key = 73; /* Numeric 5 */
+  else if(strcmp("n6", keyname) == 0)
+     physical_key = 74; /* Numeric 6 */
+  else if(strcmp("n+", keyname) == 0)
+     physical_key = 75; /* Numeric Plus */
+  else if(strcmp("\\", keyname) == 0)
+     physical_key = 77; /* backslash [\] between left shift and [z] */
+  else if(strcmp("z", keyname) == 0)
+     physical_key = 78; /* Z */
+  else if(strcmp("x", keyname) == 0)
+     physical_key = 79; /* X */
+  else if(strcmp("c", keyname) == 0)
+     physical_key = 80; /* C */
+  else if(strcmp("v", keyname) == 0)
+     physical_key = 81; /* V */
+  else if(strcmp("b", keyname) == 0)
+     physical_key = 82; /* B */
+  else if(strcmp("n", keyname) == 0)
+     physical_key = 83; /* N */
+  else if(strcmp("m", keyname) == 0)
+     physical_key = 84; /* M */
+  else if(strcmp("com", keyname) == 0)
+     physical_key = 85; /* Comma */
+  else if(strcmp("dot", keyname) == 0)
+     physical_key = 86; /* Dot */
+  else if(strcmp("/", keyname) == 0)
+     physical_key = 87; /* Forward Slash */
+  else if(strcmp("up", keyname) == 0)
+     physical_key = 89; /* Up Arrow */
+  else if(strcmp("n1", keyname) == 0)
+     physical_key = 90; /* Numeric 1 */
+  else if(strcmp("n2", keyname) == 0)
+     physical_key = 91; /* Numeric 2 */
+  else if(strcmp("n3", keyname) == 0)
+     physical_key = 92; /* Numeric 3 */
+  else if(strcmp("spc", keyname) == 0)
+     physical_key = 95; /* Space */
+  else if(strcmp("left", keyname) == 0)
+     physical_key = 98; /* Left Arrow */
+  else if(strcmp("down", keyname) == 0)
+     physical_key = 99; /* Down Arrow */
+  else if(strcmp("right", keyname) == 0)
+     physical_key = 100; /* Right Arrow */
+  else if(strcmp("n0", keyname) == 0)
+     physical_key = 101; /* Numeric 0 */
+  else if(strcmp("ndot", keyname) == 0)
+     physical_key = 102; /* Numeric Dot */
+  else if(strcmp("enter", keyname) == 0)
+     physical_key = 103; /* Numeric Enter */
+  else
+     physical_key = -1;
+
+  return(physical_key);
+}
+
+/******************************************************************************/
+
+static void build_translate_tables(void)
+{
+  int index;
+  int result;
+
+  for(index = 0; index < translate_SIZE; index++){
+
+     result = map_keycode_to_physical(index);
+
+     if(result < 0 || result > 255)
+        result = 255;
+
+     translate_keycode_to_physical[index] = (unsigned char)result;
+  }
+
+  for(index = 0; index < translate_SIZE; index++){
+
+     result = map_physical_to_scancode(index);
+
+     if(result < 0 || result > 255)
+        result = 255;
+
+     translate_physical_to_scancode[index] = (unsigned char)result;
+  }
+}
+
+/******************************************************************************/
+
+static int lookup_keycode_to_physical(int keycode)
+{
+  int physical_key = -1;
+
+  if(keycode >= 0 && keycode < translate_SIZE){
+
+     physical_key = translate_keycode_to_physical[keycode];
+
+     if(physical_key == 255)
+        physical_key = -1;
+  }
+
+  return(physical_key);
+}
+
+/******************************************************************************/
+
+static int lookup_physical_to_scancode(int physical_key)
+{
+  int scancode = -1;
+
+  if(physical_key >= 0 && physical_key < translate_SIZE){
+
+     scancode = translate_physical_to_scancode[physical_key];
+
+     if(scancode == 255)
+        scancode = -1;
+  }
+
+  return(scancode);
+}
+
+/******************************************************************************/
+
+static void keyboard_buffer_clear(void)
+{
+  int index;
+
+  for(index = 0; index < keyboard_BUFFER_SIZE; index++)
+     keyboard_buffer_keycode[index] = -1;
+
+  keyboard_buffer_autorepeat_keycode = -1;
+
+  keyboard_buffer_count = 0;
+}
+
+/******************************************************************************/
+
+static int keyboard_buffer_write(void)
+{
+ /*
+  * Scan keyboard and fill keyboard buffer
+  */
+  int keycode;
+  unsigned int time;
+  int keys_pressed;
+  int index1;
+  int index2;
+  BOOL found;
+  int empty_index;
+  int key_pressed_keycode;
+  unsigned int min_time;
+  unsigned int key_time;
+
+  while((time = Time_Monotonic()) == 0);
+
+  keys_pressed = 0;
+
+  key_pressed_keycode = -1;
+
+  keycode = keyboard_scan(16);
+
+  while(keycode != 0xFF && keys_pressed < keyboard_BUFFER_SIZE){
+
+     keyboard_current_keycode[keys_pressed] = keycode;
+     keys_pressed++;
+
+     keycode = keyboard_scan(keycode + 1);
+  }
+
+  if(keys_pressed > 0){
+
+    /*
+     * Remove keys that are no longer pressed from buffer
+     */
+     for(index1 = 0; index1 < keyboard_BUFFER_SIZE; index1++){
+
+        keycode = keyboard_buffer_keycode[index1];
+
+        if(keycode != -1){
+
+           found = FALSE;
+
+           for(index2 = 0; index2 < keys_pressed; index2++){
+
+              if(keycode == keyboard_current_keycode[index2]){
+                 found = TRUE;
+                 break;
+              }
+           }
+
+           if(!found){
+
+              keyboard_buffer_keycode[index1] = -1;
+
+              if(keycode == keyboard_buffer_autorepeat_keycode)
+                 keyboard_buffer_autorepeat_keycode = -1;
+
+              keyboard_buffer_count--;
+           }
+        }
+     }
+
+    /*
+     * Add new keys to buffer
+     */
+     for(index1 = 0; index1 < keys_pressed; index1++){
+
+        keycode = keyboard_current_keycode[index1];
+
+        empty_index = -1;
+
+        found = FALSE;
+        
+        for(index2 = 0; index2 < keyboard_BUFFER_SIZE; index2++){
+
+           if(keyboard_buffer_keycode[index2] == -1)
+              empty_index = index2;
+           else if(keycode == keyboard_buffer_keycode[index2]){
+              found = TRUE;
+           }
+           
+        }
+
+        if(!found && empty_index != -1){
+
+           keyboard_buffer_keycode[empty_index] = keycode;
+           keyboard_buffer_time[empty_index] = time;
+
+           keyboard_buffer_count++;
+
+           if(key_pressed_keycode == -1){
+
+              keyboard_buffer_autorepeat_keycode = keycode;
+              keyboard_buffer_autorepeat_time = time + keyboard_autorepeat_time;
+
+              key_pressed_keycode = keycode;
+           }
+        }
+     }
+
+    /*
+     * If no current key, add one that is pressed
+     */
+     if(key_pressed_keycode == -1 && keyboard_buffer_autorepeat_keycode == -1 &&
+        keyboard_buffer_count > 0){
+
+        min_time = UINT_MAX;
+
+        for(index1 = 0; index1 < keyboard_BUFFER_SIZE; index1++){
+
+            keycode = keyboard_buffer_keycode[index1];
+
+            if(keycode != -1){
+
+               key_time = keyboard_buffer_time[index1];
+
+               if(key_time < min_time){
+                  key_pressed_keycode = keycode;
+                  min_time = key_time;
+               }
+            }
+         }
+
+         if(key_pressed_keycode != -1){
+
+            keyboard_buffer_autorepeat_keycode = key_pressed_keycode;
+            keyboard_buffer_autorepeat_time = time + keyboard_autorepeat_time;
+        }
+     }
+  }
+  else{
+    /*
+     * No keys pressed so clear buffer
+     */
+     keyboard_buffer_clear();
+     keyboard_buffer_autorepeat_keycode = -1;
+  }
+
+ /*
+  * Autorepeat
+  */
+  if(key_pressed_keycode == -1 && keyboard_buffer_autorepeat_keycode != -1){
+
+     if(time >= keyboard_buffer_autorepeat_time){
+
+        key_pressed_keycode = keyboard_buffer_autorepeat_keycode;
+
+        keyboard_buffer_autorepeat_time += keyboard_autorepeat_interval;
+
+        while(time >= keyboard_buffer_autorepeat_time)
+           keyboard_buffer_autorepeat_time += keyboard_autorepeat_interval;
+
+     }
+  }
+
+  return(key_pressed_keycode);
+}
+
+/******************************************************************************/
+
+static int keyboard_scan(int start_key)
+{
+ /*
+  * Return key that is currently being pressed or 0xFF if no key is pressed
+  */
+  int r1out;
+  int r2out;
+
+  OS_Byte(osbyte_KEYBOARDSCAN, start_key, 0x00, &r1out, &r2out);
+
+  return(r1out);
+}
+
+/******************************************************************************/
+
+static void open_command_window(void)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = 1;
+  _kernel_swi(SWI_XOS_Bit | SWI_Wimp_CommandWindow, &r, &r);
+
+  r.r[0] = 13;
+  _kernel_swi(SWI_XOS_Bit | SWI_OS_WriteC, &r, &r);  
+}
+
+/******************************************************************************/
+
+static void close_command_window(void)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = -1;
+  _kernel_swi(SWI_XOS_Bit | SWI_Wimp_CommandWindow, &r, &r);
+
+}
+
+
+/******************************************************************************/
+
+static BOOL key_down(int keynumber)
+{
+ /*
+  * Return TRUE if the key corresponding to the supplied keynumber is pressed
+  */
+  int r1out;
+  int r2out;
+
+  OS_Byte(osbyte_SCANFORKEY, keynumber, 0xFF, &r1out, &r2out);
+
+  return(r1out == 255);
+}
+
+/******************************************************************************/
+
+static int scan_modifiers(void)
+{
+  keyboard_modifier_block modifiers;
+
+  modifiers.value = 0;
+
+  if(key_down(keynumber_LEFT_SHIFT))
+     modifiers.data.left_shift = 1;
+
+  if(key_down(keynumber_RIGHT_SHIFT))
+     modifiers.data.right_shift = 1;
+
+  if(key_down(keynumber_LEFT_CTRL))
+     modifiers.data.left_ctrl = 1;
+
+  if(key_down(keynumber_RIGHT_CTRL))
+     modifiers.data.right_ctrl = 1;
+
+  if(key_down(keynumber_LEFT_ALT))
+     modifiers.data.left_alt = 1;
+
+  if(key_down(keynumber_RIGHT_ALT))
+     modifiers.data.right_alt = 1;
+
+  if(key_down(keynumber_LEFT_LOGO))
+     modifiers.data.left_logo = 1;
+
+  if(key_down(keynumber_RIGHT_LOGO))
+     modifiers.data.right_logo = 1;
+
+  if(key_down(keynumber_MENU))
+     modifiers.data.menu = 1;
+
+  return(modifiers.value);
+}
+
+/******************************************************************************/
+
+static int scan_state(void)
+{
+  keyboard_state_block state;
+  int r1out;
+  int r2out;
+
+  state.value = 0;
+
+  OS_Byte(osbyte_RW_KEYBOARDSTATUSBYTE, 0x00, 0xFF, &r1out, &r2out);
+
+  if((r1out & 0x02) > 0)
+     state.data.scroll_lock = 1;
+
+  if((r1out & 0x04) == 0)
+     state.data.num_lock = 1;
+
+  if((r1out & 0x10) == 0)
+     state.data.caps_lock = 1;
+
+  return(state.value);
+}
+
+/******************************************************************************/
+
+static void read_keyboard_autorepeat(void)
+{
+ /*
+  * Read keyboard autorepeat values
+  */
+  int r1out = 0;
+  int r2out = 0;
+
+  OS_Byte(osbyte_RW_KEYREPEATDELAY, 0x00, 0xFF, &r1out, &r2out);
+
+  keyboard_autorepeat_time = r1out;
+  keyboard_autorepeat_interval = r2out;
+
+}
+
+/******************************************************************************/
+
+static void update_modifiers(int modifiers, BOOL force)
+{
+  keyboard_modifier_block current_modifiers;
+  uint32 ev_time;
+  if(!force && modifiers == saved_modifiers.value)
+     return;
+
+
+  ev_time = time(NULL);
+
+  current_modifiers.value = modifiers;
+
+  if(current_modifiers.data.left_shift != saved_modifiers.data.left_shift || force){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.left_shift == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_LSHIFT);
+  }
+
+  if(current_modifiers.data.right_shift != saved_modifiers.data.right_shift || force){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.right_shift == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_RSHIFT);
+  }
+
+  if(current_modifiers.data.left_ctrl != saved_modifiers.data.left_ctrl || force){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.left_ctrl == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_LCTRL);
+  }
+
+  if(current_modifiers.data.right_ctrl != saved_modifiers.data.right_ctrl || force){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.right_ctrl == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_RCTRL);
+  }
+
+  if(current_modifiers.data.left_alt != saved_modifiers.data.left_alt || force){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.left_alt == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_LALT);
+  }
+
+  if(current_modifiers.data.right_alt != saved_modifiers.data.right_alt || force){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.right_alt == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_RALT);
+  }
+
+  if(current_modifiers.data.left_logo != saved_modifiers.data.left_logo || force){
+     send_winkey(ev_time,
+                 current_modifiers.data.left_logo == 1 ? TRUE : FALSE,
+                 TRUE);
+  }
+
+  if(current_modifiers.data.right_logo != saved_modifiers.data.right_logo || force){
+     send_winkey(ev_time,
+                 current_modifiers.data.right_logo == 1 ? TRUE : FALSE,
+                 FALSE);
+  }
+
+  /* don't reset menu key on force as it causes the menu to open */
+  if(current_modifiers.data.menu != saved_modifiers.data.menu){
+     rdp_send_scancode(ev_time,
+                       current_modifiers.data.menu == 1 ? RDP_KEYPRESS : RDP_KEYRELEASE,
+                       SCANCODE_CHAR_APPLICATION);
+  }
+
+  saved_modifiers.value = current_modifiers.value;
+  
+}
+
+/******************************************************************************/
+
+static void update_state(int state, BOOL force)
+{
+  keyboard_state_block current_state;
+  uint32 ev_time;
+  if(!force && state == saved_state.value)
+     return;
+
+
+  ev_time = time(NULL);
+
+  current_state.value = state;
+
+  if(current_state.data.scroll_lock != saved_state.data.scroll_lock){
+//fprintf(stderr, "Send ScrollLock\n");
+     rdp_send_scancode(ev_time, RDP_KEYPRESS, SCANCODE_CHAR_SCROLLLOCK);
+     rdp_send_scancode(ev_time, RDP_KEYRELEASE, SCANCODE_CHAR_SCROLLLOCK);
+  }
+
+  if(current_state.data.num_lock != saved_state.data.num_lock){
+//fprintf(stderr, "Send NumLock\n");
+     rdp_send_scancode(ev_time, RDP_KEYPRESS, SCANCODE_CHAR_NUMLOCK);
+     rdp_send_scancode(ev_time, RDP_KEYRELEASE, SCANCODE_CHAR_NUMLOCK);
+  }
+
+  if(current_state.data.caps_lock != saved_state.data.caps_lock || force){
+//fprintf(stderr, "Send CapsLock\n");
+     rdp_send_scancode(ev_time, RDP_KEYPRESS, SCANCODE_CHAR_CAPSLOCK);
+     rdp_send_scancode(ev_time, RDP_KEYRELEASE, SCANCODE_CHAR_CAPSLOCK);
+  }
+
+  saved_state.value = current_state.value;
+  
+}
+
+/******************************************************************************/
+
+static BOOL send_special_keys(int physical_key, int modifiers)
+{
+  BOOL sent = TRUE;
+  uint32 ev_time;
+  keyboard_modifier_block current_modifiers;
+
+  current_modifiers.value = modifiers;
+
+  ev_time = time(NULL);
+
+  switch(physical_key)
+  {
+    /* Print Screen */
+    case 13:
+
+      if((current_modifiers.data.left_ctrl == 0 || current_modifiers.data.right_ctrl == 0) &&
+         (current_modifiers.data.left_shift == 1 || current_modifiers.data.right_shift == 1)){
+        /*
+         * As I cannot get a Alt PrintScreen to work, I will send this on Ctrl PrintScreen.
+         * Therefore, Ctrl or Shift PrintScreen will only be sent for Shift PrintScreen
+         */
+         rdp_send_scancode(ev_time, RDP_KEYPRESS, (SCANCODE_EXTENDED | 0x2a));
+
+         rdp_send_scancode(ev_time, RDP_KEYRELEASE, (SCANCODE_EXTENDED | 0x2a));
+      }
+      else if(current_modifiers.data.left_ctrl == 1 || current_modifiers.data.right_ctrl == 1){
+        /*
+         * Send Alt PrintScreen sequence triggered by Ctrl PrintScreen
+         */
+         rdp_send_scancode(ev_time, RDP_KEYPRESS, SCANCODE_CHAR_LALT);         
+         rdp_send_scancode(ev_time, RDP_KEYPRESS, 0x54);
+
+         rdp_send_scancode(ev_time, RDP_KEYRELEASE, 0x54);
+         rdp_send_scancode(ev_time, RDP_KEYRELEASE, SCANCODE_CHAR_LALT);
+      }
+      else{
+        /*
+         * PrintScreen sequence with no modifiers
+         */
+         rdp_send_scancode(ev_time, RDP_KEYPRESS, (SCANCODE_EXTENDED | 0x2a));
+         rdp_send_scancode(ev_time, RDP_KEYPRESS, (SCANCODE_EXTENDED | 0x37));
+
+         rdp_send_scancode(ev_time, RDP_KEYRELEASE, (SCANCODE_EXTENDED | 0x2a));
+         rdp_send_scancode(ev_time, RDP_KEYRELEASE, (SCANCODE_EXTENDED | 0x37));
+      }
+      break;
+
+    /* Break / Pause */
+    case 15:
+      /* Send Break sequence E0 46 E0 C6 */
+      /*
+      rdp_send_scancode(ev_time, RDP_KEYPRESS, (SCANCODE_EXTENDED | 0x46));
+      rdp_send_scancode(ev_time, RDP_KEYPRESS, (SCANCODE_EXTENDED | 0xc6));
+      */
+
+      /* According to MS Keyboard Scan Code
+         Specification, pressing Pause should result
+         in E1 1D 45 E1 9D C5. I'm not exactly sure
+         of how this is supposed to be sent via
+         RDP. The code below seems to work, but with
+         the side effect that Left Ctrl stays
+         down. Therefore, we release it when Pause
+         is released. */
+
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYPRESS, 0xe1, 0);
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYPRESS, 0x1d, 0);
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYPRESS, 0x45, 0);
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYPRESS, 0xe1, 0);
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYPRESS, 0x9d, 0);
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYPRESS, 0xc5, 0);
+
+      /* Release Left Ctrl */
+      rdp_send_input(ev_time, RDP_INPUT_SCANCODE, RDP_KEYRELEASE, 0x1d, 0);
+      break;
+
+    default:
+      sent = FALSE;
+      break;
+  }
+
+  return(sent);
+}
+
+/******************************************************************************/
+
+static void send_winkey(uint32 ev_time, BOOL pressed, BOOL leftkey)
+{
+	uint8 winkey;
+
+	if (leftkey)
+		winkey = SCANCODE_CHAR_LWIN;
+	else
+		winkey = SCANCODE_CHAR_RWIN;
+
+	if (pressed)
+	{
+		if (g_use_rdp5)
+		{
+			rdp_send_scancode(ev_time, RDP_KEYPRESS, winkey);
+		}
+		else
+		{
+			/* RDP4 doesn't support winkey. Fake with Ctrl-Esc */
+			rdp_send_scancode(ev_time, RDP_KEYPRESS, SCANCODE_CHAR_LCTRL);
+			rdp_send_scancode(ev_time, RDP_KEYPRESS, SCANCODE_CHAR_ESC);
+		}
+	}
+	else
+	{
+		/* key released */
+		if (g_use_rdp5)
+		{
+			rdp_send_scancode(ev_time, RDP_KEYRELEASE, winkey);
+		}
+		else
+		{
+			rdp_send_scancode(ev_time, RDP_KEYRELEASE, SCANCODE_CHAR_ESC);
+			rdp_send_scancode(ev_time, RDP_KEYRELEASE, SCANCODE_CHAR_LCTRL);
+		}
+	}
+}
+
+/******************************************************************************/
+
+/* Send keyboard input */
+extern void rdp_send_scancode(uint32 time, uint16 flags, uint8 scancode)
+{
+//	update_modifier_state(scancode, !(flags & RDP_KEYRELEASE));
+
+	if (scancode & SCANCODE_EXTENDED)
+	{
+		DEBUG_KBD(("Sending extended scancode=0x%x, flags=0x%x\n",
+			   scancode & ~SCANCODE_EXTENDED, flags));
+		rdp_send_input(time, RDP_INPUT_SCANCODE, flags | KBD_FLAG_EXT,
+			       scancode & ~SCANCODE_EXTENDED, 0);
+	}
+	else
+	{
+		DEBUG_KBD(("Sending scancode=0x%x, flags=0x%x\n", scancode, flags));
+		rdp_send_input(time, RDP_INPUT_SCANCODE, flags, scancode, 0);
+	}
+}

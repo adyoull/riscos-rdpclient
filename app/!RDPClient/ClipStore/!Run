@@ -1,0 +1,22 @@
+RMEnsure UtilityModule 3.50 Error 0 You need RISC OS 3.50 or later to run this applicaion.
+
+Set ClipStore$Dir <Obey$Dir>
+
+RMEnsure UtilityModule 3.70 RMEnsure CallASWI 0.03 RMLoad System:Modules.CallASWI
+RMEnsure UtilityModule 3.70 RMEnsure CallASWI 0.03 Error 0 This application requires CallASWI 0.03 or later.
+
+RMEnsure FPEmulator 4.03 RMLoad System:Modules.FPEmulator
+RMEnsure FPEmulator 4.03 Error 0 This application requires FPEmulator 4.03 or later.
+
+RMEnsure SharedCLibrary 5.34 RMLoad System:Modules.CLib
+RMEnsure SharedCLibrary 5.34 Error 0 This application requires SharedCLibrary 5.34 or later.
+
+| Debug
+|WimpSlot -min 1000K -max 1000K
+
+| Normal
+WimpSlot -min 64K -max 64K
+
+| > <ClipStore$Dir>.^.Debug
+| > <ClipStore$Dir>.stdout 2><ClipStore$Dir>.stderr
+Run <ClipStore$Dir>.ClipStore %*0 

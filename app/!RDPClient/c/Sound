@@ -1,0 +1,919 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Sound.c                                                 *
+ *                                                                      *
+ *     Purpose: Sound link to rdesktop.                                 *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:Time.h"              /* "TIME"                          */
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "Sound.h"
+#include "Status.h"
+#include "MemMan.h"
+
+#include "rdesktop/rdesktop.h"
+#include "rdesktop/rdpsnd.h"
+
+/*#include <socklib.h>*/
+
+//#define SOUND_DEBUG
+
+static BOOL sound_initialised = FALSE;
+static BOOL installed_atexit = FALSE;
+static int sound_handle = 0;
+static int sound_stream = 0;
+static int sound_channels = 0;
+static int sound_bits = 0;
+
+static uint32 snd_rate;
+static short samplewidth;
+
+static unsigned char *sound_global_buffer_data = NULL;
+static int sound_global_buffer_length = 0;
+
+static BOOL sound_delayed_start = FALSE;
+static unsigned int sound_delayed_start_time = 0;
+
+#define SOUND_BLOCK_SIZE 32764 
+
+#define SOUND_DELAYED_START_TIME 50
+
+/*
+#define SOUND_BUFFER_SIZE 1440 * 1024
+*/
+#define SOUND_BUFFER_SIZE 512 * 1024
+
+#define SOUND_HEAP_MAX_SIZE 4096 * 1024
+#define SOUND_DA_MAX_SIZE 4096 * 1024
+
+static void set_delayed_start(void);
+static void trigger_delayed_start(BOOL immediate);
+static BOOL sound_buffer_required(void);
+static int sound_buffer_length(int length);
+static void copy_sound_to_buffer(unsigned char *source, unsigned char **dest, int length);
+static void copy_sound_to_buffer_c1_b16(unsigned char *source, unsigned char **dest, int length);
+
+static BOOL ssb_openstream(char *name, BOOL set_expected_size, int expected_size,
+                           int *handle);
+static void ssb_closestream(int handle);
+/*
+static BOOL ssb_addblock(int handle, unsigned char *block, int length);
+*/
+static void ssb_volume(int handle, unsigned int volume);
+static void ssb_samplerate(int handle, int samplerate);
+/*
+static void ssb_setbuffer(int handle, int max_bytes);
+*/
+static void ssb_pause(int handle, BOOL pause);
+/*
+static int ssb_bufferstats(int handle);
+*/
+static BOOL ssb_returnstreamhandle(int handle, int *stream);
+static BOOL sm_addblock(int stream, unsigned char *block, int length);
+static BOOL sm_addblock_flex(int stream, unsigned char **block, int length);
+static void sm_setbuffer(int stream, int max_bytes);
+static int sm_bufferstats(int stream);
+static void sm_setdalimits(int da_max_bytes, int heap_max_bytes);
+
+static void riscos_sound_add_fds(int *n, fd_set * rfds, fd_set * wfds, struct timeval *tv);
+static void riscos_sound_check_fds(fd_set * rfds, fd_set * wfds);
+static RD_BOOL riscos_sound_out_open(void);
+static void riscos_sound_out_close(void);
+static RD_BOOL riscos_sound_out_format_supported(RD_WAVEFORMATEX *pwfx);
+static RD_BOOL riscos_sound_out_set_format(RD_WAVEFORMATEX * pwfx);
+static void riscos_sound_play(void);
+static void riscos_sound_out_volume(uint16 left, uint16 right);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Sound_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  sound_initialised = FALSE;
+  sound_handle = 0;
+  sound_stream = 0;
+  installed_atexit = FALSE;
+  sound_channels = 0;
+  sound_bits = 0;
+
+  sound_global_buffer_data = NULL;
+  sound_global_buffer_length = 0;
+
+  sound_delayed_start = FALSE;
+  sound_delayed_start_time = 0;
+}
+
+/******************************************************************************/
+
+extern void Sound_Startup(void)
+{
+ /*
+  * Start up sound system (only when configured to play sound)
+  */
+  if(!sound_initialised){
+
+     if(!installed_atexit){
+        atexit(Sound_Closedown);
+        installed_atexit = TRUE;
+     }
+
+     sm_setdalimits(SOUND_DA_MAX_SIZE, SOUND_HEAP_MAX_SIZE);
+     
+     if(ssb_openstream(event_taskname, TRUE, SOUND_BLOCK_SIZE, &sound_handle)){
+
+        if(ssb_returnstreamhandle(sound_handle, &sound_stream)){
+
+           sm_setbuffer(sound_stream, SOUND_BUFFER_SIZE);
+
+           ssb_volume(sound_handle, 0xFFFFFFFF);
+
+           ssb_pause(sound_handle, TRUE);
+
+           sound_channels = 2;
+           sound_bits = 16;
+
+           sound_initialised = TRUE;
+
+        }
+        else{
+
+           ssb_closestream(sound_handle);
+
+        }
+
+     }
+
+     if(!sound_initialised){
+
+        sound_handle = 0;
+        sound_stream = 0;
+
+     }
+
+  }
+}
+
+/******************************************************************************/
+
+extern void Sound_Closedown(void)
+{
+ /*
+  * shut down sound system
+  */
+  if(sound_initialised){
+
+     ssb_closestream(sound_handle);
+
+     sound_initialised = FALSE;
+  }
+}
+
+/******************************************************************************/
+
+extern int Sound_BufferSize(void)
+{
+ /*
+  * Return total size of sound buffer in bytes
+  */
+  return(SOUND_BUFFER_SIZE);
+}
+
+/******************************************************************************/
+
+extern int Sound_BufferUsed(void)
+{
+ /*
+  * Return amount of sound buffer used in bytes
+  */
+  if(sound_initialised)
+     return(sm_bufferstats(sound_stream));
+  else
+     return(0);
+}
+
+/******************************************************************************/
+
+extern struct audio_driver *Sound_Register(char *options)
+{
+	static struct audio_driver riscos_driver;
+
+	memset(&riscos_driver, 0, sizeof(riscos_driver));
+
+	riscos_driver.name = "RISCOS";
+	riscos_driver.description = "RISC OS output driver";
+
+	riscos_driver.add_fds = riscos_sound_add_fds;
+	riscos_driver.check_fds = riscos_sound_check_fds;
+
+	riscos_driver.wave_out_open = riscos_sound_out_open;
+	riscos_driver.wave_out_close = riscos_sound_out_close;
+	riscos_driver.wave_out_format_supported = riscos_sound_out_format_supported;
+	riscos_driver.wave_out_set_format = riscos_sound_out_set_format;
+	riscos_driver.wave_out_volume = riscos_sound_out_volume;
+
+	riscos_driver.need_byteswap_on_be = 0;
+	riscos_driver.need_resampling = 0;
+
+	return (&riscos_driver);
+}
+
+/******************************************************************************/
+
+extern void Sound_Poll(void)
+{
+ /*
+  * Called frequently
+  */
+
+/* AJS TO DO other way round? */
+
+  trigger_delayed_start(FALSE);
+
+  riscos_sound_play();
+}
+
+/******************************************************************************/
+
+extern STREAM rdpsnd_dsp_process(unsigned char *data, unsigned int size,
+                                 struct audio_driver *current_driver,
+                                 RD_WAVEFORMATEX * format)
+{
+  static struct stream out;
+
+  out.data = (unsigned char *)xmalloc(size);
+  memcpy(out.data, data, size);
+  out.size = size;
+
+  out.p = out.data;
+  out.end = out.p + out.size;
+
+  return(&out);
+}
+
+/******************************************************************************/
+
+extern int gettimeofday(struct timeval *tv, struct timezone *tzp)
+{
+  unsigned int time;
+  unsigned int time_sec;
+
+  while((time = Time_Monotonic()) == 0);
+
+  time_sec = time / 1000;
+
+  tv->tv_sec = time_sec;
+  tv->tv_usec = (time - (time_sec * 1000)) * 1000;
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void riscos_sound_add_fds(int *n, fd_set * rfds, fd_set * wfds, struct timeval *tv)
+{
+
+}
+
+/******************************************************************************/
+
+static void riscos_sound_check_fds(fd_set * rfds, fd_set * wfds)
+{
+  trigger_delayed_start(FALSE);
+
+  riscos_sound_play();
+}
+
+/******************************************************************************/
+
+static RD_BOOL riscos_sound_out_open(void)
+{
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "wave_out_open()\n");
+#endif
+
+  Sound_Startup();
+
+  set_delayed_start();
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static void riscos_sound_out_close(void)
+{
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "wave_out_close()\n");
+#endif
+
+  trigger_delayed_start(TRUE);
+}
+
+/******************************************************************************/
+
+static RD_BOOL riscos_sound_out_format_supported(RD_WAVEFORMATEX *pwfx)
+{
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "wave_out_format_supported(bits=%i, channels=%i, rate=%i, format=%i)\n",
+          pwfx->wBitsPerSample, pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wFormatTag);
+#endif
+
+  Sound_Startup();
+
+//  if((pwfx->wFormatTag != WAVE_FORMAT_PCM) && (pwfx->wFormatTag != 353))
+//     return(FALSE);
+
+  if(pwfx->wFormatTag != WAVE_FORMAT_PCM)
+     return(FALSE);
+
+//  if((pwfx->nChannels != 1) && (pwfx->nChannels != 2))
+//     return(FALSE);
+
+  if(pwfx->nChannels != 2)
+     return(FALSE);
+
+//  if((pwfx->nChannels != 1))
+//     return(FALSE);
+
+//  if((pwfx->wBitsPerSample != 8) && (pwfx->wBitsPerSample != 16))
+//     return(FALSE);
+
+  if(pwfx->wBitsPerSample != 16)
+     return(FALSE);
+
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "  returned TRUE\n");
+#endif
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static RD_BOOL riscos_sound_out_set_format(RD_WAVEFORMATEX * pwfx)
+{
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "wave_out_set_format(bits=%i, channels=%i, rate=%i, format=%i)\n",
+          pwfx->wBitsPerSample, pwfx->nChannels, pwfx->nSamplesPerSec,
+          pwfx->wFormatTag);
+#endif
+  
+  Sound_Startup();
+
+  if(sound_initialised){
+
+     sound_channels = (int)pwfx->nChannels;
+     Status_SetSoundChannels(sound_channels);
+     
+     sound_bits = (int)pwfx->wBitsPerSample;
+     Status_SetSoundBits(sound_bits);
+
+     //ssb_samplerate(sound_handle, pwfx->nSamplesPerSec * 1019);  /* 1024 * 0.995 = 1019 */
+     ssb_samplerate(sound_handle, pwfx->nSamplesPerSec * 1024);
+     Status_SetSoundRate(pwfx->nSamplesPerSec); 
+
+  }
+
+  samplewidth = pwfx->wBitsPerSample / 8;
+
+  if(sound_channels == 2)
+     samplewidth *= 2;
+
+  snd_rate = pwfx->nSamplesPerSec;
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static void riscos_sound_play(void)
+{
+  struct audio_packet *packet;
+  STREAM s;
+  int delay_bytes;
+  unsigned long delay_us;
+  int buffer_length;
+  BOOL success;
+  BOOL data_in_buffer;
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "wave_out_write(s->size=%i, tick=%i, index=%i)\n", s->size, tick, index);
+#endif
+
+  ssize_t len;
+/*
+  FILE *testfile;
+*/
+
+  /* We shouldn't be called if the queue is empty, but still */
+  if(rdpsnd_queue_empty())
+     return;
+
+  Sound_Startup();
+
+  if(sound_initialised){
+
+     packet = rdpsnd_queue_current_packet();
+     s = &packet->s;
+
+     len = s->end - s->p;
+
+     buffer_length = sound_buffer_length((int)len);
+     data_in_buffer = FALSE;
+
+     if(sound_buffer_required() || (int)len != buffer_length){
+
+        data_in_buffer = TRUE;
+
+        if(buffer_length > sound_global_buffer_length){
+
+           if(sound_global_buffer_data != NULL){
+               MemMan_Free((memman_ptr) &sound_global_buffer_data);
+               sound_global_buffer_data = NULL;
+               sound_global_buffer_length = 0;
+           }
+           
+           MemMan_Alloc((memman_ptr) &sound_global_buffer_data, buffer_length);
+
+           if(sound_global_buffer_data != NULL)
+              sound_global_buffer_length = buffer_length;
+        }
+
+        if(sound_global_buffer_data == NULL)
+           buffer_length = 0;
+        else
+           copy_sound_to_buffer((unsigned char *)s->p,
+                                &sound_global_buffer_data, buffer_length);
+     }
+
+     if(buffer_length > 0){
+/*
+        testfile = fopen("<RDPClient$Dir>.^.SoundTest.RDP", "ab");
+        if(testfile != NULL){
+           fwrite(sound_data, 1, len, testfile);
+
+           fclose(testfile);
+        }
+*/
+        if(data_in_buffer)
+           success = sm_addblock_flex(sound_stream, &sound_global_buffer_data, buffer_length);
+        else
+           success = sm_addblock(sound_stream, (unsigned char *)s->p, buffer_length);
+     }
+     else
+        success = FALSE;
+
+     if(success){
+
+        /* all of packet could be written to buffer */
+        s->p += len;
+
+        //delay_bytes = s->size;
+        delay_bytes = 0;
+
+        delay_us = delay_bytes * (1000000 / (samplewidth * snd_rate));
+        rdpsnd_queue_next(delay_us);
+     }
+  }
+}
+
+/******************************************************************************/
+
+static void riscos_sound_out_volume(uint16 left, uint16 right)
+{
+  unsigned int volume;
+#ifdef SOUND_DEBUG
+  fprintf(stderr, "wave_out_volume(left=%i, right=%i)\n", left, right);
+#endif
+
+
+  Sound_Startup();
+
+  if(sound_initialised){
+
+     volume = ((unsigned int)left) << 16;
+
+     volume = volume | (unsigned int)right;
+
+     ssb_volume(sound_handle, volume);
+  }
+/*
+  volume = left / (65536 / 100);
+  volume |= right / (65536 / 100) << 8;
+*/
+}
+
+/******************************************************************************/
+
+static void set_delayed_start(void)
+{
+  unsigned int time;
+  
+  if(sound_initialised){
+
+     if(sm_bufferstats(sound_stream) == 0){
+
+        while((time = Time_Monotonic()) == 0);
+
+        sound_delayed_start_time = time + SOUND_DELAYED_START_TIME;
+
+        sound_delayed_start = TRUE;
+
+        ssb_pause(sound_handle, TRUE);
+
+     }
+     else
+        ssb_pause(sound_handle, FALSE);
+  }
+}
+
+/******************************************************************************/
+
+static void trigger_delayed_start(BOOL immediate)
+{
+  unsigned int time;
+  if(!sound_delayed_start)
+     return;
+
+  time = 0;
+
+  if(sound_initialised){
+
+     if(!immediate)
+        while((time = Time_Monotonic()) == 0);
+
+     if(immediate || time > sound_delayed_start_time){
+
+        sound_delayed_start = FALSE;
+
+        ssb_pause(sound_handle, FALSE);
+
+     }
+  }
+}
+
+/******************************************************************************/
+
+static BOOL sound_buffer_required(void)
+{
+  if(sound_channels == 2 && sound_bits == 16)
+     return(FALSE);
+  else
+     return(TRUE);
+}
+
+/******************************************************************************/
+
+static int sound_buffer_length(int length)
+{
+  int buffer_length;
+
+  buffer_length = length;
+
+  if(sound_bits == 8)
+     buffer_length *= 2;
+
+  if(sound_channels == 1)
+     buffer_length *= 2;
+
+  return(buffer_length);
+}
+
+/******************************************************************************/
+
+static void copy_sound_to_buffer(unsigned char *source, unsigned char **dest, int length)
+{
+  if(sound_channels == 1){
+
+     if(sound_bits == 8){
+
+        fprintf(stderr, "8bit sound is not supported\n");
+
+     }
+     else if(sound_bits == 16){
+
+        copy_sound_to_buffer_c1_b16(source, dest, length);
+        
+     }
+
+  }
+  else if(sound_channels == 2){
+
+     if(sound_bits == 8){
+
+        fprintf(stderr, "8bit sound is not supported\n");
+
+     }
+     else if(sound_bits == 16){
+
+        memcpy(*dest, source, length);
+#ifdef SOUND_DEBUG
+        fprintf(stderr, "buffer copy   ptr %i, length %i\n", *dest, length);
+#endif
+     }
+  }
+}
+
+/******************************************************************************/
+
+static void copy_sound_to_buffer_c1_b16(unsigned char *source, unsigned char **dest, int length)
+{
+ /*
+  * Expand 1 channel 16bit sound to 2 channels
+  */
+  int counter = length;
+  unsigned char *source_ptr = source;
+  unsigned char *dest_ptr = *dest;
+  unsigned int source32;
+  unsigned int dest32;
+
+  while(counter > 0){
+
+     while(counter >= 8){
+
+        source32 = *((unsigned int *)source_ptr);
+        source_ptr += 4;
+
+        dest32 = source32 & 0x0000FFFF;
+        dest32 = dest32 | (dest32 << 16);
+
+        *((unsigned int *)dest_ptr) = dest32;
+        dest_ptr += 4;
+
+
+        dest32 = source32 & 0xFFFF0000;
+        dest32 = dest32 | (dest32 >> 16);
+
+        *((unsigned int *)dest_ptr) = dest32;
+        dest_ptr += 4;
+
+        counter -= 8;
+     }
+
+     if(counter == 4){
+
+        source32 = *((unsigned int *)source_ptr);
+
+        dest32 = source32 & 0x0000FFFF;
+        dest32 = dest32 | (dest32 << 16);
+
+     }
+  }
+}
+
+/******************************************************************************/
+
+static BOOL ssb_openstream(char *name, BOOL set_expected_size, int expected_size,
+                           int *handle)
+{
+  BOOL success;
+  int flags;
+  _kernel_swi_regs r;
+  success = FALSE;
+
+  flags = 0;
+
+  if(set_expected_size)
+     flags = flags | 0x2;
+
+  r.r[0] = (int)flags;
+  r.r[1] = (int)name;
+  if(set_expected_size)
+     r.r[2] = expected_size;
+  else
+     r.r[2] = 0;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_OpenStream, &r, &r) == NULL)
+     success = TRUE;
+
+  *handle = (unsigned int)r.r[0];
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void ssb_closestream(int handle)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)handle;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_CloseStream, &r, &r);
+
+}
+
+/******************************************************************************/
+
+/* depreciated */
+/*
+static BOOL ssb_addblock(int handle, unsigned char *block, int length)
+{
+  _kernel_swi_regs r;
+  BOOL success = FALSE;
+
+  r.r[0] = (int)handle;
+  r.r[1] = (int)block;
+  r.r[2] = (int)length;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_AddBlock, &r, &r) == NULL)
+     success = TRUE;
+
+  return(success);
+}
+*/
+/******************************************************************************/
+
+static void ssb_volume(int handle, unsigned int volume)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)handle;
+  r.r[1] = (int)volume;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_Volume, &r, &r);
+
+}
+
+/******************************************************************************/
+
+static void ssb_samplerate(int handle, int samplerate)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)handle;
+  r.r[1] = (int)samplerate;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_SampleRate, &r, &r);
+
+}
+
+/******************************************************************************/
+
+/* depreciated */
+/*
+static void ssb_setbuffer(int handle, int max_bytes)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)handle;
+  r.r[1] = (int)max_bytes;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_SetBuffer, &r, &r);
+
+}
+*/
+/******************************************************************************/
+
+static void ssb_pause(int handle, BOOL pause)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)handle;
+  r.r[1] = (int)(pause ? 0 : 1);
+
+  _kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_Pause, &r, &r);  
+
+}
+
+/******************************************************************************/
+
+/* depreciated */
+/*
+static int ssb_bufferstats(int handle)
+{
+  _kernel_swi_regs r;
+  int size = 0;
+
+  r.r[0] = (int)handle;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_BufferStats, &r, &r) == 0)
+     size = r.r[0];
+
+  return(size);
+}
+*/
+/******************************************************************************/
+
+static BOOL ssb_returnstreamhandle(int handle, int *stream)
+{
+  BOOL success;
+  _kernel_swi_regs r;
+  success = FALSE;
+
+  *stream = 0;
+
+  r.r[0] = (int)handle;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_SharedSoundBuffer_ReturnStreamHandle, &r, &r) == 0)
+     success = TRUE;
+
+  *stream = r.r[0];
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static BOOL sm_addblock(int stream, unsigned char *block, int length)
+{
+  BOOL success;
+  _kernel_swi_regs r;
+  success = FALSE;
+
+  r.r[0] = (int)stream;
+  r.r[1] = (int)block;
+  r.r[2] = (int)length;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_StreamManager_AddBlock, &r, &r) == NULL)
+     success = TRUE;
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static BOOL sm_addblock_flex(int stream, unsigned char **block, int length)
+{
+  BOOL success;
+  _kernel_swi_regs r;
+  success = FALSE;
+
+  r.r[0] = (int)stream;
+  r.r[1] = (int)*block;
+  r.r[2] = (int)length;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_StreamManager_AddBlock, &r, &r) == NULL)
+     success = TRUE;
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void sm_setbuffer(int stream, int max_bytes)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)stream;
+  r.r[1] = (int)max_bytes;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_StreamManager_SetBuffer, &r, &r);
+
+}
+
+/******************************************************************************/
+
+static int sm_bufferstats(int stream)
+{
+  int bytes_left;
+  _kernel_swi_regs r;
+  bytes_left = 0;
+
+  r.r[0] = (int)stream;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_StreamManager_BufferStats, &r, &r) == 0)
+     bytes_left = r.r[0] - r.r[1];
+
+ /*
+  * r0 = added
+  * r1 = played
+  * r2 = freed
+  */
+  
+  return(bytes_left);
+}
+
+/******************************************************************************/
+
+static void sm_setdalimits(int da_max_bytes, int heap_max_bytes)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)da_max_bytes;
+  r.r[1] = (int)heap_max_bytes;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_StreamManager_SetDALimits, &r, &r);
+
+}

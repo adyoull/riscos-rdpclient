@@ -1,0 +1,118 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Keyboard.h                                              *
+ *                                                                      *
+ *     Purpose: Keypress handling.                                      *
+ *                                                                      *
+ ************************************************************************/
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+
+#define keyboard_shortcut_MIN           0
+#define keyboard_shortcut_DESKTOP       0
+#define keyboard_shortcut_WINDOW        1
+#define keyboard_shortcut_FULLSCREEN    2
+#define keyboard_shortcut_SINGLETASKING 3
+#define keyboard_shortcut_BRINGTOFRONT  4
+#define keyboard_shortcut_MAX           4
+
+
+typedef union {
+  int value;
+  struct {
+    unsigned int left_shift    :1;
+    unsigned int right_shift   :1;
+    unsigned int left_ctrl     :1;
+    unsigned int right_ctrl    :1;
+    unsigned int left_alt      :1;
+    unsigned int right_alt     :1;
+    unsigned int left_logo     :1;
+    unsigned int right_logo    :1;
+    unsigned int menu          :1;
+
+    unsigned int dummy         :23;
+  } data;
+} keyboard_modifier_block;
+
+typedef union {
+  int value;
+  struct {
+    unsigned int num_lock    :1;
+    unsigned int caps_lock   :1;
+    unsigned int scroll_lock :1;
+
+    unsigned int dummy      :29;
+  } data;
+} keyboard_state_block;
+
+typedef struct {
+  int desktop;
+  int window;
+  int fullscreen;
+  int singletasking;
+  int bringtofront;
+} keyboard_shortcut_block;
+
+typedef struct {
+  keyboard_shortcut_block shortcut;
+} keyboard_config_block;
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Keyboard_Init(void);
+
+
+ /*
+  * Set keyboard_shortcut to keyname.
+  * Return TRUE if keyname and keyboard_shortcut are valid
+  */
+extern BOOL Keyboard_SetKeyShortcut(char *keyname, int keyboard_shortcut);
+
+
+
+ /*
+  * Set up keyboard for single tasking mode
+  */
+extern void Keyboard_SingleTask(void);
+
+
+ /*
+  * Set up keyboard for multi tasking mode
+  */
+extern void Keyboard_MultiTask(void);
+
+
+ /*
+  * Process KeyPress events
+  */
+extern void Keyboard_KeyPress(key_press keycode, int deepkeys);
+
+
+ /*
+  * Called at various times to handle checking for keys being released
+  */
+extern void Keyboard_Poll(void);
+
+ 
+ /*
+  * Called when the Display looses input focus
+  */
+extern void Keyboard_LooseFocus(void);
+
+
+ /*
+  * Called when the Display gains input focus
+  */
+extern void Keyboard_GainFocus(void);
+
+
+ /*
+  * Return state of keyboard modifier keys
+  */
+extern int Keyboard_GetState(void);
+

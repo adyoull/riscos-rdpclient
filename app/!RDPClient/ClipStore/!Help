@@ -1,0 +1,98 @@
+
+Instructions for ClipStore by Andrew Sellors
+
+*****************************************************************************
+* NOTE:                                                                     *
+* ClipStore (Clipboard Store) is FreeWare.                                  *
+* This means that you may freely copy and distribute it, provided that it   *
+* is complete with all original files, and that you do not sell it.         *
+* PD libraries may charge a nominal fee for the cost of duplication,        *
+* postage etc.                                                              *
+* In no circumstances shall the author be liable for any damage, loss of    *
+* profits, time or data or any indirect or consequential loss rising out of *
+* the use of this software or inability to use this software.               *
+*****************************************************************************
+
+Contents:
+~~~~~~~~~
+
+About ClipStore
+Compatibility
+How it works
+Contacting the author
+
+
+********************************************************************************
+
+About ClipStore:
+~~~~~~~~~~~~~~~~
+
+ClipStore holds information copied into the RISC OS Global Clipboard in a
+central place. This enables copied data to remain available after the
+application that performed the copy operation has quit. It also allows
+applications to be informed whenever clipboard data changes rather than just
+when a different application has performed a copy operation.
+
+********************************************************************************
+
+Compatibility:
+~~~~~~~~~~~~~~
+
+A minimum of RISC OS 3.50 is required to run this software.
+
+This program requires the 32bit Shared C Library to be installed which can be
+downloaded from the Castle !System updates page at:
+  http://www.iyonix.co.uk/32bit/system.shtml
+
+
+RISC OS Select and Adjust already have an integral component "Clipboard Holder"
+that performs the same task as ClipStore. This application provides the
+functionality for versions of RISC OS that do not have the "Clipboard Holder"
+as standard.
+
+As a result of this, if ClipStore detects the presence of the "Clipboard Holder"
+module at start up, it will shut down immediately to prevent a clash between
+the two components.
+
+Attempting to run ClipStore at the same time as another application that
+performs a similar task will cause a 'race condition' as both applications will
+be repeatedly claiming the clipboard data from each other. Please can you inform
+me of any other applications that may clash with ClipStore so that I can build
+in awareness of them and so prevent clashes.
+
+********************************************************************************
+
+How it works:
+~~~~~~~~~~~~~
+
+When a Copy operation is performed in an application, the application informs
+other programs that it has new clipboard data. This triggers ClipStore to
+request the copied data and store it internally. ClipStore therefore gains
+ownership of the copied information. Any application requesting to Paste data
+from the clipboard therefore gets it from ClipStore regardless of what happened
+in the meantime to the data's originator.
+
+If the amount of data being held is small (less than 1Mb), it is held in memory
+in a Dynamic Area. For copied data larger than that however, it is stored in
+a file in the WimpScrap directory.
+
+********************************************************************************
+
+Contacting the author:
+~~~~~~~~~~~~~~~~~~~~~~
+
+I, Andrew Sellors, can be contacted either at
+   57 Boundaries Road
+   Feltham
+   Middlesex
+   TW13 5DR
+   England
+
+Or via Internet email at
+   asellors@orac2.demon.co.uk
+   
+New versions of my software may be available from
+   http://www.orac2.demon.co.uk
+
+Any feedback from users (bugs reports, requests for new features, praise,
+money etc.) is gladly received.

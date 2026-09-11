@@ -1,0 +1,66 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Choices.h                                               *
+ *                                                                      *
+ *     Purpose: Loading and saving of program settings.                 *
+ *                                                                      *
+ ************************************************************************/
+
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Choices_Init(void);
+
+
+ /*
+  * Open choices file called 'filename' for reading.
+  * If file does not exist then NULL is returned.
+  * If 'subdir' is supplied then the file is read from a sub directory off the
+  * application's choices directory. If 'subdir' is NULL then the file is read
+  * from the choices directory.
+  * If 'raw' is TRUE then the file is opened for raw byte access.
+  */
+extern FILE *Choices_OpenFileRead(char *filename, char *subdir, BOOL raw);
+
+
+ /*
+  * Open choices file called 'filename' for writing.
+  * The path is created if it does not exist.
+  * If file could not be opened then NULL is returned.
+  * If 'subdir' is supplied then the file is written to a sub directory off the
+  * application's choices directory. If 'subdir' is NULL then the file is written
+  * to the choices directory.
+  * If 'raw' is TRUE then the file is opened for raw byte access.
+  * IF 'append' is TRUE then the file is appended to rather than overwritten.
+  */
+extern FILE *Choices_OpenFileWrite(char *filename, char *subdir, BOOL raw, BOOL append);
+
+
+ /*
+  * Returns the size of the choices file
+  */
+extern int Choices_FileSize(char *filename, char *subdir);
+
+
+ /*
+  * Extract 'field' name and 'value' pair (field = value) from
+  * text in 'line'
+  */ 
+extern void Choices_GetField(char *line, char *field, char *value);
+
+
+ /*
+  * Read saved licence info for 'hostname' into malloc'd area 'data'.
+  * Return length in bytes of read data if successfull or -1 if error.
+  */
+extern int Choices_ReadLicence(char *hostname, unsigned char **data);
+
+
+ /*
+  * Save licence info for 'hostname' of 'length' in 'data' .
+  */
+extern void Choices_WriteLicence(char *hostname, unsigned char *data, int length);
+
+
+

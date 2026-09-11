@@ -1,0 +1,26 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib16S.h                                             *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 16bit images.         *
+ *              With colour swap for Iyonix DSA                         *
+ *                                                                      *
+ ************************************************************************/
+
+ /*
+  * Converts 16bit Windows colour into 15bit RISC OS colour
+  */
+extern unsigned int GFXLib_TranslateColour_16S(unsigned int windows_colour);
+
+
+ /*
+  * Copy 16bit Windows bitmap data into a 15bit RISC OS sprite.
+  */
+extern void GFXLib_PlotDataToSprite_16S_Copy(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);

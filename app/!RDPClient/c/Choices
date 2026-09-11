@@ -1,0 +1,410 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Choices.c                                               *
+ *                                                                      *
+ *     Purpose: Loading and saving of program settings.                 *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#define LICENCE_SUBDIR "Licences"
+#define LICENCE_INDEX  "Index"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "Utils.h"
+#include "Choices.h"
+
+static void find_licence_file(char *hostname, char *filename, char *last_filename);
+static BOOL add_licence_file(char *hostname, char *filename);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Choices_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+}
+
+/******************************************************************************/
+
+extern FILE *Choices_OpenFileRead(char *filename, char *subdir, BOOL raw)
+{
+ /*
+  * Open choices file called 'filename' for reading.
+  * If file does not exist then NULL is returned.
+  * If 'subdir' is supplied then the file is read from a sub directory off the
+  * application's choices directory. If 'subdir' is NULL then the file is read
+  * from the choices directory.
+  * If 'raw' is TRUE then the file is opened for raw byte access.
+  */
+  char filepath[512];
+
+  if(subdir == NULL)
+     sprintf(filepath, "Choices:%s.%s", event_taskname, filename);
+  else
+     sprintf(filepath, "Choices:%s.%s.%s", event_taskname, subdir, filename);
+
+  return(fopen(filepath, (raw ? "rb" : "r")));
+}
+
+/******************************************************************************/
+
+extern FILE *Choices_OpenFileWrite(char *filename, char *subdir, BOOL raw, BOOL append)
+{
+ /*
+  * Open choices file called 'filename' for writing.
+  * The path is created if it does not exist.
+  * If file could not be opened then NULL is returned.
+  * If 'subdir' is supplied then the file is written to a sub directory off the
+  * application's choices directory. If 'subdir' is NULL then the file is written
+  * to the choices directory.
+  * If 'raw' is TRUE then the file is opened for raw byte access.
+  * IF 'append' is TRUE then the file is appended to rather than overwritten.
+  */
+  char filepath[512];
+  char mode[4];
+  FILE *channel;
+
+ /*
+  * Create application choices directory if it does not
+  * already exist.
+  */
+  sprintf(filepath, "<Choices$Dir>.%s", event_taskname);
+  if(!File_IsDirectory(filepath)){
+     if(File_CreateDir(filepath) != NULL)
+        return(NULL);
+  }
+
+ /*
+  * Create sub directory in application choices directory
+  * if required and it does not already exist.
+  */
+  if(subdir != NULL){
+     sprintf(filepath, "<Choices$Dir>.%s.%s", event_taskname, subdir);
+     if(!File_IsDirectory(filepath)){
+        if(File_CreateDir(filepath) != NULL)
+           return(NULL);
+     }
+  }
+
+ /*
+  * Open file for writing
+  */
+  if(subdir == NULL)
+     sprintf(filepath, "<Choices$Dir>.%s.%s", event_taskname, filename);
+  else
+     sprintf(filepath, "<Choices$Dir>.%s.%s.%s", event_taskname, subdir, filename);
+
+  mode[0] = (append ? 'a' : 'w');
+  mode[1] = (raw ? 'b' : '\0');
+  mode[2] = '\0';
+
+  channel = fopen(filepath, mode);
+
+  if(channel != NULL)
+     File_SetType(filepath, filetype_TEXT);
+
+  return(channel); 
+}
+
+/******************************************************************************/
+
+extern int Choices_FileSize(char *filename, char *subdir)
+{
+ /*
+  * Returns the size of the choices file
+  */
+  char filepath[512];
+
+  if(subdir == NULL)
+     sprintf(filepath, "Choices:%s.%s", event_taskname, filename);
+  else
+     sprintf(filepath, "Choices:%s.%s.%s", event_taskname, subdir, filename);
+
+  return(File_Size(filepath));
+}
+
+/******************************************************************************/
+
+extern void Choices_GetField(char *line, char *field, char *value)
+{
+ /*
+  * Extract 'field' name and 'value' pair (field = value) from
+  * text in 'line'
+  */ 
+  char *p1;
+  char *p2;
+  char *d;
+
+  p1 = line;
+
+  /*
+   * skip leading blanks
+   */
+   while(*p1 == ' ')
+      p1++;
+
+   p2 = p1;
+   d = field;
+
+  /*
+   * move to separater char
+   */
+   while((*p2 != '=') && (*p2 != '\0'))
+      *d++ = tolower(*p2++);
+
+   *d = '\0';
+
+  /*
+   * trim trailing spaces
+   */
+   d--;
+   while((*d == ' ') && d >= field){
+      *d = '\0';
+
+      d--;
+   }
+
+  /*
+   * move to start of field value
+   */
+   p1 = p2 + 1;
+
+  /*
+   * skip leading blanks
+   */
+   while(*p1 == ' ')
+      p1++;
+
+   p2 = p1;
+   d = value;
+
+  /*
+   * move to end char
+   */
+   while((*p2 != 10) && (*p2 != 13) && (*p2 != '\0'))
+      *d++ = *p2++;
+
+   *d = '\0';
+
+  /*
+   * trim trailing spaces
+   */
+   d--;
+   while((*d == ' ') && d >= value){
+      *d = '\0';
+
+      d--;
+   }
+
+}
+
+/******************************************************************************/
+
+extern int Choices_ReadLicence(char *hostname, unsigned char **data)
+{
+  unsigned char *data_ptr;
+  BOOL success;
+ /*
+  * Read saved licence info for 'hostname' into malloc'd area 'data'.
+  * Return length in bytes of read data if successfull or -1 if error.
+  */
+  char licence_filename[255];
+  char last_licence_filename[255];
+  int length;
+  FILE *channel;
+
+  success = FALSE;
+  data_ptr = NULL;
+
+  find_licence_file(hostname, licence_filename, last_licence_filename);
+
+  if(*licence_filename != '\0'){
+
+     length =  Choices_FileSize(licence_filename, LICENCE_SUBDIR);
+
+     if(length > 0){
+
+        data_ptr = malloc(length);
+
+        if(data_ptr != NULL){
+
+           channel = Choices_OpenFileRead(licence_filename, LICENCE_SUBDIR, TRUE);
+
+           if(channel != NULL){
+
+              length = fread(data_ptr, 1, length, channel);
+
+              if(length > 0)
+                 success = TRUE;
+
+              fclose(channel);
+
+           }
+
+        }
+
+     }
+
+  }
+
+  if(success){
+     *data = data_ptr;
+     return(length);
+  }
+  else{
+     if(data_ptr != NULL)
+        free(data_ptr);
+     return(-1);
+  }
+}
+
+/******************************************************************************/
+
+extern void Choices_WriteLicence(char *hostname, unsigned char *data, int length)
+{
+  int file_number;
+  BOOL index;
+ /*
+  * Save licence info for 'hostname' of 'length' in 'data' .
+  */
+  char licence_filename[255];
+  char last_licence_filename[255];
+  FILE *channel;
+
+  find_licence_file(hostname, licence_filename, last_licence_filename);
+
+  index = FALSE;
+
+  if(*licence_filename == '\0'){
+
+    /*
+     * Licence not written before, add to Index
+     */
+     if(*last_licence_filename == '\0')
+        file_number = 0;
+     else
+        file_number = atoi(last_licence_filename);
+
+     file_number++;
+
+     sprintf(licence_filename, "%i", file_number);
+
+     if(add_licence_file(hostname, licence_filename))
+        index = TRUE;
+  }
+  else
+     index = TRUE;
+
+  if(index){
+
+     channel = Choices_OpenFileWrite(licence_filename, LICENCE_SUBDIR, TRUE, FALSE);
+
+     if(channel != NULL){
+
+        fwrite(data, 1, length, channel);
+
+        fclose(channel);
+     }
+  }
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void find_licence_file(char *hostname, char *filename, char *last_filename)
+{
+  char buffer[512];
+  char field[255];
+  char value[255];
+  char lower_hostname[255];
+  FILE *channel;
+
+  *filename = '\0';
+  *last_filename = '\0';
+
+  Utils_CopyToLower(lower_hostname, hostname);
+
+  channel = Choices_OpenFileRead(LICENCE_INDEX, LICENCE_SUBDIR, FALSE);
+
+  if(channel != NULL){
+
+     while(fgets(buffer, 500, channel) != NULL){
+
+        Choices_GetField(buffer, field, value);
+
+        if(*field != '\0' && *value != '\0'){
+
+           strcpy(last_filename, value);
+
+           if(strcmp(field, lower_hostname) == 0)
+              strcpy(filename, value);
+
+        }
+
+     }
+
+     fclose(channel);
+  }
+
+}
+
+/******************************************************************************/
+
+static BOOL add_licence_file(char *hostname, char *filename)
+{
+  char lower_hostname[255];
+  BOOL success;
+  FILE *channel;
+
+  success = FALSE;
+
+  Utils_CopyToLower(lower_hostname, hostname);
+
+  channel = Choices_OpenFileWrite(LICENCE_INDEX, LICENCE_SUBDIR, FALSE, TRUE);
+  
+  if(channel != NULL){
+
+     if(fprintf(channel, "%s=%s\n", lower_hostname, filename) > 0)
+        success = TRUE;
+
+     fclose(channel);
+  }
+
+  return(success);
+}
+

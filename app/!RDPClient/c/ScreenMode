@@ -1,0 +1,1096 @@
+/************************************************************************
+ *                                                                      *
+ *        File: ScreenMode.c                                            *
+ *                                                                      *
+ *     Purpose: Interface with screen display.                          *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+#include "DeskLib:Time.h"
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */      
+
+#include "rdesktop/rdesktop.h"
+extern void messagetext(char *format, ...);
+
+#include "ScreenMode.h"
+#include "Utils.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+static BOOL screen_mode_validation = TRUE;
+
+static mode_cache_block mode_validate_cache;
+static mode_cache_block mode_frame_rate_select_cache;
+
+static int get_vf_framerate(mode_block *modeblock);
+static int find_vf_framerate(mode_block *modeblock);
+static mode_block *os_screenmode_read(void);
+static BOOL os_screenmode_select(mode_block *block);
+static void os_screenmode_enumerate(int skip_modes, char *buffer, int buffer_size,
+                                    int *modes_returned);
+static void os_readmodevariable(mode_block *modeblock, int variablenumber, int *value);
+static BOOL os_readvduvariable(int variablenumber, unsigned int *value);
+/*
+static BOOL wimp_setmode(mode_block *modeblock);
+*/
+static BOOL cmd_wimpmode_block(mode_block *modeblock, BOOL vf_mode);
+static BOOL cmd_wimpmode_number(int modenumber);
+static BOOL colourtrans_writepalette(palette_entry *palette);
+static BOOL is256entry_palette(void);
+/*
+static void display_mode_info(mode_select_block *block);
+*/
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void ScreenMode_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+  memset(&mode_validate_cache, 0, sizeof(mode_validate_cache));
+  memset(&mode_frame_rate_select_cache, 0, sizeof(mode_frame_rate_select_cache));
+
+}
+
+/******************************************************************************/
+
+extern void ScreenMode_ScreenModeValidationSetEnabled(BOOL enabled)
+{
+ /*
+  * Enable/disable validation of screen modes for full screen change
+  */
+  screen_mode_validation = enabled;
+}
+
+/******************************************************************************/
+
+extern BOOL ScreenMode_ScreenModeValidationGetEnabled(void)
+{
+ /*
+  * Return enable state of validation of screen modes for full screen change
+  */
+  return(screen_mode_validation);
+}
+
+/******************************************************************************/
+
+extern int ScreenMode_BppToColours(BOOL program_palette, int bpp)
+{
+ /*
+  * Return number for colours mode variable based on bpp
+  */
+  int colours;
+
+  switch(bpp)
+  {
+    case 1:
+      colours = 1;
+      break;
+
+    case 2:
+      colours = 3;
+      break;
+
+    case 4:
+      colours = 15;
+      break;
+
+    case 8:
+      if(program_palette)
+         colours = 255;
+      else
+         colours = 63;
+      break;
+
+    case 15: case 16:
+      colours = 65535;
+      break;
+
+    case 24: case 32:
+      colours = -1;
+      break;
+
+    default:
+      colours = -1;
+      break;
+  }
+
+  return(colours);
+}
+
+/******************************************************************************/
+
+extern int ScreenMode_BppToDepth(int bpp)
+{
+ /*
+  * Return depth number for given bpp
+  */
+  int depth;
+
+  switch(bpp)
+  {
+    case 1:
+      depth = 0;
+      break;
+
+    case 2:
+      depth = 1;
+      break;
+
+    case 4:
+      depth = 2;
+      break;
+
+    case 8:
+      depth = 3;
+      break;
+
+    case 15: case 16:
+      depth = 4;
+      break;
+
+    case 24: case 32:
+      depth = 5;
+      break;
+
+    default:
+      depth = -1;
+  }
+
+  return(depth);
+}
+
+/******************************************************************************/
+
+extern int ScreenMode_DepthToBpp(int depth)
+{
+ /*
+  * Return bpp of depth number
+  */
+  int bpp;
+
+  switch(depth)
+  {
+    case 0:
+      bpp = 1;
+      break;
+
+    case 1:
+      bpp = 2;
+      break;
+
+    case 2:
+      bpp = 4;
+      break;
+
+    case 3:
+      bpp = 8;
+      break;
+
+    case 4:
+      bpp = 16;
+      break;
+
+    case 5:
+      bpp = 24;
+      break;
+
+    default:
+      bpp = -1;
+  }
+
+  return(bpp);
+}
+
+/******************************************************************************/
+
+extern int ScreenMode_VFDepthToBpp(int depth_flags)
+{
+ /*
+  * Return bpp of ViewFinder depth number
+  */
+  int bpp;
+
+  switch(depth_flags)
+  {
+    case 0:
+      bpp = 8;
+      break;
+
+    case 1:
+      bpp = 8;
+      break;
+
+    case 2:
+      bpp = 16;
+      break;
+
+    case 3:
+      bpp = 24;
+      break;
+
+    default:
+      bpp = -1;
+  }
+
+  return(bpp);
+}
+
+/******************************************************************************/
+
+extern int ScreenMode_VFDepthToDepth(int depth_flags)
+{
+ /*
+  * Return depth number for given ViewFinder depth flags 
+  */
+  int depth;
+
+  switch(depth_flags)
+  {
+    case 0:
+      depth = 3;
+      break;
+
+    case 1:
+      depth = 3;
+      break;
+
+    case 2:
+      depth = 4;
+      break;
+
+    case 3:
+      depth = 5;
+      break;
+
+    default:
+      depth = -1;
+  }
+
+  return(depth);
+}
+
+/******************************************************************************/
+
+extern char *ScreenMode_DepthToColoursText(int depth)
+{
+ /*
+  * Return number of colours for given depth as text
+  */
+  char *colours;
+
+  switch(depth)
+  {
+    case 0:
+      colours = "2";
+      break;
+
+    case 1:
+      colours = "4";
+      break;
+
+    case 2:
+      colours = "16";
+      break;
+
+    case 3:
+      colours = "256";
+      break;
+
+    case 4:
+      colours = "32K";
+      break;
+
+    case 5: case 6:
+      colours = "16M";
+      break;
+
+    default:
+      colours = "256";
+  }
+
+  return(colours);
+}
+
+/******************************************************************************/
+
+extern BOOL ScreenMode_ReadCurrent(mode_select_block *block)
+{
+ /*
+  * Return details of current mode in block
+  */
+  mode_block *current_mode;
+  BOOL success = FALSE;
+  int temp;
+
+  current_mode = os_screenmode_read();
+
+  if(current_mode != (mode_block *)-1){
+
+     if((int)current_mode >= (int)0 && (int)current_mode <= (int)255){
+       /*
+        * Mode number
+        */
+        block->number = (int)current_mode;
+
+        success = TRUE;
+
+        os_readmodevariable((mode_block *)-1, 0, &(block->block.flags));
+
+        os_readmodevariable((mode_block *)-1, 11, &temp);
+        block->block.x_res = temp + 1;
+
+        os_readmodevariable((mode_block *)-1, 12, &temp);
+        block->block.y_res = temp + 1;
+
+        os_readmodevariable((mode_block *)-1, 9, &temp);
+        temp = 1 << temp;
+        block->block.depth = ScreenMode_BppToDepth(temp);
+
+        block->block.frame_rate = -1;
+
+        block->block.mode_flags_number = 0;
+        os_readmodevariable((mode_block *)-1, block->block.mode_flags_number,
+                            &(block->block.mode_flags));
+
+        block->block.colours_number = 3;
+        os_readmodevariable((mode_block *)-1, block->block.colours_number,
+                            &(block->block.colours));
+
+        block->block.x_eig_factor_number = 4;
+        os_readmodevariable((mode_block *)-1, block->block.x_eig_factor_number,
+                            &(block->block.x_eig_factor));
+
+        block->block.y_eig_factor_number = 5;
+        os_readmodevariable((mode_block *)-1, block->block.y_eig_factor_number,
+                            &(block->block.y_eig_factor));
+
+        block->block.terminator = -1;
+     }
+     else{
+       /*
+        * Mode block
+        */
+        block->number = -1;
+
+        success = TRUE;
+
+        block->block.flags = current_mode->flags;
+
+        block->block.x_res = current_mode->x_res;
+
+        block->block.y_res = current_mode->y_res;
+
+        block->block.depth = current_mode->depth;
+
+        block->block.frame_rate = current_mode->frame_rate;
+
+        block->block.mode_flags_number = 0;
+        os_readmodevariable((mode_block *)-1, block->block.mode_flags_number,
+                            &(block->block.mode_flags));
+
+        block->block.colours_number = 3;
+        os_readmodevariable((mode_block *)-1, block->block.colours_number,
+                            &(block->block.colours));
+
+        block->block.x_eig_factor_number = 4;
+        os_readmodevariable((mode_block *)-1, block->block.x_eig_factor_number,
+                            &(block->block.x_eig_factor));
+
+        block->block.y_eig_factor_number = 5;
+        os_readmodevariable((mode_block *)-1, block->block.y_eig_factor_number,
+                            &(block->block.y_eig_factor));
+
+        block->block.terminator = -1;
+     }
+
+  }
+  return(success);
+}
+
+/******************************************************************************/
+
+extern BOOL ScreenMode_ReadCurrentResBpp(int *x_res, int *y_res, int *bpp)
+{
+ /*
+  * Returns current screen mode's resolution and bpp.
+  */
+  mode_select_block modeselectblock;
+  BOOL success = FALSE;
+
+  if(ScreenMode_ReadCurrent(&modeselectblock)){
+
+     *x_res = modeselectblock.block.x_res;
+     *y_res = modeselectblock.block.y_res;
+     *bpp = ScreenMode_DepthToBpp(modeselectblock.block.depth);
+
+     if(*bpp == 16)
+        *bpp = 15;
+        
+     success = TRUE;
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern BOOL ScreenMode_SetCurrent(BOOL wimpmode, mode_select_block *block)
+{
+ /*
+  * Set current screen mode to that defined in block.
+  * If wimpmode is TRUE, mode change is made using *WimpMode rather than
+  * OS_ScreenMode
+  */
+  BOOL success = FALSE;
+  BOOL vf_enabled = FALSE;
+  BOOL vf_output_mode = FALSE;
+  BOOL vf_patch_enabled = FALSE;
+
+  Utils_ViewFinderFlags(&vf_enabled, &vf_output_mode);
+
+  if(vf_enabled)
+     vf_patch_enabled = Utils_ViewFinderModePatchLoaded();
+/*
+fprintf(stderr, "enabled %i  patch %i\n", vf_enabled, vf_patch_enabled);
+*/
+/*
+  fprintf(stderr, "set current vf_enabled %i vf_output_mode %i\n", vf_enabled, vf_output_mode);
+  display_mode_info(block);
+*/
+  if(block->number == -1){
+    /*
+     * use mode block
+     */
+     if(wimpmode || vf_enabled){
+/*
+        success = wimp_setmode(&(block->block));
+*/
+        success = cmd_wimpmode_block(&(block->block), (vf_enabled && !vf_patch_enabled));
+     }
+     else
+        success = os_screenmode_select(&(block->block));
+  }
+  else{
+    /*
+     * use mode number
+     */
+     if(wimpmode){
+/*
+        success = wimp_setmode((mode_block *)block->number);
+*/
+        success = cmd_wimpmode_number(block->number);        
+     }
+     else
+        success = os_screenmode_select((mode_block *)block->number);
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+extern void ScreenMode_Validate(int query_x_res, int query_y_res, int query_bpp,
+                                int query_x_eig, int query_y_eig,
+                                BOOL *valid_res, BOOL *valid_bpp)
+{
+ /*
+  * Checks available screenmodes and sets *valid_res to TRUE if the resolution can be used
+  * and *valid_bpp if both the resolution and the bpp are available.
+  */
+  char block[256];
+  int blocksize = 256;
+  modedef_block *current_mode;
+  modelookup_block modeblock;
+  int x_eig, y_eig;
+  int number_modes;
+  int modes_so_far;
+  int current_mode_number;
+  int query_depth;
+  BOOL finished;
+  BOOL vf_enabled = FALSE;
+  BOOL vf_output_mode = FALSE;
+  int vf_mode_count = blocksize / sizeof(vf_mode_block);
+  int vf_block_size = vf_mode_count * sizeof(vf_mode_block);
+  int vf_blocks_read;
+  file_handle vf_mode_file;
+  vf_mode_block *vf_mode;
+/*
+  fprintf(stderr, "ScreenMode_Validate(query_x_res=%i, query_y_res=%i, query_bpp=%i, query_x_eig=%i, query_y_eig=%i)\n", query_x_res, query_y_res, query_bpp, query_x_eig, query_y_eig);
+*/
+  if(screen_mode_validation){
+    *valid_res = FALSE;
+    *valid_bpp = FALSE;
+  }
+  else{
+    *valid_res = TRUE;
+    *valid_bpp = TRUE;
+    return;
+  }
+
+  if(mode_validate_cache.x_res == query_x_res && mode_validate_cache.y_res == query_y_res &&
+     mode_validate_cache.bpp == query_bpp && mode_validate_cache.x_eig == query_x_eig &&
+     mode_validate_cache.y_eig == query_y_eig){
+
+     *valid_res = mode_validate_cache.valid_res;
+     *valid_bpp = mode_validate_cache.valid_bpp;
+     return;
+  }
+
+  query_depth = ScreenMode_BppToDepth(query_bpp);
+
+  finished = FALSE;
+
+  modeblock.terminator = -1;
+
+  os_screenmode_enumerate(0, block, blocksize, &number_modes);
+/*
+  fprintf(stderr, "returned %i modes\n", number_modes);
+*/
+  current_mode = (modedef_block *)block;
+  modes_so_far = number_modes;
+
+  while(number_modes != 0 && !finished){
+
+     current_mode_number = 1;
+
+     while(current_mode_number <= number_modes && !finished){
+
+        modeblock.flags = current_mode->flags;
+        modeblock.x_res = current_mode->x_res;
+        modeblock.y_res = current_mode->y_res;
+        modeblock.depth = current_mode->depth;
+        modeblock.frame_rate = current_mode->frame_rate;
+        
+        os_readmodevariable((mode_block *)&modeblock, 4, &x_eig);
+        os_readmodevariable((mode_block *)&modeblock, 5, &y_eig);
+/*
+        fprintf(stderr, "x %i  y %i  depth %i  bpp %i  frame %i  x eig %i  y eig %i\n",
+                current_mode->x_res, current_mode->y_res, current_mode->depth,
+                ScreenMode_DepthToBpp(current_mode->depth), current_mode->frame_rate,
+                x_eig, y_eig);
+*/
+        if(x_eig == query_x_eig && y_eig == query_y_eig){
+
+           if(current_mode->x_res == query_x_res && current_mode->y_res == query_y_res){
+
+              *valid_res = TRUE;
+
+              if(current_mode->depth == query_depth){
+
+                 *valid_bpp = TRUE;
+
+                 finished = TRUE;
+
+              }
+
+           }
+
+        }
+
+        current_mode = (modedef_block *)(((char *)current_mode) + current_mode->size);
+
+        current_mode_number++;
+     }
+
+     os_screenmode_enumerate(modes_so_far, block, blocksize, &number_modes);
+/*
+     fprintf(stderr, "returned %i modes\n", number_modes);
+*/
+     current_mode = (modedef_block *)block;
+     modes_so_far = modes_so_far + number_modes;
+
+  }
+
+  if(!finished){
+     Utils_ViewFinderFlags(&vf_enabled, &vf_output_mode);
+
+     if(vf_enabled){
+
+        vf_mode_file = File_Open("Choices:ViewFinder.Modes", file_READ);
+
+        if(vf_mode_file != NULL){
+/*
+           fprintf(stderr, "reading ViewFinder Modes\n");
+*/
+           while((vf_blocks_read =
+                  ((vf_block_size - File_ReadBytes(vf_mode_file, block, vf_block_size)) /
+                  sizeof(vf_mode_block))) > 0 &&
+                  !finished){
+/*
+              fprintf(stderr, "returned %i modes in chunk\n", vf_blocks_read);
+*/
+              vf_mode = (vf_mode_block *)block;
+
+              while(vf_blocks_read > 0){
+/*
+                 fprintf(stderr, "x %i  y %i  depth %i  bpp %i  frame %i\n",
+                         vf_mode->x_res, vf_mode->y_res,
+                         ScreenMode_VFDepthToDepth(vf_mode->depth_flags),
+                         ScreenMode_VFDepthToBpp(vf_mode->depth_flags), vf_mode->frame_rate);
+*/
+                 if(vf_mode->x_res == query_x_res && vf_mode->y_res == query_y_res){
+
+                    *valid_res = TRUE;
+
+                    if(ScreenMode_VFDepthToDepth(vf_mode->depth_flags) == query_depth){
+
+                       *valid_bpp = TRUE;
+
+                       finished = TRUE;
+                    }
+                 }
+
+                 vf_blocks_read -= 1;
+                 vf_mode+= 1;
+              }
+           }
+           File_Close(vf_mode_file);
+        }
+     }
+  }
+
+  mode_validate_cache.x_res = query_x_res;
+  mode_validate_cache.y_res = query_y_res;
+  mode_validate_cache.bpp = query_bpp;
+  mode_validate_cache.x_eig = query_x_eig;
+  mode_validate_cache.y_eig = query_y_eig;
+  mode_validate_cache.valid_res = *valid_res;
+  mode_validate_cache.valid_bpp = *valid_bpp;
+
+/*
+  fprintf(stderr, "return res %i  bpp %i\n", *valid_res, *valid_bpp);
+*/
+}
+
+/******************************************************************************/
+
+extern BOOL ScreenMode_ReadScreenHardware(char **start_address, int *line_length,
+                                          int *total_size)
+{
+ /*
+  * Return information about current screen memory
+  */
+  BOOL success = FALSE;
+  unsigned int value;
+
+  *start_address = NULL;
+  *line_length = 0;
+  *total_size = 0;
+
+  if(os_readvduvariable(148, &value)){
+
+     *start_address = (char *)value;
+
+     os_readmodevariable((mode_block *)-1, 6, line_length);
+
+     os_readmodevariable((mode_block *)-1, 7, total_size);
+
+     if(*start_address != NULL && *line_length != 0 && *total_size != 0)
+        success = TRUE;
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern BOOL ScreenMode_SetPalette(palette_entry *palette)
+{
+ /*
+  * If screen has 256 level palette, program with new values
+  */
+  BOOL success = FALSE;
+
+  if(is256entry_palette()){
+
+     success = colourtrans_writepalette(palette);
+  }
+
+  return(success);     
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static mode_block *os_screenmode_read(void)
+{
+  void *returnvalue;
+  os_error *err;
+  _kernel_swi_regs r;
+  err = NULL;
+
+  r.r[0] = 1;
+
+  if((err = (os_error *)_kernel_swi( SWI_XOS_Bit | SWI_OS_ScreenMode, &r, &r )) == NULL)
+     returnvalue = (mode_block *)r.r[1];
+  else{
+     returnvalue = (mode_block *)-1;
+     error("os_screenmode_read() %i:%s", err->errnum, err->errmess);
+  }
+
+  return(returnvalue);
+}
+
+/******************************************************************************/
+
+static BOOL os_screenmode_select(mode_block *block)
+{
+  BOOL success;
+  os_error *err;
+  _kernel_swi_regs r;
+  success = FALSE;
+  err = NULL;
+
+  r.r[0] = 0;
+  r.r[1] = (int)block;
+
+  if((err = (os_error *)_kernel_swi( SWI_XOS_Bit | SWI_OS_ScreenMode, &r, &r )) == NULL)
+     success = TRUE;
+  else
+     error("os_screenmode_select() %i:%s", err->errnum, err->errmess);
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void os_screenmode_enumerate(int skip_modes, char *buffer, int buffer_size,
+                                    int *modes_returned)
+{
+  os_error *err;
+  _kernel_swi_regs r;
+  err = NULL;
+
+  r.r[0] = 2;
+  r.r[1] = 1;
+  r.r[2] = skip_modes;
+  r.r[3] = 0;
+  r.r[4] = 0;
+  r.r[5] = 0;
+  r.r[6] = (int)buffer;
+  r.r[7] = buffer_size;
+
+  err = (os_error *)_kernel_swi( SWI_XOS_Bit | SWI_OS_ScreenMode, &r, &r );
+
+  if(err != NULL)
+     error("os_screenmode_enumerate() %i:%s", err->errnum, err->errmess);
+
+  *modes_returned = -r.r[2];
+}
+
+/******************************************************************************/
+
+static void os_readmodevariable(mode_block *modeblock, int variablenumber, int *value)
+{
+  os_error *err;
+  _kernel_swi_regs r;
+  err = NULL;
+
+  r.r[0] = (int)modeblock;
+  r.r[1] = variablenumber;
+
+  err = (os_error *)_kernel_swi( SWI_XOS_Bit | SWI_OS_ReadModeVariable, &r, &r );
+
+  if(err != NULL)
+     error("os_readmodevariable() %i:%s", err->errnum, err->errmess);
+     
+  *value = r.r[2];
+
+}
+
+/******************************************************************************/
+
+static BOOL os_readvduvariable(int variablenumber, unsigned int *value)
+{
+  unsigned int block[2];
+  BOOL success;
+  os_error *err;
+  _kernel_swi_regs r;
+  err = NULL;
+
+  block[0] = (unsigned int)variablenumber;
+  block[1] = -1;
+
+  r.r[0] = (int)&block;
+  r.r[1] = (int)&block;
+
+  if((err = (os_error *)_kernel_swi( SWI_XOS_Bit | SWI_OS_ReadVDUVariables, &r, &r )) == NULL){
+
+     *value = block[0];
+
+     success = TRUE;
+
+  }
+  else
+     error("os_readvduvariable() %i:%s", err->errnum, err->errmess);
+
+  return(success);
+}
+
+/******************************************************************************/
+/*
+static BOOL wimp_setmode(mode_block *modeblock)
+{
+  BOOL success = FALSE;
+  os_error *err = NULL;
+
+  if((err = Wimp_SetMode((int)modeblock)) == NULL)
+     success = TRUE;
+  else
+     error("wimp_setmode() %i:%s", err->errnum, err->errmess);
+
+  return(success);
+}
+*/
+/******************************************************************************/
+
+static BOOL cmd_wimpmode_block(mode_block *modeblock, BOOL vf_enabled)
+{
+  char command[50];
+  char *colours;
+  BOOL success = FALSE;
+  os_error *err = NULL;
+  int frame_rate = modeblock->frame_rate;
+
+  colours = ScreenMode_DepthToColoursText(modeblock->depth);
+
+  if(vf_enabled && frame_rate == -1){
+     frame_rate = get_vf_framerate(modeblock);
+  }
+
+  if(frame_rate == -1)
+     sprintf(command, "WimpMode %sX%i Y%i %c%s EX%i EY%i",
+             (vf_enabled ? "V " : ""),
+             modeblock->x_res, modeblock->y_res,
+             ((modeblock->mode_flags & 0x80) ? 'G' : 'C'), colours,
+             modeblock->x_eig_factor, modeblock->y_eig_factor);
+  else
+     sprintf(command, "WimpMode %sX%i Y%i %c%s EX%i EY%i F%i",
+             (vf_enabled ? "V " : ""),
+             modeblock->x_res, modeblock->y_res,
+             ((modeblock->mode_flags & 0x80) ? 'G' : 'C'), colours,
+             modeblock->x_eig_factor, modeblock->y_eig_factor,
+             frame_rate);
+
+  if((err = OS_CLI(command)) == NULL)
+     success = TRUE;
+  else
+     error("cmd_wimpmode_block() %i:%s", err->errnum, err->errmess);
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static int get_vf_framerate(mode_block *modeblock)
+{
+ /*
+  * Get framerate to use for ViewFinder as it otherwise selects the lowest
+  * framerate for the chosen mode
+  */
+  int frame_rate = -1;
+  int bpp = ScreenMode_DepthToBpp(modeblock->depth);
+  
+  if(mode_frame_rate_select_cache.x_res == modeblock->x_res &&
+     mode_frame_rate_select_cache.y_res == modeblock->y_res &&
+     mode_frame_rate_select_cache.bpp == bpp &&
+     mode_frame_rate_select_cache.x_eig == modeblock->x_eig_factor &&
+     mode_frame_rate_select_cache.y_eig == modeblock->y_eig_factor){
+
+     frame_rate = mode_frame_rate_select_cache.frame_rate;
+  }
+  else{
+
+     frame_rate = find_vf_framerate(modeblock);
+
+     mode_frame_rate_select_cache.x_res = modeblock->x_res;
+     mode_frame_rate_select_cache.y_res = modeblock->y_res;
+     mode_frame_rate_select_cache.bpp = bpp;
+     mode_frame_rate_select_cache.x_eig = modeblock->x_eig_factor;
+     mode_frame_rate_select_cache.y_eig = modeblock->y_eig_factor;
+     mode_frame_rate_select_cache.frame_rate = frame_rate;     
+  }
+
+  return(frame_rate);
+}
+
+/******************************************************************************/
+
+static int find_vf_framerate(mode_block *modeblock)
+{
+ /*
+  * Find framerate to use for ViewFinder as it otherwise selects the lowest
+  * framerate for the chosen mode
+  */
+  int frame_rate = -1;
+  int current_frame_rate = -1;
+  int max_frame_rate = -1;
+  BOOL current_frame_rate_found = FALSE;
+  mode_block *current_mode;
+  char block[256];
+  int blocksize = 256;
+  int vf_mode_count = blocksize / sizeof(vf_mode_block);
+  int vf_block_size = vf_mode_count * sizeof(vf_mode_block);
+  int vf_blocks_read;
+  file_handle vf_mode_file;
+  vf_mode_block *vf_mode;
+  
+  current_mode = os_screenmode_read();
+
+  if(current_mode != (mode_block *)-1)
+     if(!((int)current_mode >= (int)0 && (int)current_mode <= (int)255))
+        current_frame_rate = current_mode->frame_rate;
+/*
+  fprintf(stderr, "mode x %i y %i depth %i\n", modeblock->x_res, modeblock->y_res,
+          modeblock->depth);
+
+  fprintf(stderr, "current frame rate %i\n", current_frame_rate);
+*/
+  vf_mode_file = File_Open("Choices:ViewFinder.Modes", file_READ);
+
+  if(vf_mode_file != NULL){
+
+     while((vf_blocks_read =
+            ((vf_block_size - File_ReadBytes(vf_mode_file, block, vf_block_size)) /
+            sizeof(vf_mode_block))) > 0){
+
+        vf_mode = (vf_mode_block *)block;
+
+        while(vf_blocks_read > 0){
+
+           if(vf_mode->x_res == modeblock->x_res && vf_mode->y_res == modeblock->y_res){
+
+              if(ScreenMode_VFDepthToDepth(vf_mode->depth_flags) == modeblock->depth){
+
+                 if(vf_mode->frame_rate == current_frame_rate)
+                    current_frame_rate_found = TRUE;
+
+                 if(vf_mode->frame_rate > max_frame_rate)
+                    max_frame_rate = vf_mode->frame_rate;
+              }
+           }
+
+           vf_blocks_read -= 1;
+           vf_mode+= 1;
+        }
+     }
+     File_Close(vf_mode_file);
+  }
+
+  if(current_frame_rate_found)
+     frame_rate = current_frame_rate;
+  else
+     frame_rate = max_frame_rate;
+/*
+  fprintf(stderr, "max frame rate %i\n", max_frame_rate);
+  fprintf(stderr, "selected frame rate %i\n", frame_rate);
+*/  
+  return(frame_rate);
+}
+
+/******************************************************************************/
+
+static BOOL cmd_wimpmode_number(int modenumber)
+{
+  char command[20];
+  BOOL success = FALSE;
+  os_error *err = NULL;
+
+  sprintf(command , "WimpMode %i", modenumber);
+
+  if((err = OS_CLI(command)) == NULL)
+     success = TRUE;
+  else
+     error("cmd_wimpmode_number() %i:%s", err->errnum, err->errmess);
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static BOOL colourtrans_writepalette(palette_entry *palette)
+{
+  BOOL success;
+  os_error *err;
+  _kernel_swi_regs r;
+  success = FALSE;
+  err = NULL;
+
+  r.r[0] = -1;
+  r.r[1] = -1;
+  r.r[2] = (int)palette;
+  r.r[3] = 0;
+  r.r[4] = 0;
+  if((err = (os_error *)_kernel_swi(SWI_XOS_Bit | SWI_ColourTrans_WritePalette, &r, &r)) == NULL)
+     success = TRUE;
+  else
+     error("colourtrans_writepalette() %i:%s", err->errnum, err->errmess);     
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static BOOL is256entry_palette(void)
+{
+ /*
+  * returns TRUE when current mode has 256 entry palette
+  */
+  int largestlogicalcolour;
+
+  os_readmodevariable((mode_block *)-1, 3, &largestlogicalcolour);
+
+  return(largestlogicalcolour == 255);
+}
+
+/******************************************************************************/
+/*
+static void display_mode_info(mode_select_block *block)
+{
+
+  fprintf(stderr, "mode number %i  flags %i  x %i  y %i  depth %i  bpp %i  frame %i  "
+                   "mode flags %i  256pal %i  colours %i  x eig %i  y eig %i  \n",
+          block->number, block->block.flags,
+          block->block.x_res, block->block.y_res,
+          block->block.depth, ScreenMode_DepthToBpp(block->block.depth),
+          block->block.frame_rate, block->block.mode_flags,
+          ((block->block.mode_flags & 0x80) ? 1 : 0),
+          block->block.colours,
+          block->block.x_eig_factor, block->block.y_eig_factor);
+
+}
+*/

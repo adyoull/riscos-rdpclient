@@ -1,0 +1,1535 @@
+/************************************************************************
+ *                                                                      *
+ *        File: RDesktop.c                                              *
+ *                                                                      *
+ *     Purpose: RDPClient version of rdesktop.c.                        *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Event.h"
+
+#include <stdarg.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <string.h>
+#include "rdesktop/rdesktop.h"
+#include "rdesktop/ssl.h"
+#include "RDesktop.h"
+
+#include "Utils.h"
+#include "Net.h"
+#include "RDPClient.h"
+#include "Choices.h"
+#include "Status.h"
+#include "MemMan.h"
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Die.h"
+#include "Display.h"
+#include "Log.h"
+#include "UI.h"
+#include "CacheIO.h"
+#include "Clipboard.h"
+#include "Keyboard.h"
+
+#include <openssl/md5.h>
+
+#define default_KEYMAPNAME "en-gb"
+#define default_KEYLAYOUT  0x809
+
+char g_title[200] = "";
+char *g_username = NULL;
+char g_hostname[16];
+char g_keymapname[PATH_MAX];
+int g_keylayout = default_KEYLAYOUT;  /* Defaults to UK keyboard layout */
+char g_connectionname[64] = "";
+
+/* See http://msdn.microsoft.com/library/default.asp?url=/library/en-us/wceddk40/html/cxtsksupportingremotedesktopprotocol.asp */
+int g_keyboard_type = 0x4;            /* Defaults to US keyboard layout */
+int g_keyboard_subtype = 0x0;         /* Defaults to US keyboard layout */
+int g_keyboard_functionkeys = 0xc;    /* Defaults to US keyboard layout */
+
+int g_width = 800;
+int g_height = 600;
+extern int g_tcp_port_rdp;
+int g_server_depth = 8;
+int g_win_button_size = 0; /* If zero, disable single app mode */
+RD_BOOL g_bitmap_compression = True;
+RD_BOOL g_sendmotion = True;
+RD_BOOL g_bitmap_cache = True;
+RD_BOOL g_bitmap_cache_persist_enable = False;
+RD_BOOL g_bitmap_cache_precache = True;
+RD_BOOL g_encryption = True;
+RD_BOOL g_packet_encryption = True;
+RD_BOOL g_desktop_save = True; /* desktop save order */
+RD_BOOL g_polygon_ellipse_orders = False; /* polygon / ellipse orders - NOT ON RISC OS YET! */
+RD_BOOL g_fullscreen = False; /* not used in RISC OS */
+RD_BOOL g_grab_keyboard = True;
+RD_BOOL g_hide_decorations = False;
+RD_BOOL g_use_rdp5 = True;
+RD_BOOL g_rdpclip = False; /* RISC OS default is off! */
+RD_BOOL g_console_session = False;
+RD_BOOL g_numlock_sync = True; /* We always want to sync on RISC OS */
+RD_BOOL g_lspci_enabled = False;
+RD_BOOL g_owncolmap = False;
+RD_BOOL g_ownbackstore = True; /* We can't rely on external BackingStore */
+RD_BOOL g_seamless_rdp = False; /* not used in RISC OS */
+RD_BOOL g_user_quit = False;
+uint32 g_rdp5_performanceflags = RDP5_NO_WALLPAPER | RDP5_NO_FULLWINDOWDRAG |
+                                 RDP5_NO_MENUANIMATIONS;
+/* Session Directory redirection */
+RD_BOOL g_redirect = False;
+char g_redirect_server[64];
+char g_redirect_domain[16];
+char g_redirect_password[64];
+char *g_redirect_username = NULL;
+char g_redirect_cookie[128];
+uint32 g_redirect_flags = 0;
+
+uint32 g_reconnect_logonid = 0;
+char g_reconnect_random[16];
+RD_BOOL g_has_reconnect_random = False;
+uint8 g_client_random[SEC_RANDOM_SIZE];
+RD_BOOL g_pending_resize = False;
+
+RD_BOOL g_quit_on_finish = False;
+
+#ifdef WITH_RDPSND
+RD_BOOL g_rdpsnd = False;
+#endif
+
+static int display_mode = display_mode_WINDOW;
+
+static char message_buffer[1024];
+
+extern RDPDR_DEVICE g_rdpdr_device[];
+extern uint32 g_num_devices;
+extern char *g_rdpdr_clientname;
+
+static void free_usernames(void);
+static void usage(char *program);
+static void parse_server_and_port(char *server);
+static void to_lower(char *text);
+static int keymapname_to_keylayout(char *keymapname);
+static int lookup_keymap(char *mapname);
+static BOOL load_sound_support(void);
+static void print_disconnect_reason(uint16 reason);
+static void rdesktop_reset_state(void);
+
+extern void messagetext(char *format, ...);
+static void opt_warning(char *value);
+static void opt_error(char *value);
+static void opt_invalid_res(int x_res, int y_res);
+static void opt_invalid_res_bpp(int x_res, int y_res, int bpp);
+static void opt_invalid_keyname(char *keyname);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void RDesktop_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+}
+
+/******************************************************************************/
+
+extern int RDesktop_Main(int argc, char *argv[])
+{
+ /*
+  * Main entrypoint to rdesktop
+  */
+  char server[64];
+  char fullhostname[64];
+  char domain[16];
+  char password[64];
+  char shell[256];
+  char directory[256];
+  RD_BOOL deactivated;
+  uint32 flags, ext_disc_reason = 0;
+  char *p;
+  int c;
+  int username_option = 0;
+#ifdef WITH_RDPSND
+  char *rdpsnd_optarg = NULL;
+#endif
+
+  char *optarg;
+  int optind;
+  BOOL use_dynamic_areas = TRUE;
+  int screen_x = 800;
+  int screen_y = 600;
+  int screen_bpp = 8;
+  BOOL valid_res;
+  BOOL valid_bpp;
+  int index;
+
+  flags = RDP_LOGON_NORMAL;
+  domain[0] = password[0] = shell[0] = directory[0] = 0;
+  strcpy(g_keymapname, default_KEYMAPNAME);
+
+  Status_SetRDPCompression(FALSE);
+  Status_SetSoundOption(status_SOUND_OPTION_OFF);
+
+  display_mode = display_mode_WINDOW;
+  Display_SetDisplayMode(display_mode);
+
+  g_num_devices = 0;
+  
+  optind = 0;
+
+  ScreenMode_ReadCurrentResBpp(&screen_x, &screen_y, &screen_bpp);
+
+ /*
+  * Original options
+  * "u:d:s:c:p:n:k:g:fbeEmCDKS:T:Na:r:045h?"
+  */
+  while((c = Utils_GetOptions(argc, argv, "C:u:d:D:s:c:p:n:k:g:ft:beEm:a:x:r:045h?qAizPM",
+                              &optarg, &optind)) != 0){
+     switch (c)
+     {
+        case 'C':
+           STRNCPY(g_connectionname, optarg, sizeof(g_connectionname));
+           break;
+
+        case 'u':
+           g_username = (char *) xmalloc(strlen(optarg) + 1);
+           STRNCPY(g_username, optarg, strlen(optarg) + 1);
+           username_option = 1;
+           break;
+
+        case 'd':
+           STRNCPY(domain, optarg, sizeof(domain));
+           break;
+
+        case 's':
+           STRNCPY(shell, optarg, sizeof(shell));
+           break;
+
+        case 'c':
+           STRNCPY(directory, optarg, sizeof(directory));
+           break;
+
+        case 'p':
+           STRNCPY(password, optarg, sizeof(password));
+           flags |= RDP_LOGON_AUTO;
+
+           /* try to overwrite argument so it won't appear in ps */
+           p = optarg;
+           while(*p)
+              *(p++) = 'X';
+           break;
+
+        case 'n':
+           STRNCPY(g_hostname, optarg, sizeof(g_hostname));
+           break;
+
+        case 'k':
+           STRNCPY(g_keymapname, optarg, sizeof(g_keymapname));
+           break;
+
+        case 'g':
+           if(strncmp("screen", optarg, 1) == 0){
+              g_width = screen_x;
+              g_height = screen_y;
+           }
+           else{
+              g_width = (int)strtol(optarg, &p, 10);
+
+              if(*p == 'x')
+                 g_height = (int)strtol(p + 1, NULL, 10);
+           }
+           
+           if(g_width <= 0 || g_height <= 0){
+              opt_error("01");
+              Log_OpenWindowIfAnyQuitOnClose();
+              free_usernames();
+              return(1);
+           }
+           break;
+
+        case 'D':
+           if(strncmp("window", optarg, 6) == 0){
+              display_mode = display_mode_WINDOW;
+           }
+           else if(strncmp("fullwindow", optarg, 10) == 0){
+              display_mode = display_mode_FULLSCREEN;
+           }
+           else if(strncmp("fullscreen", optarg, 10) == 0){
+              display_mode = display_mode_SINGLETASK;
+           }
+           else if(strncmp("w", optarg, 1) == 0){
+              display_mode = display_mode_WINDOW;
+           }
+           else if(strncmp("f", optarg, 1) == 0){
+              display_mode = display_mode_FULLSCREEN;
+           }
+           else if(strncmp("s", optarg, 1) == 0){
+              display_mode = display_mode_SINGLETASK;
+           }
+           else{
+              display_mode = display_mode_WINDOW;
+           }
+           break;
+
+        case 'b':
+           g_bitmap_cache = False;
+           break;
+
+        case 'e':
+           g_encryption = False;
+           break;
+
+        case 'E':
+           g_packet_encryption = False;
+           break;
+
+        case 'm':
+           g_sendmotion = False;
+           break;
+
+        case 'a':
+           if(strncmp("screen", optarg, 1) == 0){
+              g_server_depth = screen_bpp;
+              if(g_server_depth < 8)
+                 g_server_depth = 8;
+           }
+           else{
+              g_server_depth = (int)strtol(optarg, NULL, 10);
+           }
+           if(g_server_depth != 8 && g_server_depth != 16 && g_server_depth != 15 &&
+              g_server_depth != 24 && g_server_depth != 32){
+              opt_error("02");
+              Log_OpenWindowIfAnyQuitOnClose();
+              free_usernames();
+              return(1);
+           }
+           break;
+
+        case 'f':
+           Display_SetFullscreenBringToFront(fullscreen_bringtofront_KEYPRESS);
+           break;
+
+        case 't':
+           index = keyboard_shortcut_MIN;
+           while(index <= keyboard_shortcut_MAX && (p = next_arg(optarg, ',')) != NULL){
+              if(!Keyboard_SetKeyShortcut(optarg, index))
+                 opt_invalid_keyname(optarg);
+              index++;
+              optarg = p;
+           }
+           break;
+
+        case 'z':
+           DEBUG(("rdp compression enabled\n"));
+           flags |= (RDP_LOGON_COMPRESSION | RDP_LOGON_COMPRESSION2);
+           Status_SetRDPCompression(TRUE);
+           break;
+
+        case 'x':
+           if(strncmp("modem", optarg, 1) == 0){
+              g_rdp5_performanceflags = RDP5_NO_WALLPAPER | RDP5_NO_FULLWINDOWDRAG |
+                                        RDP5_NO_MENUANIMATIONS | RDP5_NO_THEMING;
+           }
+           else if(strncmp("broadband", optarg, 1) == 0){
+              g_rdp5_performanceflags = RDP5_NO_WALLPAPER;
+           }
+           else if(strncmp("lan", optarg, 1) == 0){
+              g_rdp5_performanceflags = RDP5_DISABLE_NOTHING;
+           }
+           else{
+              g_rdp5_performanceflags = (int)strtol(optarg, NULL, 16);
+           }
+           break;
+
+        case 'P':
+           g_bitmap_cache_persist_enable = True;
+           break;
+
+        case 'r':
+           if(strncmp("sound", optarg, 5) == 0){
+
+              optarg += 5;
+
+              if(*optarg == ':'){
+
+                 *optarg++;
+                 while((p = next_arg(optarg, ',')) != NULL){
+
+                    if(strncmp("remote", optarg, 6) == 0){
+                       flags |= RDP_LOGON_LEAVE_AUDIO;
+                       Status_SetSoundOption(status_SOUND_OPTION_REMOTE);
+                    }
+
+                    if(strncmp("local", optarg, 5) == 0){
+#ifdef WITH_RDPSND
+                       if(load_sound_support()){
+
+                          rdpsnd_optarg = next_arg(optarg, ':');
+
+                          g_rdpsnd = True;
+
+                          Status_SetSoundOption(status_SOUND_OPTION_LOCAL);
+                       }
+                       else
+                          Status_SetSoundOption(status_SOUND_OPTION_OFF);
+#else
+                       opt_warning("03");
+#endif
+                    }
+
+                    if(strncmp("off", optarg, 3) == 0){
+                       g_rdpsnd = False;
+
+                       Status_SetSoundOption(status_SOUND_OPTION_OFF);
+                    }
+
+                    optarg = p;
+                 }
+              }
+              else{
+#ifdef WITH_RDPSND
+                 if(load_sound_support()){
+                    g_rdpsnd = True;
+
+                    Status_SetSoundOption(status_SOUND_OPTION_LOCAL);
+                 }
+                 else
+                    Status_SetSoundOption(status_SOUND_OPTION_OFF);
+#else
+                 opt_warning("03");
+#endif
+              }
+           }
+           else if(strncmp("clipboard", optarg, 9) == 0){
+
+              optarg += 9;
+
+              if(*optarg == ':'){
+
+                 *optarg++;
+
+                 if(strncmp("active", optarg, 6) == 0){
+                    g_rdpclip = True;
+                    Clipboard_SetMode(clipboard_ACTIVE);
+                 }
+//                 else if(strncmp("passive", optarg, 7) == 0)
+//                    Clipboard_SetMode(clipboard_PASSIVE);
+                 else if(strncmp("off", optarg, 3) == 0){
+                    g_rdpclip = False;
+                    Clipboard_SetMode(clipboard_PASSIVE);
+                 }
+
+                 p = next_arg(optarg, ',');
+
+                 if(p != NULL){
+                    if(strlen(p) > 0)
+                       Clipboard_SetBufferSize(atoi(p));
+
+                    optarg = p;
+                 }
+              }
+              else{
+                 Clipboard_SetMode(clipboard_ACTIVE);
+              }
+           }
+           else if(strncmp("disk", optarg, 4) == 0){
+              /* -r disk:h:=/mnt/floppy */
+//              disk_enum_devices(&g_num_devices, optarg + 4);
+           }
+           else if(strncmp("comport", optarg, 7) == 0){
+//              serial_enum_devices(&g_num_devices, optarg + 7);
+           }
+           else if(strncmp("lptport", optarg, 7) == 0){
+//              parallel_enum_devices(&g_num_devices, optarg + 7);
+           }
+           else if(strncmp("printer", optarg, 7) == 0){
+//              printer_enum_devices(&g_num_devices, optarg + 7);
+           }
+           else if(strncmp("clientname", optarg, 10) == 0){
+              g_rdpdr_clientname = xmalloc(strlen(optarg + 11) + 1);
+              strcpy(g_rdpdr_clientname, optarg + 11);
+           } 
+           else{
+              opt_warning("04");
+           }
+           break;
+
+        case '0':
+           g_console_session = True;
+           break;
+
+        case '4':
+           g_use_rdp5 = False;
+           break;
+
+        case '5':
+           g_use_rdp5 = True;
+           break;
+
+        case 'q':
+           g_quit_on_finish = True;
+           break;
+
+        case 'A':
+           use_dynamic_areas = FALSE;
+           break;
+
+        case 'i':
+           SpriteLib_SetIyonix15bppColourSwap(TRUE);
+           break;
+
+        case 'M':
+           ScreenMode_ScreenModeValidationSetEnabled(FALSE);
+           break;
+
+        case 1:
+           /* ignore stand alone args */
+           break;
+
+        case -1:
+        case 'h':
+        case '?':
+        default:
+           g_quit_on_finish = True;
+           usage(argv[0]);
+           Log_OpenWindowIfAnyQuitOnClose();
+           free_usernames();
+           return(1);
+     }
+  }
+
+  if(argc != optind || argc == 1){
+    /*
+     * invalid argument
+     */
+     g_quit_on_finish = True;
+     usage(argv[0]);
+     Log_OpenWindowIfAnyQuitOnClose();
+     free_usernames();
+     return(1);
+  }
+
+ /*
+  * Validate selected display mode
+  */
+  if(display_mode == display_mode_FULLSCREEN || display_mode == display_mode_SINGLETASK){
+
+     ScreenMode_Validate(g_width, g_height, g_server_depth, 1,  1, &valid_res, &valid_bpp);
+
+     if(display_mode == display_mode_FULLSCREEN && !valid_res){
+
+        display_mode = display_mode_WINDOW;
+
+        opt_invalid_res(g_width, g_height);
+     }
+
+     if(display_mode == display_mode_SINGLETASK && !valid_bpp){
+
+        display_mode = display_mode_WINDOW;
+
+        opt_invalid_res_bpp(g_width, g_height, g_server_depth);
+     }
+  }
+
+  Display_SetDisplayMode(display_mode);
+  
+  Status_SetConnectionname(g_connectionname);
+  
+ /*
+  * For RISC OS we always have our own colourmap
+  */
+  g_owncolmap = True;
+
+  MemMan_InitMemoryManagement(use_dynamic_areas);
+
+ /*
+  * Need to do this here so that the atexit handler runs before flex's
+  */
+  Die_Init();
+
+  STRNCPY(server, argv[optind - 1], sizeof(server));
+  parse_server_and_port(server);
+  to_lower(server);
+
+  /*
+  if(!username_option){
+     error("could not determine username, use -u\n");
+     g_quit_on_finish = True;
+     Log_OpenWindowIfAnyQuitOnClose();
+     free_usenames();
+     return(1);
+  }
+  */
+
+  if(g_hostname[0] == 0){
+
+     if(Net_GetHostName(fullhostname, sizeof(fullhostname)) == -1){
+        opt_error("05");
+        g_quit_on_finish = True;
+        Log_OpenWindowIfAnyQuitOnClose();
+        free_usernames();
+        return(1);
+     }
+
+     p = strchr(fullhostname, '.');
+     if(p != NULL)
+        *p = 0;
+
+     STRNCPY(g_hostname, fullhostname, sizeof(g_hostname));
+  }
+
+  Status_SetHostname(g_hostname);
+
+  if(g_connectionname[0] == '\0')
+     sprintf(g_title, "%s - %s", event_taskname, server);
+  else
+     sprintf(g_title, "%s - %s (%s)", event_taskname, server, g_connectionname);
+
+  g_keylayout = keymapname_to_keylayout(g_keymapname);
+
+  Status_SetKeymapname(g_keymapname);
+
+  if(!ui_init()){
+     g_quit_on_finish = True;
+     Log_OpenWindowIfAnyQuitOnClose();
+     free_usernames();
+     return(1);
+  }
+
+  if(!Clipboard_Startup()){
+     g_quit_on_finish = True;
+     Log_OpenWindowIfAnyQuitOnClose();
+     free_usernames();
+     return(1);
+  }
+
+#ifdef WITH_RDPSND
+  if(g_rdpsnd){
+     if(!rdpsnd_init(rdpsnd_optarg))
+        Status_SetSoundOption(status_SOUND_OPTION_OFF);
+  }
+#endif
+
+/*
+  if(g_lspci_enabled)
+     lspci_init();
+*/
+
+  rdpdr_init();
+
+  RDPClient_IconBarSetText(server);
+
+  Status_SetConnected(FALSE);
+
+
+  while(1){
+
+     rdesktop_reset_state();
+
+     if(g_redirect){
+        STRNCPY(domain, g_redirect_domain, sizeof(domain));
+        xfree(g_username);
+        g_username = (char *) xmalloc(strlen(g_redirect_username) + 1);
+        STRNCPY(g_username, g_redirect_username, strlen(g_redirect_username) + 1);
+        STRNCPY(password, g_redirect_password, sizeof(password));
+        STRNCPY(server, g_redirect_server, sizeof(server));
+        flags |= RDP_LOGON_AUTO;
+     }
+
+     RDPClient_IconBarSetText(server);
+     Status_SetServername(server);
+     Status_SetUsername(g_username);
+     Status_SetDomain(domain);
+
+
+     ui_init_connection();
+
+     if(!rdp_connect(server, flags, domain, password, shell, directory, g_redirect)){
+        Log_OpenWindowIfAnyQuitOnClose();
+        return(1);
+     }
+
+
+     Status_SetConnected(TRUE);
+     RDPClient_IconBarSetState(TRUE);
+
+    /*
+     * By setting encryption to False here, we have an encrypted login
+     * packet but unencrypted transfer of other packets
+     */
+     if(!g_packet_encryption)
+        g_encryption = False;
+
+
+     DEBUG(("Connection successful.\n"));
+     memset(password, 0, sizeof(password));
+
+     if(!g_redirect){
+        if(!ui_create_window()){
+           Log_OpenWindowIfAnyQuitOnClose();
+           return(1);
+        }
+     }
+
+     g_redirect = False;
+
+     Clipboard_ConnectToServer();
+     rdp_main_loop(&deactivated, &ext_disc_reason);
+
+     DEBUG(("Disconnecting...\n"));
+     rdp_disconnect();
+
+     if(g_redirect)
+        continue;
+
+     if((!UI_CalledPoll() || !Display_Called()) && Log_TextSize() == 0)
+        opt_error("06");
+
+     ui_destroy_window();
+     break;
+  }
+
+  cache_save_state();
+  ui_deinit();
+
+
+  Status_SetConnected(FALSE);
+  RDPClient_IconBarSetState(FALSE);
+
+
+  if(ext_disc_reason >= 2)
+     print_disconnect_reason(ext_disc_reason);
+
+
+  Log_OpenWindowIfErrorsSetQuitOnClose(g_quit_on_finish);
+
+
+  if(deactivated){
+     /* clean disconnect */
+     return 0;
+  }
+  else{
+     if(ext_disc_reason == exDiscReasonAPIInitiatedDisconnect ||
+        ext_disc_reason == exDiscReasonAPIInitiatedLogoff){
+        /* not so clean disconnect, but nothing to worry about */
+        return(0);
+     }
+     else{
+        /* return error */
+        return(2);
+     }
+  }
+}
+
+/******************************************************************************/
+
+extern void generate_random(uint8 * random)
+{
+  unsigned long random_number;
+  unsigned long index;
+  unsigned long *random_ptr;
+ /*
+  * Generate a 32-byte random for the secure transport code.
+  */
+  SSL_MD5 md5;
+
+  random_ptr = (unsigned long *)random;
+
+  for(index = 0; index < (SEC_RANDOM_SIZE >> 2); index++){
+
+     random_number = Utils_RandomNumberULng();
+
+     *random_ptr++ = random_number;
+  }
+
+ /*
+  * Hash both halves with MD5 to obscure possible patterns
+  */
+  ssl_md5_init(&md5);
+  ssl_md5_update(&md5, random, 16);
+  ssl_md5_final(&md5, random);
+  ssl_md5_update(&md5, random + 16, 16);
+  ssl_md5_final(&md5, random + 16);
+}
+
+/******************************************************************************/
+
+extern void *xmalloc(int size)
+{
+ /*
+  * malloc; exit if out of memory
+  */
+  void *mem = malloc(size);
+  if(mem == NULL){
+     error("xmalloc %d\n", size);
+     exit(1);
+  }
+  return(mem);
+}
+
+/******************************************************************************/
+
+extern char *xstrdup(const char *s)
+{
+ /*
+  * strdup; exit if out of memory
+  */
+  char *mem = malloc(strlen(s) + 1);
+  if(mem == NULL){
+     error("strdup");
+     exit(1);
+  }
+  strcpy(mem, s);
+  return(mem);
+}
+
+/******************************************************************************/
+
+extern void *xrealloc(void *oldmem, size_t size)
+{
+ /*
+  * realloc; exit if out of memory
+  */
+  void *mem;
+
+  if(size < 1)
+     size = 1;
+  mem = realloc(oldmem, size);
+  if(mem == NULL){
+     error("xrealloc %d\n", size);
+     exit(1);
+  }
+  return(mem);
+}
+
+/******************************************************************************/
+
+extern void xfree(void *mem)
+{
+ /*
+  * free
+  */
+  free(mem);
+}
+
+/******************************************************************************/
+
+extern void error(char *format, ...)
+{
+  char *ptr;
+ /*
+  * report an error
+  */
+/*
+  va_list ap;
+
+  fprintf(stderr, "ERROR: ");
+
+  va_start(ap, format);
+  vfprintf(stderr, format, ap);
+  va_end(ap);
+*/
+  va_list ap;
+
+  ptr = message_buffer + sprintf(message_buffer, "ERROR: ");
+
+  va_start(ap, format);
+  vsprintf(ptr, format, ap);
+  va_end(ap);
+
+  Log_AddMessage(message_type_ERROR, message_buffer);
+}
+
+/******************************************************************************/
+
+extern void warning(char *format, ...)
+{
+  char *ptr;
+ /*
+  * report a warning
+  */
+/*
+  va_list ap;
+
+  fprintf(stderr, "WARNING: ");
+
+  va_start(ap, format);
+  vfprintf(stderr, format, ap);
+  va_end(ap);
+*/
+  va_list ap;
+
+  ptr = message_buffer + sprintf(message_buffer, "WARNING: ");
+
+  va_start(ap, format);
+  vsprintf(ptr, format, ap);
+  va_end(ap);
+
+  Log_AddMessage(message_type_WARNING, message_buffer);
+}
+
+/******************************************************************************/
+
+extern void unimpl(char *format, ...)
+{
+  char *ptr;
+ /*
+  * report an unimplemented protocol feature
+  */
+/*
+  va_list ap;
+
+  fprintf(stderr, "NOT IMPLEMENTED: ");
+
+  va_start(ap, format);
+  vfprintf(stderr, format, ap);
+  va_end(ap);
+*/
+  va_list ap;
+
+  ptr = message_buffer + sprintf(message_buffer, "NOT IMPLEMENTED: ");
+
+  va_start(ap, format);
+  vsprintf(ptr, format, ap);
+  va_end(ap);
+
+  Log_AddMessage(message_type_WARNING, message_buffer);
+}
+
+/******************************************************************************/
+
+extern void messagetext(char *format, ...)
+{
+ /*
+  * report message text
+  */
+/*
+  va_list ap;
+
+  va_start(ap, format);
+  vfprintf(stderr, format, ap);
+  va_end(ap);
+*/
+  va_list ap;
+
+  va_start(ap, format);
+  vsprintf(message_buffer, format, ap);
+  va_end(ap);
+
+  Log_AddMessage(message_type_TEXT, message_buffer);
+}
+
+/******************************************************************************/
+
+extern void hexdump(unsigned char *p, unsigned int len)
+{
+ /*
+  * produce a hex dump, on stdout
+  */
+  // ???? //
+  fhexdump(stderr, p, len); 
+}
+
+/******************************************************************************/
+
+extern void fhexdump(FILE *stream, unsigned char *p, unsigned int len)
+{
+ /*
+  * produce a hex dump
+  */
+  unsigned char *line = p;
+  int i, thisline, offset = 0;
+
+  while (offset < len){
+
+     fprintf(stream, "%04x ", offset);
+     thisline = len - offset;
+     if(thisline > 16)
+        thisline = 16;
+
+     for(i = 0; i < thisline; i++)
+        fprintf(stream, "%02x ", line[i]);
+
+     for(; i < 16; i++)
+        fprintf(stream, "   ");
+
+     for(i = 0; i < thisline; i++)
+        fprintf(stream, "%c", (line[i] >= 0x20 && line[i] < 0x7f) ? line[i] : '.');
+
+     fprintf(stream, "\n");
+     offset += thisline;
+     line += thisline;
+  }
+}
+
+/******************************************************************************/
+
+/*
+ *         input : src is the string we look in for needle.
+ *                 Needle may be escaped by a backslash, in
+ *                 that case we ignore that particular needle.
+ *  return value : returns next src pointer, for
+ *                 succesive executions, like in a while loop
+ *                 if retval is 0, then there are no more args.
+ *      pitfalls : src is modified. 0x00 chars are inserted to
+ *                 terminate strings.
+ * return val, points on the next val chr after ins 0x00
+ *
+ * example usage : while( (pos = next_arg( optarg, ',')) ){
+ *                    printf("%s\n",optarg);
+ *                    optarg=pos;
+ *                 }
+ */
+
+char *next_arg(char *src, char needle)
+{
+  char *nextval;
+  char *p;
+  char *mvp = 0;
+
+  /* EOS */
+  if(*src == (char) 0x00)
+     return 0;
+
+  p = src;
+  /*  skip escaped needles */
+  while((nextval = strchr(p, needle)) != NULL){
+
+     mvp = nextval - 1;
+     /* found backslashed needle */
+     if(*mvp == '\\' && (mvp > src)){
+
+        /* move string one to the left */
+        while(*(mvp + 1) != (char) 0x00){
+
+           *mvp = *(mvp + 1);
+           *mvp++;
+        }
+        *mvp = (char) 0x00;
+        p = nextval;
+     }
+     else{
+        p = nextval + 1;
+        break;
+     }
+
+  }
+
+  /* more args available */
+  if(nextval){
+     *nextval = (char) 0x00;
+     return(++nextval);
+  }
+
+  /* no more args after this, jump to EOS */
+  nextval = src + strlen(src);
+  return(nextval);
+}
+
+/******************************************************************************/
+
+void toupper_str(char *p)
+{
+  while(*p){
+
+     if((*p >= 'a') && (*p <= 'z'))
+        *p = toupper((int) *p);
+     p++;
+  }
+}
+
+/******************************************************************************/
+
+RD_BOOL str_startswith(const char *s, const char *prefix)
+{
+  return(strncmp(s, prefix, strlen(prefix)) == 0);
+}
+
+/******************************************************************************/
+
+/* Split input into lines, and call linehandler for each
+   line. Incomplete lines are saved in the rest variable, which should
+   initially point to NULL. When linehandler returns False, stop and
+   return False. Otherwise, return True.  */
+RD_BOOL str_handle_lines(const char *input, char **rest,
+                         str_handle_lines_t linehandler, void *data)
+{
+	char *buf, *p;
+	char *oldrest;
+	size_t inputlen;
+	size_t buflen;
+	size_t restlen = 0;
+	RD_BOOL ret = True;
+
+	/* Copy data to buffer */
+	inputlen = strlen(input);
+	if (*rest)
+		restlen = strlen(*rest);
+	buflen = restlen + inputlen + 1;
+	buf = (char *) xmalloc(buflen);
+	buf[0] = '\0';
+	if (*rest)
+		STRNCPY(buf, *rest, buflen);
+	strncat(buf, input, inputlen);
+	p = buf;
+
+	while (1)
+	{
+		char *newline = strchr(p, '\n');
+		if (newline)
+		{
+			*newline = '\0';
+			if (!linehandler(p, data))
+			{
+				p = newline + 1;
+				ret = False;
+				break;
+			}
+			p = newline + 1;
+		}
+		else
+		{
+			break;
+
+		}
+	}
+
+	/* Save in rest */
+	oldrest = *rest;
+	restlen = buf + buflen - p;
+	*rest = (char *) xmalloc(restlen);
+	STRNCPY((*rest), p, restlen);
+	xfree(oldrest);
+
+	xfree(buf);
+	return ret;
+}
+
+/******************************************************************************/
+
+/* not all clibs got ltoa */
+#define LTOA_BUFSIZE (sizeof(long) * 8 + 1)
+
+char * l_to_a(long N, int base)
+{
+  static char ret[LTOA_BUFSIZE];
+
+  char *head = ret, buf[LTOA_BUFSIZE], *tail = buf + sizeof(buf);
+
+  register int divrem;
+
+  if(base < 36 || 2 > base)
+     base = 10;
+
+  if(N < 0){
+
+     *head++ = '-';
+     N = -N;
+  }
+
+  tail = buf + sizeof(buf);
+  *--tail = 0;
+
+  do{
+     divrem = (int)(N % base);
+     *--tail = (divrem <= 9) ? divrem + '0' : divrem + 'a' - 10;
+     N /= base;
+  }
+  while (N);
+
+  strcpy(head, tail);
+  return(ret);
+}
+
+/******************************************************************************/
+
+extern int load_licence(unsigned char **data)
+{
+  int length;
+
+  length = Choices_ReadLicence(g_hostname, data);
+
+  return(length);
+}
+
+/******************************************************************************/
+
+extern void save_licence(unsigned char *data, int length)
+{
+  Choices_WriteLicence(g_hostname, data, length);
+}
+
+/******************************************************************************/
+
+extern RD_BOOL rd_pstcache_mkdir(void)
+{
+ /*
+  * Create the bitmap cache directory '.rdesktop/cache'
+  */
+
+  if(CacheIO_CreateCacheDirectory())
+     return(True);
+  else
+     return(False);
+}
+
+/******************************************************************************/
+
+extern int rd_open_file(char *filename)
+{
+ /*
+  * Open file in the '.rdesktop' directory
+  */
+
+  return(CacheIO_OpenCacheFile(filename));
+
+}
+
+/******************************************************************************/
+
+extern void rd_close_file(int fd)
+{
+ /*
+  * Close file
+  */
+
+  CacheIO_CloseCacheFile(fd);
+
+}
+
+/******************************************************************************/
+
+extern int rd_read_file(int fd, void *ptr, int len)
+{
+ /*
+  * Read from file
+  */
+
+  return(CacheIO_ReadCacheFile(fd, ptr, len));
+
+}
+
+/******************************************************************************/
+
+extern int rd_write_file(int fd, void *ptr, int len)
+{
+ /*
+  * Write to file
+  */
+
+  return(CacheIO_WriteCacheFile(fd, ptr, len));
+
+}
+
+/******************************************************************************/
+
+extern int rd_lseek_file(int fd, int offset)
+{
+ /*
+  * Move file pointer
+  */
+
+  return(CacheIO_SeekCacheFile(fd, offset));
+
+}
+
+/******************************************************************************/
+
+extern RD_BOOL rd_lock_file(int fd, int start, int len)
+{
+ /*
+  * Do a write lock on a file
+  */
+
+  return(True);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void free_usernames(void)
+{
+  if(g_redirect_username)
+     xfree(g_redirect_username);
+
+  if(g_username)
+     xfree(g_username);
+}
+
+/******************************************************************************/
+
+static void usage(char *program)
+{
+ /*
+  * Display usage information
+  */
+  char version[100];
+
+  Msgs_Lookup("info.version", version, 90);
+
+  messagetext("  Run <RDPClient$Dir>.Connect -g 800x600 -a 8 -q -x 0x04 servername");
+  messagetext("Example:");
+  messagetext("    -M: disable screen mode validation");
+  messagetext("    -i: swap colours for Iyonix graphics card");
+/*
+  messagetext("    -A: use application memory instead of a dynamic area");
+*/  
+  messagetext("    -q: quit application when finished");
+/*
+  messagetext("    -5: use RDP version 5 (default)");
+*/  
+  messagetext("    -4: use RDP version 4");
+  messagetext("    -0: attach to console");
+  messagetext("                 default is 16 KB, 0 indicates no limit");
+  messagetext("                 datalimit specifies maximum data transfer in KB");
+/*
+  messagetext("         '-r clipboard:[off|passive|active][,datalimit]': control clipboard redirection");
+*/
+  messagetext("         '-r clipboard:[off|active][,datalimit]': control clipboard redirection");
+  messagetext("                 remote would leave sound on server");
+  messagetext("         '-r sound:[local|off|remote]': enable sound redirection");
+/*
+  messagetext("             or      mydeskjet=\"HP LaserJet IIIP\" to enter server driver as well");
+  messagetext("         '-r printer:mydeskjet': enable printer redirection");
+  messagetext("             or      LPT1=/dev/lp0,LPT2=/dev/lp1");
+  messagetext("         '-r lptport:LPT1=/dev/lp0': enable parallel redirection of /dev/lp0 to LPT1");
+  messagetext("             or   A=/mnt/floppy,D=/mnt/cdrom'");
+  messagetext("         '-r disk:A=/mnt/floppy': enable redirection of /mnt/floppy to A:");
+  messagetext("             or      COM1=/dev/ttyS0,COM2=/dev/ttyS1");
+  messagetext("         '-r comport:COM1=/dev/ttyS0': enable serial redirection of /dev/ttyS0 to COM1");
+*/
+  messagetext("    -r: enable specified device redirection (this flag can be repeated)");
+  messagetext("    -x: RDP5 experience ([m]odem, [b]roadband, [l]an or hex number)");
+  messagetext("    -P: use persistent bitmap cacheing");  
+  messagetext("    -z: enable RDP compression");
+  messagetext("    -f: use keypress to bring fullwindow to front");
+  messagetext("         [desktop],[window],[fullwindow],[fullscreen],[bringtofront]");
+  messagetext("    -t: specify key names for <ctrl><shift> shortcuts");
+  messagetext("    -a: connection colour depth (BPP or [s]creen)");
+/*
+  messagetext("    -m: do not send motion events");
+*/
+  messagetext("    -E: disable encryption from client to server");
+  messagetext("    -e: disable encryption (French TS only)");
+  messagetext("    -b: disable bitmap cache");
+  messagetext("    -D: display mode ([w]indow, [f]ullwindow or full[s]creen)");
+  messagetext("    -g: desktop geometry (WxH or [s]creen)");
+  messagetext("    -k: keyboard layout on server (en-gb, en-us, de, sv, etc.)");
+  messagetext("    -n: client hostname");
+  messagetext("    -p: password");
+  messagetext("    -c: working directory");
+  messagetext("    -s: shell");
+  messagetext("    -d: domain");
+  messagetext("    -u: user name");
+  messagetext("    -C: connection name (for window title)");
+  messagetext("  Run <RDPClient$Dir>.Connect [options] server[:port]");
+  messagetext("Usage:");
+  messagetext("See http://www.orac2.demon.co.uk/ for more information.");
+  messagetext("Version %s", version);
+  messagetext("%s: RISC OS port by Andrew Sellors.", event_taskname);
+  messagetext("See http://www.rdesktop.org/ for more information.");
+  messagetext("Version " VERSION ". Copyright (C) 1999-2007 Matt Chapman.");
+  messagetext("rdesktop: A Remote Desktop Protocol client.");
+
+}
+
+/******************************************************************************/
+
+static void parse_server_and_port(char *server)
+{
+  char *p;
+
+  p = strchr(server, ':');
+  if(p != NULL){
+     g_tcp_port_rdp = (int)strtol(p + 1, NULL, 10);
+     *p = 0;
+  }
+
+}
+
+/******************************************************************************/
+
+static void to_lower(char *text)
+{
+  char *p;
+
+  p = text;
+
+  while(*p != '\0'){
+     *p = tolower(*p);
+     p++;
+  }
+}
+
+/******************************************************************************/
+
+static int keymapname_to_keylayout(char *keymapname)
+{
+  int keylayout;
+
+  to_lower(keymapname);
+
+  keylayout = lookup_keymap(keymapname);
+
+  if(keylayout == 0){
+     strcpy(keymapname, default_KEYMAPNAME);
+     
+     keylayout = lookup_keymap(keymapname);
+
+     if(keylayout == 0)
+        keylayout = default_KEYLAYOUT;  /* Defaults to UK keyboard layout */
+  }
+
+  return(keylayout);
+}
+
+/******************************************************************************/
+
+static int lookup_keymap(char *mapname)
+{
+  char tag[30];
+  char result[35];
+  int number;
+
+  *result = '\0';
+  number = 0;
+
+  strcpy(tag, "keymap.");
+  strncpy(&tag[7], mapname, 7);
+  tag[15] = '\0';
+
+  Msgs_Lookup(tag, result, 30);
+
+  if(*result != '\0')
+     sscanf(result, "%i", &number);
+
+  return(number);
+}
+
+/******************************************************************************/
+
+static BOOL load_sound_support(void)
+{
+  os_error *error_block;
+  BOOL success = FALSE;
+  char text[50];
+ 
+  error_block = OS_CLI("<RDPClient$Dir>.LoadSound");
+
+  if(error_block != NULL){
+
+     Msgs_Lookup("sound.error", text, 40);
+
+     error("%s", error_block->errmess);
+     error("%s", text);
+  }
+  else
+     success = TRUE;
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void print_disconnect_reason(uint16 reason)
+{
+  char tag[30];
+  char message[100];
+
+  sprintf(tag, "disc.%04x", reason);
+
+  message[0] = '\0';
+  Msgs_Lookup(tag, message, 95);
+
+  if(message[0] == '\0'){
+     if(reason > 0x1000 && reason < 0x7fff)
+        strcpy(tag, "disc.int");
+     else
+        strcpy(tag, "disc.unkn");
+
+     Msgs_Lookup(tag, message, 95);
+  }
+
+  messagetext("DISCONNECT: %s.", message);
+}
+
+/******************************************************************************/
+
+static void rdesktop_reset_state(void)
+{
+  rdp_reset_state();
+}
+
+/******************************************************************************/
+
+static void opt_warning(char *value)
+{
+  char tag[30];
+  char message[100];
+
+  sprintf(tag, "err.opt%s", value);
+
+  Msgs_Lookup(tag, message, 95);
+
+  warning("%s", message);
+}
+
+/******************************************************************************/
+
+static void opt_error(char *value)
+{
+  char tag[30];
+  char message[100];
+
+  sprintf(tag, "err.opt%s", value);
+
+  Msgs_Lookup(tag, message, 95);
+
+  error("%s", message);
+}
+
+/******************************************************************************/
+
+static void opt_invalid_res(int x_res, int y_res)
+{
+  char message[100];
+
+  Msgs_Lookup("err.opt07", message, 95);
+
+  error(message, x_res, y_res);
+}
+
+/******************************************************************************/
+
+static void opt_invalid_res_bpp(int x_res, int y_res, int bpp)
+{
+  char message[100];
+  char *colours;
+
+  Msgs_Lookup("err.opt08", message, 95);
+
+  colours = ScreenMode_DepthToColoursText(ScreenMode_BppToDepth(bpp));
+
+  error(message, x_res, y_res, colours);
+}
+
+/******************************************************************************/
+
+static void opt_invalid_keyname(char *keyname)
+{
+  char message[100];
+
+  Msgs_Lookup("err.opt09", message, 95);
+
+  error(message, keyname);
+}

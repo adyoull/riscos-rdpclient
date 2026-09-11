@@ -1,0 +1,30 @@
+IconSprites <Obey$Dir>.!Sprites
+
+RMEnsure UtilityModule 3.50 Error 0 You need RISC OS 3.50 or later to run this applicaion.
+
+RMEnsure UtilityModule 3.70 RMEnsure CallASWI 0.03 RMLoad System:Modules.CallASWI
+RMEnsure UtilityModule 3.70 RMEnsure CallASWI 0.03 Error 0 This application requires CallASWI 0.03 or later.
+
+RMEnsure FPEmulator 4.03 RMLoad System:Modules.FPEmulator
+RMEnsure FPEmulator 4.03 Error 0 This application requires FPEmulator 4.03 or later.
+
+RMEnsure SharedCLibrary 5.34 RMLoad System:Modules.CLib
+RMEnsure SharedCLibrary 5.34 Error 0 This application requires SharedCLibrary 5.34 or later.
+
+RMEnsure DeepKeys 2.04 Error 0 This application requires DeepKeys 2.04 or later to be installed in !Boot.
+
+| Alternate location of cache directories.
+| If unset, directories are created in <Wimp$ScrapDir>.RDPClient.
+| Can be anywhere that is writable.
+|Set RDPClient$PstCacheDir RAM::0.$.RDPCache
+
+| Debug
+|WimpSlot -min 4000K -max 4000K
+
+| Normal
+WimpSlot -min 16384K -max 32768K
+
+| > <RDPClient$Dir>.^.Debug
+| > <RDPClient$Dir>.stdout 2><RDPClient$Dir>.stderr
+| > <RDPClient$Dir>.^.stdout 2><RDPClient$Dir>.^.stderr
+Run <RDPClient$Dir>.RDPClient %*0

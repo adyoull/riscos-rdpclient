@@ -1,0 +1,120 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib32.c                                              *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 32bpp images.         *
+ *                                                                      *
+ ************************************************************************/
+
+#include "SpriteLib.h"
+#include "Utils.h"
+
+#include <string.h>
+#include <stdio.h>
+
+#include "rdesktop/rdesktop.h"
+
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void GFXLib_PlotDataToSprite_32_Copy(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int y_counter = plot_lines;
+  int x_counter;
+  unsigned int pixel;
+
+  while(y_counter > 0){
+
+     x_counter = plot_length;
+
+     while(x_counter > 0){
+
+       pixel = *((unsigned int *)(source_ptr));
+
+       *((unsigned int *)(dest_ptr)) = ((pixel << 16) & 0x00FF0000) |
+                                        (pixel        & 0x0000FF00) |
+                                       ((pixel >> 16) & 0x000000FF);
+
+       source_ptr += 4;
+       dest_ptr += 4;
+
+       x_counter--;
+       
+     }
+
+     source_ptr2 += source_linebytes;
+     source_ptr = source_ptr2;
+        
+     dest_ptr2 += dest_linebytes;
+     dest_ptr = dest_ptr2;
+
+     y_counter--;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotDataToSprite_FlipVertical_32_Copy(int source_linebytes,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start +
+                              ((plot_lines - 1) * source_linebytes);
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int y_counter = plot_lines;
+  int x_counter;
+  unsigned int pixel;
+
+  while(y_counter > 0){
+
+     x_counter = plot_length;
+
+     while(x_counter > 0){
+
+       pixel = *((unsigned int *)(source_ptr));
+
+       *((unsigned int *)(dest_ptr)) = ((pixel << 16) & 0x00FF0000) |
+                                        (pixel        & 0x0000FF00) |
+                                       ((pixel >> 16) & 0x000000FF);
+                                       /* pixel & 0x00FFFFFF; */
+
+       source_ptr += 4;
+       dest_ptr += 4;
+
+       x_counter--;
+
+     }
+
+     source_ptr2 -= source_linebytes;
+     source_ptr = source_ptr2;
+        
+     dest_ptr2 += dest_linebytes;
+     dest_ptr = dest_ptr2;
+
+     y_counter--;
+
+  }
+
+}

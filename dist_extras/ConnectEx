@@ -1,0 +1,1 @@
+Run <RDPClient$Dir>.Connect -g 1024x768 -a 8 -q -E -z -r clipboard:active,32 -r sound:local -x 0x04 servername

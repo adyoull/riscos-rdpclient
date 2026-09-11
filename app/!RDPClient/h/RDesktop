@@ -1,0 +1,26 @@
+/************************************************************************
+ *                                                                      *
+ *        File: RDesktop.h                                              *
+ *                                                                      *
+ *     Purpose: rdesktop core.                                          *
+ *                                                                      *
+ ************************************************************************/
+
+
+ /*
+  * initialisation to be done on startup
+  */
+extern void RDesktop_Init(void);
+
+
+ /*
+  * Main entrypoint to rdesktop
+  */
+extern int RDesktop_Main(int argc, char *argv[]);
+
+ /*
+  * Produce a hex dump
+  */
+extern void fhexdump(FILE *stream, unsigned char *p, unsigned int len);
+
+

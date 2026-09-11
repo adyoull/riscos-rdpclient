@@ -1,0 +1,164 @@
+/************************************************************************
+ *                                                                      *
+ *        File: ScreenMode.c                                            *
+ *                                                                      *
+ *     Purpose: Interface with screen display.                          *
+ *                                                                      *
+ ************************************************************************/
+
+
+typedef struct {
+    int                 size;
+    int                 flags;
+    int                 x_res;
+    int                 y_res;
+    int                 depth;
+    int                 frame_rate;
+    char                name[1];
+} modedef_block;
+
+typedef struct {
+    int                 flags;
+    int                 x_res;
+    int                 y_res;
+    int                 depth;
+    int                 frame_rate;
+    int                 mode_flags_number;
+    int                 mode_flags;
+    int                 colours_number;
+    int                 colours;
+    int                 x_eig_factor_number;
+    int                 x_eig_factor;
+    int                 y_eig_factor_number;
+    int                 y_eig_factor;
+    int                 terminator;
+} mode_block;
+
+typedef struct {
+    int                 number;
+    mode_block          block;
+} mode_select_block;
+
+typedef struct {
+    int                 flags;
+    int                 x_res;
+    int                 y_res;
+    int                 depth;
+    int                 frame_rate;
+    int                 terminator;
+} modelookup_block;
+
+typedef struct {
+    int                 depth_flags;
+    int                 x_res;
+    int                 y_res;
+    int                 frame_rate;
+} vf_mode_block;
+
+typedef struct {
+    int                 x_res;
+    int                 y_res;
+    int                 bpp;
+    int                 frame_rate;
+    int                 x_eig;
+    int                 y_eig;
+    BOOL                valid_res;
+    BOOL                valid_bpp;
+} mode_cache_block;
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void ScreenMode_Init(void);
+
+
+ /*
+  * Enable/disable validation of screen modes for full screen change
+  */
+extern void ScreenMode_ScreenModeValidationSetEnabled(BOOL enabled);
+
+
+ /*
+  * Return enable state of validation of screen modes for full screen change
+  */
+extern BOOL ScreenMode_ScreenModeValidationGetEnabled(void);
+
+
+ /*
+  * Return number for colours mode variable based on bpp
+  */
+extern int ScreenMode_BppToColours(BOOL program_palette, int bpp);
+
+
+ /*
+  * Return depth number for given bpp
+  */
+extern int ScreenMode_BppToDepth(int bpp);
+
+
+ /*
+  * Return bpp of depth number
+  */
+extern int ScreenMode_DepthToBpp(int depth);
+
+
+ /*
+  * Return bpp of ViewFinder depth number
+  */
+extern int ScreenMode_VFDepthToBpp(int depth_flags);
+
+
+ /*
+  * Return depth number for given ViewFinder depth flags 
+  */
+extern int ScreenMode_VFDepthToDepth(int depth_flags);
+
+  
+ /*
+  * Return number of colours for given depth as text
+  */
+extern char *ScreenMode_DepthToColoursText(int depth);
+
+
+ /*
+  * Return details of current mode in block
+  */
+extern BOOL ScreenMode_ReadCurrent(mode_select_block *block);
+
+
+ /*
+  * Returns current screen mode's resolution and bpp.
+  */
+extern BOOL ScreenMode_ReadCurrentResBpp(int *x_res, int *y_res, int *bpp);
+
+
+ /*
+  * Set current screen mode to that defined in block.
+  * If wimpmode is TRUE, mode change is made using *WimpMode rather than
+  * OS_ScreenMode
+  */
+extern BOOL ScreenMode_SetCurrent(BOOL wimpmode, mode_select_block *block);
+
+
+ /*
+  * Checks available screenmodes and sets *valid_res to TRUE if the resolution can be used
+  * and *valid_bpp if both the resolution and the bpp are available.
+  */
+extern void ScreenMode_Validate(int query_x_res, int query_y_res, int query_bpp,
+                                int query_x_eig, int query_y_eig,
+                                BOOL *valid_res, BOOL *valid_bpp);
+
+
+ /*
+  * Return information about current screen memory
+  */
+extern BOOL ScreenMode_ReadScreenHardware(char **start_address, int *line_length,
+                                          int *total_size);
+
+
+ /*
+  * If screen has 256 level palette, program with new values
+  */
+extern BOOL ScreenMode_SetPalette(palette_entry *palette);
+
+

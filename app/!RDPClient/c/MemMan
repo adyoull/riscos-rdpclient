@@ -1,0 +1,185 @@
+/************************************************************************
+ *                                                                      *
+ *        File: MemMan.c                                                *
+ *                                                                      *
+ *     Purpose: Memory Management functions.                            *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:Time.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+#include "flex.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "MemMan.h"
+
+/* maximum memory to allow for the dynamic area */
+#define flex_MAX_MEMORY  32 * 1024 * 1024
+
+/* time to compact flex heap */
+unsigned int flex_compact_time = 0;
+#define flex_COMPACTINTERVAL 100
+
+#define freelist_SIZE 300
+static void *freelist[freelist_SIZE];
+static int freelist_count = 0;
+
+static void free_deferred_items(void);
+
+static BOOL flex_initialised = FALSE;
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void MemMan_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+  freelist_count = 0;
+
+  flex_initialised = FALSE;
+}
+
+/******************************************************************************/
+
+extern void MemMan_InitMemoryManagement(BOOL use_dynamic_areas)
+{
+ /*
+  * initialise shifting heap memory manager
+  */
+
+  flex_init(event_taskname, NULL, (use_dynamic_areas ? flex_MAX_MEMORY : 0));
+  /*_kernel_register_slotextend(flex_budge);*/
+  flex_set_budge(1);
+
+ /*
+  * only compact the heap when calling flex_compact() and not on every alloc, free etc
+  */
+  flex_set_deferred_compaction(1);
+
+  flex_initialised = TRUE;
+}
+
+/******************************************************************************/
+
+extern void MemMan_PollMemoryManagement(void)
+{
+ /*
+  * poll routine for memory management
+  */
+  unsigned int time = 0;
+//  unsigned int start, end;
+//  int saved_count;
+
+  if(!flex_initialised)
+     return;
+     
+  while((time = Time_Monotonic()) == 0);
+
+  if(time >= flex_compact_time){
+
+//     while((start = Time_Monotonic()) == 0);
+
+//     saved_count = freelist_count;
+
+
+     free_deferred_items();
+    
+     flex_compact();
+
+
+//     while((end = Time_Monotonic()) == 0);
+//     fprintf(stderr, "memman poll %i  count %i\n", end - start, saved_count);
+
+
+     flex_compact_time = time + flex_COMPACTINTERVAL;
+  }
+
+}
+
+/******************************************************************************/
+
+extern int MemMan_Alloc(memman_ptr anchor, int n)
+{
+  return(flex_alloc((flex_ptr)anchor, n));
+}
+
+/******************************************************************************/
+
+extern void MemMan_Free(memman_ptr anchor)
+{
+  if(freelist_count < freelist_SIZE){
+
+     if(flex_reanchor((flex_ptr)&(freelist[freelist_count]), (flex_ptr)anchor) == 1)
+        freelist_count++;
+     else
+        flex_free((flex_ptr)anchor);
+  }
+  else
+     flex_free((flex_ptr)anchor);
+
+}
+
+/******************************************************************************/
+
+extern int MemMan_Size(memman_ptr anchor)
+{
+  return(flex_size((flex_ptr)anchor));
+}
+
+/******************************************************************************/
+
+extern int MemMan_Extend(memman_ptr anchor, int newsize)
+{
+  return(flex_extend((flex_ptr)anchor, newsize));
+}
+
+/******************************************************************************/
+
+extern int MemMan_MidExtend(memman_ptr anchor, int at, int by)
+{
+  return(flex_midextend((flex_ptr)anchor, at, by));
+}
+
+/******************************************************************************/
+
+extern int MemMan_Reanchor(memman_ptr to, memman_ptr from)
+{
+  return(flex_reanchor((flex_ptr)to, (flex_ptr)from));
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void free_deferred_items(void)
+{
+  int index;
+
+  if(freelist_count > 0){
+
+     for(index = 0 ; index < freelist_count; index++){
+
+        flex_free((flex_ptr)&(freelist[index]));
+
+     }
+
+     freelist_count = 0;
+
+  }
+
+}

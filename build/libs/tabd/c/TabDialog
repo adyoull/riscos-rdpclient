@@ -1,0 +1,253 @@
+/*
+    ####             #    #     # #
+    #   #            #    #       #          The FreeWare C library for 
+    #   #  ##   ###  #  # #     # ###             RISC OS machines
+    #   # #  # #     # #  #     # #  #   ___________________________________
+    #   # ####  ###  ##   #     # #  #                                      
+    #   # #        # # #  #     # #  #    Please refer to the accompanying
+    ####   ### ####  #  # ##### # ###    documentation for conditions of use
+    ________________________________________________________________________
+
+    File:    TabDialog.TabDialog.c
+    Author:  Copyright © 2000 Andrew Sellors.
+    Version: 1.01 (12st January 2001)
+    Purpose: Creates a 'tabbed dialog' using panes.
+    Mods:    1.00 -> 1.01
+             Added TabDialog_GetTab
+*/
+
+#include "Desklib:Wimp.h"
+#include "Desklib:Event.h"
+#include "Desklib:Window.h"
+#include "DeskLib:Pane2.h"
+#include "Desklib:Template.h"
+
+/*#include <varargs.h> something wrong here! */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "TabDialog.h"
+
+
+static void SetTab(tabdialog_def *def, int tab, BOOL firsttime);
+static BOOL Tab_Click(event_pollblock *event, void *reference);
+static void InitialiseTabs(tabdialog_def *def, int tab);
+static void SetTabButton(tabdialog_def *def, int tab, BOOL selected);
+
+
+extern tabdialog_def *TabDialog_Create(char *mainwindow,
+                                       icon_handle min_tab, icon_handle max_tab,
+                                       icon_handle tab_background,
+                                       int default_tab,
+                                       ...)
+{
+  int def_size;
+  tabdialog_def *def;
+  int tab_count;
+  int tab_index;
+  wimp_point pane_size;
+  va_list ap;
+
+  tab_count = (max_tab - min_tab + 1) / 2;
+
+  def_size = sizeof(tabdialog_def) + ((tab_count - 1) * sizeof(window_handle));
+
+  def = malloc(def_size);
+
+  if(def == NULL)
+     return(NULL);
+
+  def->mainwindow = Pane2_CreateAndAddMain(mainwindow, template_TITLEMIN);
+  if(def->mainwindow == NULL){
+     free(def);
+     return(NULL);
+  }
+
+  def->min_tab = min_tab;
+  def->max_tab = max_tab;
+  def->tab_background = tab_background;
+  def->tab_count = tab_count;
+  def->current_tab = -1;
+
+  Pane2_ReadIcon(def->mainwindow, def->tab_background, NULL, &(def->pane_offset), &pane_size);
+
+  va_start(ap, default_tab);
+
+  for(tab_index = 0; tab_index < tab_count; tab_index++){
+      def->tabwindow[tab_index] = Window_Create(va_arg(ap, char *), template_TITLEMIN);
+  }
+  va_end(ap);
+
+  SetTab(def, default_tab, TRUE);
+
+  Event_Claim(event_CLICK, def->mainwindow, event_ANY, Tab_Click, (void *)def);
+
+  return(def);
+}
+
+/******************************************************************************/
+
+extern void TabDialog_Show(tabdialog_def *def, window_openpos openpos)
+{
+  Pane2_Show(def->mainwindow, openpos);
+}
+
+/******************************************************************************/
+
+extern void TabDialog_Hide(tabdialog_def *def)
+{
+  Pane2_Hide(def->mainwindow);
+}
+
+/******************************************************************************/
+
+extern void TabDialog_Delete(tabdialog_def *def)
+{
+  int tab_index;
+
+  Pane2_RemovePane(def->mainwindow, 1);
+
+  for(tab_index = 0; tab_index < def->tab_count; tab_index++){
+      Window_Delete(def->tabwindow[tab_index]);
+  }
+
+  Pane2_Delete(def->mainwindow);
+
+  free(def); 
+}
+
+/******************************************************************************/
+
+/*
+ * Handle mouseclick on tab icons
+ */
+
+extern void TabDialog_HandleClick(tabdialog_def *def, icon_handle icon)
+{
+  int tab;
+
+  if(icon > def->max_tab || icon < def->min_tab)
+     return;
+
+  tab = ((icon - def->min_tab) / 2) + 1;
+
+  SetTab(def, tab, FALSE);
+}
+
+/******************************************************************************/
+
+/*
+ * Set displayed tab to 'tab' (first tab is 1)
+ */
+
+extern void TabDialog_SetTab(tabdialog_def *def, int tab)
+{
+  if(tab < 1 || tab > def->tab_count)
+     return;
+
+  SetTab(def, tab, FALSE);
+}
+
+/******************************************************************************/
+
+/*
+ * Get number of displayed tab (first tab is 1)
+ */
+
+extern int TabDialog_GetTab(tabdialog_def *def)
+{
+  return(def->current_tab);
+}
+
+/******************************************************************************/
+
+static void SetTab(tabdialog_def *def, int tab, BOOL firsttime)
+{
+  window_state windowstate;
+
+  if(tab != def->current_tab || firsttime){
+
+     if(firsttime){
+        InitialiseTabs(def, tab);
+     }
+     else{
+        SetTabButton(def, def->current_tab, FALSE);
+        SetTabButton(def, tab, TRUE);
+     }
+
+     if(!firsttime){
+        Wimp_GetWindowState(def->tabwindow[def->current_tab - 1], &windowstate);
+     }
+
+     if(!firsttime || def->current_tab == -1){
+        Pane2_RemovePane(def->mainwindow, 1);
+     }
+
+     Pane2_AddPane(def->mainwindow, def->tabwindow[tab - 1], &(def->pane_offset), NULL,
+                   pane2_FIXED|pane2_MAINTOP|pane2_PANETOP);
+
+     def->current_tab = tab;
+
+     if(!firsttime){
+        windowstate.openblock.window = def->tabwindow[tab - 1];
+        Wimp_OpenWindow(&windowstate.openblock);
+     }
+
+  }
+}
+
+/******************************************************************************/
+
+static BOOL Tab_Click(event_pollblock *event, void *reference)
+{
+  tabdialog_def *def = (tabdialog_def *)reference;
+  icon_handle icon = event->data.mouse.icon;
+
+  TabDialog_HandleClick(def, icon);
+  
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+static void InitialiseTabs(tabdialog_def *def, int tab)
+{
+  int tab_loop;
+
+  for(tab_loop = 1; tab_loop <= def->tab_count; tab_loop++){
+
+      if(tab_loop == tab){
+         SetTabButton(def, tab_loop, TRUE);
+      }
+      else{
+         SetTabButton(def, tab_loop, FALSE);
+      }
+  }
+
+}
+
+/******************************************************************************/
+
+static void SetTabButton(tabdialog_def *def, int tab, BOOL selected)
+{
+  icon_handle tab_background;
+  icon_handle tab_text;
+  int text_colour;
+  icon_block iconinfo;
+
+  tab_background = def->min_tab + (tab * 2) - 2; 
+  tab_text = def->min_tab + (tab * 2) - 1;
+
+  if(Icon_GetSelect(def->mainwindow, tab_background) != selected)
+     Icon_SetSelect(def->mainwindow, tab_background, selected);
+
+  if(selected)
+     text_colour = 7;
+  else
+     text_colour = 4;
+
+  Wimp_GetIconState(def->mainwindow, tab_text, &iconinfo);
+  if(Icon_GetFgCol(&iconinfo) != text_colour)
+     Icon_SetForeColour(def->mainwindow, tab_text, text_colour);
+}

@@ -1,0 +1,397 @@
+/************************************************************************
+ *                                                                      *
+ *        File: CacheIO.c                                               *
+ *                                                                      *
+ *     Purpose: Loading and saving of persistant bitmap cache.          *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "CacheIO.h"
+
+extern void error(char *format, ...);
+
+#define WIMP_SCRAP_DIR    "<Wimp$ScrapDir>"
+
+static char app_session_temp_dir[256];
+static linklist_header open_files_list;
+
+typedef struct {
+    linklist_header   header;
+    file_handle       channel;
+} open_file_block;
+
+static void atexit_handler(void);
+static void cache_directory_error(os_error *err, char *name);
+static void cache_file_open_error(os_error *err, char *name);
+static void cache_file_close_error(os_error *err);
+static void cache_file_read_error(os_error *err);
+static void cache_file_write_error(os_error *err);
+static void cache_file_seek_error(os_error *err);
+static BOOL add_open_file(file_handle channel);
+static BOOL remove_open_file(file_handle channel);
+static void close_open_files(void);
+
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void CacheIO_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+  app_session_temp_dir[0] = '\0';
+
+  LinkList_InitItem(&(open_files_list));
+
+  atexit(atexit_handler);
+
+}
+
+/******************************************************************************/
+
+extern BOOL CacheIO_CreateCacheDirectory(void)
+{
+ /*
+  * Create unique session cache directory
+  */
+  os_error *err = NULL;
+  char app_dir[256];
+  char *name;
+
+  if(!OS_ReadVarVal("RDPClient$PstCacheDir", app_dir, 255))
+     sprintf(app_dir, "%s.%s", WIMP_SCRAP_DIR, event_taskname);
+
+  err = File_CreateDir(app_dir);
+  name = app_dir;
+
+  if(err == NULL){
+
+     sprintf(app_session_temp_dir, "%s.%i", app_dir, event_taskhandle);
+
+     err = File_CreateDir(app_session_temp_dir);
+     name = app_session_temp_dir;
+
+  }
+
+  if(err != NULL)
+     cache_directory_error(err, name);
+
+  return(err == NULL);
+}
+
+/******************************************************************************/
+
+extern int CacheIO_OpenCacheFile(char *filename)
+{
+ /*
+  * Open file in session cache directory, ignoring any UNIX style directory
+  * name prefix.
+  * Return file handle or -1 if fails.
+  */
+//fprintf(stderr, "Called CacheIO_OpenCacheFile(filename='%s')\n", filename);
+  
+  char *leaf_name;
+  file_handle channel;
+  char file_name[256];
+
+  leaf_name = filename + strlen(filename);
+
+  while(leaf_name > filename){
+
+     if(*leaf_name == '/' || *leaf_name == '\\'){
+        leaf_name++;
+        break;
+     }
+
+     leaf_name--;
+
+  }
+
+  sprintf(file_name, "%s.%s", app_session_temp_dir, leaf_name);
+
+  channel = File_Open(file_name, file_WRITE);
+
+  if(channel != NULL)
+     add_open_file(channel);
+  else
+     cache_file_open_error(file_lasterror, leaf_name);
+
+//fprintf(stderr, "return(%i)\n", (channel == NULL ? -1 : (int)channel));
+
+  if(channel == NULL)
+     return(-1);
+  else
+     return((int)channel);
+}
+
+/******************************************************************************/
+
+extern void CacheIO_CloseCacheFile(int fd)
+{
+ /*
+  * Close cache file
+  */
+//fprintf(stderr, "Called CacheIO_CloseCacheFile(fd=%i\n", fd);
+
+  file_handle channel = (file_handle)fd;
+  os_error *err = NULL;
+
+  err = File_Close(channel);
+
+  remove_open_file(channel);
+  
+  if(err != NULL)
+     cache_file_close_error(err);
+}
+
+/******************************************************************************/
+
+extern int CacheIO_ReadCacheFile(int fd, void *ptr, int len)
+{
+ /*
+  * Read 'len' bytes into 'ptr' from file 'fd'
+  * Return number of bytes read.
+  */
+//fprintf(stderr, "Called CacheIO_ReadCacheFile(fd=%i, ptr=%li, len=%i)\n", fd, ptr, len);
+
+  file_handle channel = (file_handle)fd;
+  int bytes_read;
+
+  bytes_read = File_ReadBytes(channel, ptr, len);
+
+  if(bytes_read != len)
+     cache_file_read_error(file_lasterror);
+
+  return(bytes_read);
+}
+
+/******************************************************************************/
+
+extern int CacheIO_WriteCacheFile(int fd, void *ptr, int len)
+{
+ /*
+  * Write 'len' bytes into 'ptr' from file 'fd'
+  * Return number of bytes read.
+  */
+//fprintf(stderr, "Called CacheIO_WriteCacheFile(fd=%i, ptr=%li, len=%i)\n", fd, ptr, len);
+
+  file_handle channel = (file_handle)fd;
+  os_error *err;
+
+  err = File_WriteBytes(channel, ptr, len);
+
+  if(err == NULL)
+     return(len);
+  else{
+     cache_file_write_error(err);
+     return(0);
+  }
+}
+
+/******************************************************************************/
+
+extern int CacheIO_SeekCacheFile(int fd, int offset)
+{
+ /*
+  * Seek file pointer to 'offset' in file 'fd'
+  */
+//fprintf(stderr, "Called CacheIO_SeekCacheFile(fd=%i, offset=%i)\n", fd, offset);
+
+  file_handle channel = (file_handle)fd;
+  os_error *err;
+
+  err = File_Seek(channel, (file_position)offset);
+
+  if(err == NULL)
+     return(offset);
+  else{
+     cache_file_seek_error(err);
+     return((int)File_ReturnPos(channel));
+  }
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+static void atexit_handler(void)
+{
+ /*
+  * Clean up cache directory on closedown
+  */
+//fprintf(stderr, "Called CacheIO_atexit_handler()\n");
+
+  char command[255];
+
+  close_open_files();
+
+  if(app_session_temp_dir[0] != '\0'){
+
+     sprintf(command, "wipe %s ~CFR~V", app_session_temp_dir);
+
+     OS_CLI(command);
+      
+  }
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void cache_directory_error(os_error *err, char *name)
+{
+  char message[100];
+
+  Msgs_Lookup("err.cache01", message, 95);
+
+  error("%s %i '%s' (%s)", message, err->errnum, err->errmess, name);
+}
+
+/******************************************************************************/
+
+static void cache_file_open_error(os_error *err, char *name)
+{
+  char message[100];
+
+  Msgs_Lookup("err.cache02", message, 95);
+
+  error("%s %i '%s' (%s)", message, err->errnum, err->errmess, name);
+}
+
+/******************************************************************************/
+
+static void cache_file_close_error(os_error *err)
+{
+  char message[100];
+
+  Msgs_Lookup("err.cache03", message, 95);
+
+  error("%s %i '%s'", message, err->errnum, err->errmess);
+}
+
+/******************************************************************************/
+
+static void cache_file_read_error(os_error *err)
+{
+  char message[100];
+
+  Msgs_Lookup("err.cache04", message, 95);
+
+  error("%s %i '%s'", message, err->errnum, err->errmess);
+}
+
+/******************************************************************************/
+
+static void cache_file_write_error(os_error *err)
+{
+  char message[100];
+
+  Msgs_Lookup("err.cache05", message, 95);
+
+  error("%s %i '%s'", message, err->errnum, err->errmess);
+}
+
+/******************************************************************************/
+
+static void cache_file_seek_error(os_error *err)
+{
+  char message[100];
+
+  Msgs_Lookup("err.cache06", message, 95);
+
+  error("%s %i '%s'", message, err->errnum, err->errmess);
+}
+
+/******************************************************************************/
+
+static BOOL add_open_file(file_handle channel)
+{
+  open_file_block *item;
+
+  item = malloc(sizeof(open_file_block));
+
+  if(item == NULL)
+     return(FALSE);
+
+  LinkList_InitItem(&(item->header));
+
+  item->channel = channel;
+
+  LinkList_AddToTail(&(open_files_list), &(item->header));
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL remove_open_file(file_handle channel)
+{
+  open_file_block *item;
+
+  item = LinkList_NextItem(&(open_files_list));
+
+  while(item != NULL && item->channel != channel)
+     item = LinkList_NextItem(&(item->header));
+
+  if(item != NULL && item->channel == channel){
+     LinkList_Unlink(&(open_files_list), &(item->header));
+     free(item);
+     return(TRUE);
+  }
+  else
+     return(FALSE);
+}
+
+/******************************************************************************/
+
+static void close_open_files(void)
+{
+  open_file_block *item;
+
+  item = LinkList_NextItem(&(open_files_list));
+
+  while(item != NULL){
+
+     LinkList_Unlink(&(open_files_list), &(item->header));
+
+     File_Close(item->channel);
+     free(item);
+
+     item = LinkList_NextItem(&(open_files_list));
+  }
+}

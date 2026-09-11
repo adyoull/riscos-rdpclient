@@ -1,0 +1,112 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Printer.c                                               *
+ *                                                                      *
+ *     Purpose: Printer port link to rdesktop.                          *
+ *                                                                      *
+ ************************************************************************/
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+/*#include <socklib.h>*/
+
+#include "rdesktop/rdesktop.h"
+
+extern RDPDR_DEVICE g_rdpdr_device[];
+
+/* although these routines are static, they are called from outside using */
+/* the printer_fns function pointer table */
+static RD_NTSTATUS Printer_Create(uint32 device_id, uint32 accessmask, uint32 sharemode,
+                                  uint32 create_disposition, uint32 flags_and_attributes,
+                                  char *filename, RD_NTHANDLE *handle);
+static RD_NTSTATUS Printer_Close(RD_NTHANDLE handle);
+static RD_NTSTATUS Printer_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                                 uint32 *result);
+
+/* function table for printer control routines */
+DEVICE_FNS printer_fns = {
+  Printer_Create,
+  Printer_Close,
+  NULL, /* read */
+  Printer_Write,
+  NULL /* device_control */
+};
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Printer_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Printer_Create(uint32 device_id, uint32 access, uint32 share_mode,
+                                  uint32 disposition, uint32 flags,
+                                  char *filename, RD_NTHANDLE *handle)
+{
+ /*
+  * Initialise connection to printer
+  */
+  fprintf(stderr, "Called Printer_Create(device_id=%li, access=%li, share_mode=%li, disposition=%li, flags=%li, filename='%s', handle=%li, *handle=%li)\n", device_id, access, share_mode, disposition, flags, filename, handle, *handle);
+
+ /* return STATUS_ACCESS_DENIED */
+
+ /*
+  * Return success state
+  */
+//  *handle = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Printer_Close(RD_NTHANDLE handle)
+{
+ /*
+  * Close connetion to printer
+  */
+  fprintf(stderr, "Called Printer_Close(handle=%li)\n", handle);
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Printer_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                                 uint32 *result)
+{
+ /*
+  * Write up to 'length' bytes to printer port from 'data'.
+  * Return number of bytes written in 'result'
+  */
+  fprintf(stderr, "Called Printer_Write(handle=%li, data=%li, length=%li, offset=%li)\n", handle, data, length, offset);
+
+  *result = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+

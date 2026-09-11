@@ -1,0 +1,9 @@
+
+RMEnsure SharedSound 1.07 RMLoad System:Modules.SSound
+RMEnsure SharedSound 1.07 Error 0 This application requires SharedSound 1.07 or later.
+
+RMEnsure StreamManager 0.03 RMLoad System:Modules.StreamMan
+RMEnsure StreamManager 0.03 Error 0 This application requires StreamManager 0.03 or later.
+
+RMEnsure SharedSoundBuffer 0.07 RMLoad System:Modules.SSBuffer
+RMEnsure SharedSoundBuffer 0.07 Error 0 This application requires SharedSoundBuffer 0.07 or later.

@@ -1,0 +1,122 @@
+/************************************************************************
+ *                                                                      *
+ *        File: RDPClient.h                                             *
+ *                                                                      *
+ *     Purpose: Core of program.                                        *
+ *              Initialises and loads resources.                        *
+ *              Handles IconBar icon and menu.                          *
+ *                                                                      *
+ ************************************************************************/
+
+#ifndef __dl_sprite_h
+#include "DeskLib:Sprite.h"
+#endif
+
+#ifndef __dl_window_h
+#include "DeskLib:Window.h"
+#endif
+
+
+#define baricon_VALIDATION_SIZE 100
+#define baricon_TEXT_SIZE       100
+
+#define save_type_SCREEN        0
+#define save_type_LOG           1
+
+ /*
+  * pointer to icon sprite area
+  */
+extern sprite_area usericonsprites;
+
+ /*
+  * wimp poll idle time
+  */
+extern unsigned int idletime;
+
+
+ /*
+  * true when RDPClient quitted correctly
+  */ 
+extern BOOL rdpclient_quit;
+
+
+ /*
+  * TRUE if connected to a server
+  */
+extern BOOL rdpclient_connected;
+
+
+ /*
+  * true when 3D windows are being used
+  */
+extern BOOL threedlook;
+
+
+ /*
+  * validation string for iconbar icon
+  */
+extern char *rdpclient_baricon_validation;
+
+ /*
+  * text string for iconbar icon
+  */
+extern char *rdpclient_baricon_text;
+
+ /*
+  * Update text on IconBar Icon
+  */
+extern void RDPClient_IconBarSetText(char *newtext);
+
+ /*
+  * Update sprite on IconBar Icon to reflect connected state
+  */
+extern void RDPClient_IconBarSetState(BOOL connected);
+
+ /*
+  * Set selected display mode in iconbar menu
+  */
+extern void RDPClient_MenuSetDisplayMode(int display_mode);
+
+ /*
+  * Call WimpPoll and return immediately
+  */
+extern event_type RDPClient_PollNull(void);
+
+
+ /*
+  * Call WimpPoll and return after null_polls number of NULL events
+  */
+extern event_type RDPClient_PollNullLoop(int null_polls);
+
+
+ /*
+  * Set properties of Save window.
+  * Called before displaying window
+  */
+extern void RDPClient_SetSaveWindowProperties(BOOL is_menu, int filetype, int estimatedsize,
+                                              char *filename, int save_type);
+
+
+ /*
+  * Open Save window
+  */
+extern void RDPClient_OpenSaveWindow(window_openpos openpos);
+
+
+ /*
+  * Closes Save window
+  */
+extern void RDPClient_HideSaveWindow(void);
+
+
+ /*
+  * initialise shifting heap memory manager
+  */
+extern void RDPCLient_InitMemoryManagement(BOOL use_dynamic_areas);
+
+
+ /*
+  * poll routine for memory management
+  */
+extern void RDPCLient_PollMemoryManagement(void);
+

@@ -1,0 +1,3 @@
+Set RDPClient$Dir <Obey$Dir>
+
+IconSprites <RDPClient$Dir>.!Sprites

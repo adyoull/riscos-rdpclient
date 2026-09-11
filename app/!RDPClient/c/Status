@@ -1,0 +1,895 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Status.c                                                *
+ *                                                                      *
+ *     Purpose: Status display window.                                  *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:Time.h"              /* "TIME"                          */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:Pane2.h"
+#include "DeskLib:TabDialog.h"
+#include "DeskLib:Slider.h"
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Status.h"
+#include "Sound.h"
+#include "Clipboard.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "rdesktop/rdesktop.h"
+
+#define icon_STATUS_TAB_BACK            1
+#define icon_STATUS_TAB_MIN             2
+#define icon_STATUS_TAB_MAX             7
+
+#define tab_STATUS_NETWORK              1
+#define tab_STATUS_CONNECTION           2
+#define tab_STATUS_DISPLAY              3
+
+#define icon_S_NETWORK_STATUS           1
+#define icon_S_NETWORK_USERNAME         3
+#define icon_S_NETWORK_DOMAIN           5
+#define icon_S_NETWORK_SERVERNAME       7
+#define icon_S_NETWORK_SERVERADDRESS    9
+#define icon_S_NETWORK_SERVERPORT       11
+#define icon_S_NETWORK_HOSTNAME         13
+
+#define icon_S_CONNECTION_NAME          1
+#define icon_S_CONNECTION_LICENCE       3
+#define icon_S_CONNECTION_COMPRESSION   5
+#define icon_S_CONNECTION_ENCRYPTION    7
+#define icon_S_CONNECTION_PROTOCOL      9
+#define icon_S_CONNECTION_KEYMAPNAME    11
+#define icon_S_CONNECTION_CLIPBOARD     13
+#define icon_S_CONNECTION_SOUND         15
+#define icon_S_CONNECTION_SOUND_BUFFER  24
+
+#define icon_S_DISPLAY_WIDTH            1
+#define icon_S_DISPLAY_HEIGHT           3
+#define icon_S_DISPLAY_COLOURS          5
+#define icon_S_DISPLAY_MODE             7
+#define icon_S_DISPLAY_PALETTE          9
+#define icon_S_DISPLAY_BITMAP_CACHE     11
+#define icon_S_DISPLAY_PERSISTENT_CACHE 13
+#define icon_S_DISPLAY_GLYPHCACHE       15
+#define icon_S_DISPLAY_IMAGECACHE       17
+
+
+#define status_UPDATETIME 200
+
+/* Network */
+static BOOL status_connected;
+static BOOL status_connected_changed;
+
+static char status_username[128];
+static BOOL status_username_changed;
+
+static char status_domain[128];
+static BOOL status_domain_changed;
+
+static char status_servername[128];
+static BOOL status_servername_changed;
+
+static char status_serveraddress[128];
+static BOOL status_serveraddress_changed;
+
+static char status_hostname[128];
+static BOOL status_hostname_changed;
+
+static char status_connectionname[128];
+static BOOL status_connectionname_changed;
+
+static char status_keymapname[128];
+static BOOL status_keymapname_changed;
+
+static int status_clipboard_mode;
+static BOOL status_clipboard_mode_changed;
+
+static int status_clipboard_buffer_size;
+static BOOL status_clipboard_buffer_size_changed;
+
+static int status_sound_option;
+static BOOL status_sound_option_changed;
+
+static BOOL status_sound_called;
+
+static int status_sound_channels;
+static BOOL status_sound_channels_changed;
+
+static int status_sound_bits;
+static BOOL status_sound_bits_changed;
+
+static int status_sound_rate;
+static BOOL status_sound_rate_changed;
+
+static int status_sound_buffer;
+static int status_sound_buffer_scale;
+#define status_SOUND_BUFFER_MAX 1024
+
+extern int g_tcp_port_rdp;
+static int status_tcp_port_rdp = 0;
+
+extern BOOL g_licence_issued;
+static BOOL status_licence_issued = FALSE;
+
+extern BOOL g_bitmap_compression;
+static BOOL status_bitmap_compression = FALSE;
+
+static BOOL status_rdp_compression;
+static BOOL status_rdp_compression_changed;
+
+extern BOOL g_bitmap_cache;
+static BOOL status_bitmap_cache = FALSE;
+
+extern BOOL g_bitmap_cache_persist_enable;
+static BOOL status_bitmap_cache_persist_enable = FALSE;
+
+extern BOOL g_packet_encryption;
+extern BOOL g_encryption;
+static BOOL status_packet_encryption = FALSE;
+static BOOL status_encyption = FALSE;
+
+extern BOOL g_use_rdp5;
+static BOOL status_use_rdp5 = FALSE;
+
+/* Display */
+extern int g_width;
+static int status_width = 0;
+
+extern int g_height;
+static int status_height = 0;
+
+extern int g_server_depth;
+static int status_server_bpp = 0;
+
+/* display_mode */
+static int status_display_mode = 0;
+
+/* set_palette */
+static BOOL status_set_palette = FALSE;
+
+/* total_sprites1bpp */
+static int status_total_sprites1bpp = 0;
+
+/* total_sprites */
+static int status_total_spritesnot1bpp = 0;
+
+static tabdialog_def *status_dialog = NULL;
+static window_handle s_network_window = NULL;
+static window_handle s_connection_window = NULL;
+static window_handle s_display_window = NULL;
+static int status_dialog_default_tab = tab_STATUS_NETWORK;
+static slider_info status_slider;
+
+static unsigned int next_update_time = 0;
+
+static BOOL Close_status(event_pollblock *event, void *reference);
+static BOOL Null_status(event_pollblock *event, void *reference);
+static BOOL Redraw_connection(event_pollblock *event, void *reference);
+static void update_status(BOOL force);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Status_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  status_connected = FALSE;
+  status_connected_changed = FALSE;
+
+  status_username[0] = '\0';
+  status_username_changed = FALSE;
+
+  status_domain[0] = '\0';
+  status_domain_changed = FALSE;
+
+  status_servername[0] = '\0';
+  status_servername_changed = FALSE;
+
+  status_serveraddress[0] = '\0';
+  status_serveraddress_changed = FALSE;
+
+  status_hostname[0] = '\0';
+  status_hostname_changed = FALSE;
+
+  status_connectionname[0] = '\0';
+  status_connectionname_changed = FALSE;
+
+  status_keymapname[0] = '\0';
+  status_keymapname_changed = FALSE;
+
+  status_clipboard_mode = clipboard_OFF;
+  status_clipboard_mode_changed = FALSE;
+
+  status_clipboard_buffer_size = 0;
+  status_clipboard_buffer_size_changed = FALSE;
+  
+  status_sound_option = status_SOUND_OPTION_OFF;
+  status_sound_option_changed = FALSE;
+
+  status_sound_called = FALSE;
+
+  status_sound_channels = 0;
+  status_sound_channels_changed = FALSE;
+
+  status_sound_bits = 0;
+  status_sound_bits_changed = FALSE;
+
+  status_sound_rate = 0;
+  status_sound_rate_changed = FALSE;
+
+  status_sound_buffer = 0;
+  status_sound_buffer_scale = 1;
+
+  status_rdp_compression = FALSE;
+  status_rdp_compression_changed = FALSE;
+
+  status_dialog = NULL;
+  s_network_window = NULL;
+  s_connection_window = NULL;
+  s_display_window = NULL;
+  status_dialog_default_tab = tab_STATUS_NETWORK;
+
+  next_update_time = 0;
+}
+
+/******************************************************************************/
+
+extern void Status_SetConnected(BOOL connected)
+{
+  status_connected = connected;
+
+  status_connected_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetUsername(char *username)
+{
+  if(username != NULL){
+     strncpy(status_username, username, 127);
+     status_username[127] = '\0';
+  }
+  else
+     status_username[0] = '\0';
+     
+  status_username_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetDomain(char *domain)
+{
+  strncpy(status_domain, domain, 127);
+  status_domain[127] = '\0';
+
+  status_domain_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetServername(char *servername)
+{
+  strncpy(status_servername, servername, 127);
+  status_servername[127] = '\0';
+
+  status_servername_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetServeraddress(char *serveraddress)
+{
+  strncpy(status_serveraddress, serveraddress, 127);
+  status_serveraddress[127] = '\0';
+
+  status_serveraddress_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetHostname(char *hostname)
+{
+  strncpy(status_hostname, hostname, 127);
+  status_hostname[127] = '\0';
+
+  status_hostname_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetConnectionname(char *connectionname)
+{
+  strncpy(status_connectionname, connectionname, 127);
+  status_connectionname[127] = '\0';
+
+  status_connectionname_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetKeymapname(char *keymapname)
+{
+  strncpy(status_keymapname, keymapname, 15);
+  status_keymapname[15] = '\0';
+
+  status_keymapname_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetClipboardMode(int clipboardmode)
+{
+  status_clipboard_mode = clipboardmode;
+
+  status_clipboard_mode_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetClipboardBufferSize(int buffersize)
+{
+  status_clipboard_buffer_size = buffersize;
+
+  status_clipboard_buffer_size_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetSoundOption(int soundoption)
+{
+  if(soundoption == status_SOUND_OPTION_OFF ||
+     soundoption == status_SOUND_OPTION_LOCAL ||
+     soundoption == status_SOUND_OPTION_REMOTE){
+
+     status_sound_option = soundoption;
+
+     status_sound_option_changed = TRUE;
+
+  }
+}
+
+/******************************************************************************/
+
+extern void Status_SetSoundChannels(int channels)
+{
+  status_sound_channels = channels;
+
+  status_sound_called = TRUE;
+
+  status_sound_channels_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetSoundBits(int bits)
+{
+  status_sound_bits = bits;
+
+  status_sound_called = TRUE;
+
+  status_sound_bits_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetSoundRate(int rate)
+{
+  status_sound_rate = rate;
+
+  status_sound_called = TRUE;
+
+  status_sound_rate_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_SetRDPCompression(BOOL compression)
+{
+  status_rdp_compression = compression;
+
+  status_rdp_compression_changed = TRUE;
+}
+
+/******************************************************************************/
+
+extern void Status_Display(void)
+{
+  fprintf(stderr, "connected=%s  username='%s'  domain='%s'  servername='%s'  serveraddress='%s'\n", (status_connected ? "True" : "False"), status_username, status_domain, status_servername, status_serveraddress);
+
+/*
+  fprintf(stderr, "g_username='%s'  hostname='%s'  g_bitmap_compression=%s  g_bitmap_cache=%s\n",
+          g_username, hostname, (g_bitmap_compression ? "True" : "False"),
+          (g_bitmap_cache ? "True" : "False"));
+
+  fprintf(stderr, "g_encryption=%s  g_use_rdp5=%s  g_server_rdp_version=%i\n",
+          (g_encryption ? "True" : "False"), (g_use_rdp5 ? "True" : "False"),
+          g_server_rdp_version);
+
+  fprintf(stderr, "g_server_depth=%i  g_width=%i  g_height=%i  g_licence_issued=%s\n",
+          g_server_depth, g_width, g_height, (g_licence_issued ? "True" : "False"));
+
+  fprintf(stderr, "g_console_session=%s  g_num_channels=%i  tcp_port_rdp=%i\n",
+          (g_console_session ? "True" : "False"), g_num_channels, tcp_port_rdp);
+
+  fprintf(stderr, "g_fullscreen=%s  g_owncolmap=%s\n",
+          (g_fullscreen ? "True" : "False"), (g_owncolmap ? "True" : "False"));
+*/
+}
+
+/******************************************************************************/
+
+extern void Status_Open(void)
+{
+ /*
+  * Open status window on screen
+  */
+
+  if(status_dialog == NULL){
+
+     status_dialog = TabDialog_Create("Status",
+                                     icon_STATUS_TAB_MIN,
+                                     icon_STATUS_TAB_MAX,
+                                     icon_STATUS_TAB_BACK,
+                                     status_dialog_default_tab,
+                                     "S_Network", "S_Connectn", "S_Display"); 
+
+     s_network_window = status_dialog->tabwindow[tab_STATUS_NETWORK-1];
+     s_connection_window = status_dialog->tabwindow[tab_STATUS_CONNECTION-1];
+     s_display_window = status_dialog->tabwindow[tab_STATUS_DISPLAY-1];
+
+     if(s_connection_window != NULL){
+
+        status_slider.window = s_connection_window;
+        status_slider.icon = icon_S_CONNECTION_SOUND_BUFFER;
+        status_slider.value = SLIDER_MAX + 1;
+        status_slider.limits.min = 0;
+        status_slider.limits.max = status_SOUND_BUFFER_MAX;
+        status_slider.colour.foreground = colour_GREY5 /* colour_BLACK */;
+        status_slider.colour.background = colour_WHITE;
+        status_slider.border.x = 0;
+        status_slider.border.y = 0;
+        status_slider.knob.spritearea = NULL;
+        status_slider.knob.sprite = NULL;
+        status_slider.flags.vertical = 0; /* horizontal */
+        status_slider.flags.rgb = 0; /* WIMP colours */
+        status_slider.flags.dragging = 0;
+        status_slider.flags.clickstop = 0; /* smooth drag */
+        status_slider.flags.reserved = 0;
+        status_slider.update = NULL;
+        status_slider.reference = 0;
+
+        status_sound_buffer_scale = Sound_BufferSize() / status_SOUND_BUFFER_MAX;
+        if(status_sound_buffer_scale == 0)
+           status_sound_buffer_scale = 1;
+
+//fprintf(stderr, "sound buffer size %i  scale %i\n", Sound_BufferSize(), status_sound_buffer_scale); 
+
+        Slider_SetValue(&status_slider, 0, NULL, NULL);
+
+        Event_Claim(event_REDRAW, s_connection_window, event_ANY, Redraw_connection, NULL);
+        
+     }
+
+     next_update_time = Time_Monotonic() + status_UPDATETIME;
+
+
+     Event_Claim(event_CLOSE, status_dialog->mainwindow, event_ANY, Close_status, NULL);
+     Event_Claim(event_NULL, event_ANY, event_ANY, Null_status, NULL);
+
+  }
+
+  if(status_dialog != NULL){
+
+     update_status(TRUE);
+
+     TabDialog_Show(status_dialog, open_WHEREVER);
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void Status_Close(void)
+{
+ /*
+  * Close status window
+  */
+
+  if(status_dialog != NULL){
+
+     Event_Release(event_NULL, event_ANY, event_ANY, Null_status, NULL);
+
+     TabDialog_Delete(status_dialog);
+
+     status_slider.window = NULL;
+     
+     status_dialog = NULL;
+     s_network_window = NULL;
+     s_connection_window = NULL;
+     s_display_window = NULL;
+
+  }
+}
+
+/******************************************************************************
+ *                               close handlers                               *
+ ******************************************************************************/
+
+static BOOL Close_status(event_pollblock *event, void *reference)
+{
+
+  Status_Close();
+  
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                                null handlers                               *
+ ******************************************************************************/
+
+static BOOL Null_status(event_pollblock *event, void *reference)
+{
+  if(Time_Monotonic() >= next_update_time){
+
+     update_status(FALSE);
+
+     next_update_time = Time_Monotonic() + status_UPDATETIME;
+
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************
+ *                             redraw handlers                                *
+ ******************************************************************************/
+
+static BOOL Redraw_connection(event_pollblock *event, void *reference)
+{
+  window_redrawblock redraw;
+  BOOL more;
+
+  redraw.window = event->data.openblock.window;
+  Wimp_RedrawWindow(&redraw, &more);
+
+  while (more)
+  {
+    if(status_slider.window != NULL) {
+       Slider_Redraw(&status_slider, &redraw.cliprect);
+//fprintf(stderr, "redraw\n");
+    }       
+    Wimp_GetRectangle(&redraw, &more);
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void update_status(BOOL force)
+{
+  char input[40];
+  char temp[40];
+  char output[100];
+  int value;
+  BOOL state;
+  
+  if(s_network_window != NULL){
+
+     if(force || status_connected_changed){
+
+        sprintf(input, "statnet.status%i", (status_connected ? 1 : 0));
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_network_window, icon_S_NETWORK_STATUS, output);
+
+        status_connected_changed = FALSE;
+     }
+
+     if(force || status_username_changed){
+
+        Icon_SetText(s_network_window, icon_S_NETWORK_USERNAME, status_username);
+
+        status_username_changed = FALSE;
+     }
+
+     if(force || status_domain_changed){
+
+        Icon_SetText(s_network_window, icon_S_NETWORK_DOMAIN, status_domain);
+
+        status_domain_changed = FALSE;
+     }
+
+     if(force || status_servername_changed){
+
+        Icon_SetText(s_network_window, icon_S_NETWORK_SERVERNAME, status_servername);
+
+        status_servername_changed = FALSE;
+     }
+
+     if(force || status_serveraddress_changed){
+
+        Icon_SetText(s_network_window, icon_S_NETWORK_SERVERADDRESS, status_serveraddress);
+
+        status_serveraddress_changed = FALSE;
+     }
+
+     if(force || g_tcp_port_rdp != status_tcp_port_rdp){
+
+        Icon_SetInteger(s_network_window, icon_S_NETWORK_SERVERPORT, g_tcp_port_rdp);
+
+        status_tcp_port_rdp = g_tcp_port_rdp;
+     }
+
+     if(force || status_hostname_changed){
+
+        Icon_SetText(s_network_window, icon_S_NETWORK_HOSTNAME, status_hostname);
+
+        status_hostname_changed = FALSE;
+     }
+     
+  }
+
+  if(s_connection_window != NULL){
+
+     if(force || status_connectionname_changed){
+
+        if(status_connectionname[0] == '\0'){
+           Msgs_Lookup("statcon.namena", output, 90);
+           Icon_SetText(s_connection_window, icon_S_CONNECTION_NAME, output);
+        }
+        else
+           Icon_SetText(s_connection_window, icon_S_CONNECTION_NAME, status_connectionname);
+
+        status_connectionname_changed = FALSE;
+     }
+
+     if(force || g_licence_issued != status_licence_issued){
+     
+        sprintf(input, "statcon.licence%i", (g_licence_issued ? 1 : 0));
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_connection_window, icon_S_CONNECTION_LICENCE, output);
+
+        status_licence_issued = g_licence_issued;
+     }
+
+     if(force || g_bitmap_compression != status_bitmap_compression ||
+        status_rdp_compression_changed){
+
+        value = 0;
+        if(g_bitmap_compression)
+           value = 1;
+        if(status_rdp_compression)
+           value = 2;
+
+        sprintf(input, "statcon.compres%i", value);
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_connection_window, icon_S_CONNECTION_COMPRESSION, output);
+
+        status_bitmap_compression = g_bitmap_compression;
+        status_rdp_compression_changed = FALSE;
+     }
+
+
+     if(force || g_packet_encryption != status_packet_encryption ||
+                 g_encryption != status_encyption){
+
+        if(g_packet_encryption && g_encryption)
+           value = 2;
+        else if(!g_packet_encryption && !g_encryption)
+           value = 1;
+        else
+           value = 0;
+
+        sprintf(input, "statcon.encrypt%i", value);
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_connection_window, icon_S_CONNECTION_ENCRYPTION, output);
+
+        status_packet_encryption = g_packet_encryption;
+        status_encyption = g_encryption;
+     }
+
+     if(force || g_use_rdp5 != status_use_rdp5){
+
+        sprintf(input, "statcon.protoco%i", (g_use_rdp5 ? 1 : 0));
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_connection_window, icon_S_CONNECTION_PROTOCOL, output);
+
+        status_use_rdp5 = g_use_rdp5;
+     }
+
+     if(force || status_keymapname_changed){
+
+        Icon_SetText(s_connection_window, icon_S_CONNECTION_KEYMAPNAME, status_keymapname);
+
+        status_keymapname_changed = FALSE;
+     }
+
+     if(force || status_clipboard_mode_changed || status_clipboard_buffer_size_changed){
+
+        sprintf(input, "statcon.clip%i", status_clipboard_mode);
+        Msgs_Lookup(input, output, 90);
+
+        if(status_clipboard_mode != clipboard_OFF && status_clipboard_buffer_size != 0){
+           sprintf(temp, " (%iK)", status_clipboard_buffer_size);
+           strcat(output, temp);
+        }
+        
+        Icon_SetText(s_connection_window, icon_S_CONNECTION_CLIPBOARD, output);
+
+        status_clipboard_mode_changed = FALSE;
+        status_clipboard_buffer_size_changed = FALSE;
+     }
+
+     if(force || status_sound_option_changed || status_sound_channels_changed ||
+                 status_sound_bits_changed || status_sound_rate_changed){
+
+        if(status_sound_option == status_SOUND_OPTION_LOCAL && status_sound_called){
+
+           /* <nn>bit <mono|stereo> nnnnnHz */
+           sprintf(output, "%i", status_sound_bits);
+
+           Msgs_Lookup("statcon.soundbit", temp, 35);
+           strcat(output, temp);
+           strcat(output, " ");
+
+           sprintf(input, "statcon.soundc%i", status_sound_channels);
+           Msgs_Lookup(input, temp, 35);
+           strcat(output, temp);
+           strcat(output, " ");
+
+           sprintf(temp, "%i", status_sound_rate);
+           strcat(output, temp);
+           Msgs_Lookup("statcon.soundhz", temp, 35);
+           strcat(output, temp);
+
+           Icon_SetText(s_connection_window, icon_S_CONNECTION_SOUND, output);
+        }
+        else{
+
+           sprintf(input, "statcon.sound%i", status_sound_option);
+           Msgs_Lookup(input, output, 90);
+           Icon_SetText(s_connection_window, icon_S_CONNECTION_SOUND, output);
+        }
+
+        status_sound_option_changed = FALSE;
+        status_sound_channels_changed = FALSE;
+        status_sound_bits_changed = FALSE;
+        status_sound_rate_changed = FALSE;
+     }
+
+
+     value = Sound_BufferUsed() / status_sound_buffer_scale;
+
+     if(force | value != status_sound_buffer){
+
+        status_sound_buffer = value;
+
+//fprintf(stderr, "buffer used %i   scaled %i\n", value, value / status_sound_buffer_scale);     
+
+        Slider_SetValue(&status_slider, value, NULL, NULL);
+
+     }
+
+  }
+
+  if(s_display_window != NULL){
+
+     if(force || g_width != status_width){
+
+        Icon_SetInteger(s_display_window, icon_S_DISPLAY_WIDTH, g_width);
+
+        status_width = g_width;
+     }
+
+     if(force || g_height != status_height){
+
+        Icon_SetInteger(s_display_window, icon_S_DISPLAY_HEIGHT, g_height);
+
+        status_height = g_height;
+     }
+
+     if(force || g_server_depth != status_server_bpp){
+
+        if(g_server_depth == 8 || g_server_depth == 15 ||
+           g_server_depth == 16 || g_server_depth == 24 ||
+           g_server_depth == 32){
+           sprintf(input, "statdis.colour%i", g_server_depth);
+           Msgs_Lookup(input, output, 90);
+           Icon_SetText(s_display_window, icon_S_DISPLAY_COLOURS, output);
+        }
+
+        status_server_bpp = g_server_depth;
+     }
+
+     value = Display_GetDisplayMode();
+     if(force || value != status_display_mode){
+
+        sprintf(input, "statdis.display%i", value);
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_display_window, icon_S_DISPLAY_MODE, output);
+
+        status_display_mode = value;
+     }
+
+     state = Display_GetUpdatePalette();
+     if(force || state != status_set_palette){
+        sprintf(input, "statdis.palette%i", (state ? 1 : 0));
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_display_window, icon_S_DISPLAY_PALETTE, output);
+
+        status_set_palette = state;
+     }
+
+     if(force || g_bitmap_cache != status_bitmap_cache){
+
+        sprintf(input, "statdis.cache%i", (g_bitmap_cache ? 1 : 0));
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_display_window, icon_S_DISPLAY_BITMAP_CACHE, output);
+
+        status_bitmap_cache = g_bitmap_cache;
+     }
+
+     if(force || g_bitmap_cache_persist_enable != status_bitmap_cache_persist_enable){
+
+        sprintf(input, "statdis.persist%i", (g_bitmap_cache_persist_enable ? 1 : 0));
+        Msgs_Lookup(input, output, 90);
+        Icon_SetText(s_display_window, icon_S_DISPLAY_PERSISTENT_CACHE, output);
+
+        status_bitmap_cache_persist_enable = g_bitmap_cache_persist_enable;
+     }
+
+     value = SpriteLib_TotalSprites1bpp();
+     if(force || value != status_total_sprites1bpp){
+        Icon_SetInteger(s_display_window, icon_S_DISPLAY_GLYPHCACHE, value);
+
+        status_total_sprites1bpp = value;
+     }
+
+     value = SpriteLib_TotalSprites() - value;
+     if(force || value != status_total_spritesnot1bpp){
+        Icon_SetInteger(s_display_window, icon_S_DISPLAY_IMAGECACHE, value);
+
+        status_total_spritesnot1bpp = value;
+     }
+
+  }
+
+}

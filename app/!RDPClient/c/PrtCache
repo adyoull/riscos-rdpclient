@@ -1,0 +1,94 @@
+/************************************************************************
+ *                                                                      *
+ *        File: PrtCache.c                                              *
+ *                                                                      *
+ *     Purpose: Printer Cache link to rdesktop.                         *
+ *                                                                      *
+ ************************************************************************/
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+/*#include <socklib.h>*/
+
+#include "rdesktop/rdesktop.h"
+
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void PrtCache_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+}
+
+/******************************************************************************/
+
+RD_BOOL printercache_mkdir(char *base, char *printer)
+{
+
+  return(True);
+}
+
+/******************************************************************************/
+
+RD_BOOL printercache_unlink_blob(char *printer)
+{
+
+  return(True);
+}
+
+/******************************************************************************/
+
+RD_BOOL printercache_rename_blob(char *printer, char *new_printer)
+{
+
+  return(True);
+}
+
+/******************************************************************************/
+
+/* called from rdpdr */
+int printercache_load_blob(char *printer_name, uint8 ** data)
+{
+
+  return(0);
+}
+
+/******************************************************************************/
+
+void printercache_save_blob(char *printer_name, uint8 * data, uint32 length)
+{
+
+}
+
+/******************************************************************************/
+
+/* called from rdpdr */
+void printercache_process(STREAM s)
+{
+
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+

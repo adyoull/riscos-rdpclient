@@ -1,0 +1,136 @@
+05-Apr-2010  0.88  Implement synchronisation of "lock" keys with remote
+                   host. Make compatible with VFPatch.
+                   Third public release
+28-Mar-2010  0.87  Correct implementation of 8bpp mouse pointer.
+                   Make mode validation and selection for fullwindow and
+                   fullscreen ViewFinder aware.
+                   Move back to old rdpsnd code. 
+02-Mar-2010  0,86  Move to rdesktop 1.6.0 CVS 01-Mar-2008.
+                   Implement new multi-format mouse pointers.
+01-Feb-2010  0,85  Recompile with DeskLib 2.80 and -memaccess -L22-S22-L41
+04-Jan-2008  0,84  Fixed 15bpp and 16bpp bug that corrupted images
+                   when source data was not word aligned and destination
+                   was word aligned.
+                   Working colour swap for Iyonix graphics cards.
+30-Dec-2007  0,83  Partial colour swap for Iyonix graphics cards.
+26-Dec-2007  0,82  Moved to rdesktop 1.5.0 CVS 23-Dec-2007.
+25-Dec-2006  0,81  Start on full screen colour swap for newer Iyonix
+                   graphics cards.
+24-Dec-2006  0,80  Added option to disable screen mode validation.
+08-Jan-2006  0,79  Made load of Clipboard Store application conditional
+                   on enabling clipboard redirection.
+                   Second public release.
+06-Jan-2006  0,78  Acknowledge datasaveack message in clipboard protocol
+                   in case server is slow and Wimp_Poll is called.
+                   Integrated Clipboard Store application for correct
+                   clipboard operation on non-Select/Adjust OSes.
+15-Nov-2005  0,77  Fixed processing of clipboard claim message. Add
+                   option and key shortcut to bring fullwindow to front
+                   instead of mouseclick. Add configurable key shortcuts.
+06-Nov-2005  0,76  Tidyed up clipboard redirection. Added command line
+                   clipboard control and display in status window.
+                   Fixed error in disconnect reason description lookup.
+05-Nov-2005  0,75  Improved client and server copy and paste: handle
+                   data transfer timeouts, unsupported data formats,
+                   CRLF to LF translation and when no clipboard data is
+                   available. Added buffer limits to clipboard data size.
+04-Nov-2005  0,74  Fixed 'invalid destination address' error on startup.
+                   Improved server to client clipboard copy.
+                   Added experimental clipboard paste between client and
+                   server.
+03-Nov-2005  0,73  Updated status window with new 1.4.1 options.
+                   Added experimental clipboard copy between server and
+                   client.
+01-Nov-2005  0,72  Implemeneted persistant bitmap caching.
+28-Oct-2005  0,71  Moved to rdesktop 1.4.1 CVS 23-Oct-2005.
+26-Oct-2005  0,70d Debug build for A9Home testing.
+20-May-2004  0,70  Added user manual. First public release.
+17-May-2004  0,69  Added release icon sprites.
+16-May-2004  0,68  Fixed random y eigen problem on mode selection. Fixed
+                   mode validation problems. Added single tasking display
+                   mode keyboard handler. Added display switching key
+                   shortcuts. Fixed missing display pointer when switching
+                   from single tasking mode.
+12-May-2004  0,67  Finished full screen hardware pointer generation.
+11-May-2004  0,66  Started on full screen keyboard handling.
+10-May-2004  0,65  Started on full screen hardware pointer.
+09-May-2004  0,64  Improved error reporting by allowing Display Sprite and
+                   logs to be saved to the Scrap Directory on an abnormal
+                   exit. Started on full screen mode.
+06-May-2004  0,63  Fixed issue where quit menu item would not quit if not
+                   set to quit on disconnect. Added resolution validation
+                   for full screen modes at start up and for selection menu.
+05-May-2004  0,62  Fixed Wimp mode change issues. Fixed crash when changing
+                   screen mode when not connected. Added 'screen' option
+                   to resolution and colour depth parameters. Added function
+                   to move full window display to top when clicked.
+03-May-2004  0,61  Start on Full Window mode.
+02-May-2004  0,60  Fixed area clip in diagonal line drawing primative.
+                   Fix quit when no error reported if quit on disconnect
+                   is not enabled. Trap connection error when no error
+                   is reported. 
+02-May-2004  0,59  Added multi line log message capability. Added
+                   shading of menu options when disconnected.
+29-Apr-2004  0,58  Added Save Log function. Keep Log window on top of
+                   Display. Pop up Log window when an Error occurs.
+28-Apr-2004  0,57  Simple text display Log system.
+25-Apr-2004  0,56  Started on Log system.
+24-Apr-2004  0,55  Fixed odd colours in Project 98 caused by background
+                   and foreground mask colour swap. Fixed 15bpp invert
+                   errors caused by set 16th bit. Added display mode
+                   selection. Fixed 15bpp rectangle set draw errors on
+                   unaligned half word boundaries. Added workaround for
+                   issue where toggle size moves window off the screen.
+                   Added extra drawing primitives.
+19-Apr-2004  0,54  Fixed crash caused when plotting hatch pattern with
+                   width less than 8 pixels and height greater than tile.
+18-Apr-2004  0,53  Added redraw rectangle aggregation for display update
+                   optimisation. Fixed processing timeout in multitasking.
+                   Added multiple packet sound overrun queue. Fixed sound
+                   queue acknowledgement messages
+15-Apr-2004  0,52  Made load of sound support modules dynamic. Improved
+                   efficiency of multitasking.
+12-Apr-2004  0,51  Moved to new SharedSoundBuffer and StreamManager modules.
+                   Added sound buffer usage status display.
+11-Apr-2004  0,50  Added 24bit display support. Added rectangle clear drawing
+                   primitive. Added support for colour depth switching.
+09-Apr-2004  0,49  Added sound to status window. Added 16bit display support.
+07-Apr-2004  0,48  Working 16bit 2 channel sound support.
+06-Apr-2004  0,47  Started on sound support.
+31-Mar-2004  0,46  Improved performance of image memory management.
+                   Added 15bit line drawing.
+30-Mar-2004  0,45  Fixed error in hatch pattern tiling when offset is larger
+                   than tile size. Fixed bit error in 15bit image conversion.
+29-Mar-2004  0,44  Added 15bit font and rectangle drawing.
+28-Mar-2004  0,43  Changed default memory management to Dynamic Areas.
+                   Added 15bit bitmap drawing primitives 
+27-Mar-2004  0,42  Optimised 8bit drawing primitives. Added extra 8bit
+                   primitives. Re-enabled basic update aggregation.
+26-Mar-2004  0,41  Optimised 8bit text drawing.
+25-Mar-2004  0,40  Implemented Print Screen key.
+24-Mar-2004  0,39  Improved server keymap selection. Removed requirement to
+                   supply username. Added extra 8bit drawing primitives.
+23-Mar-2004  0,38  Added server keymap selection. Changed default keymap to
+                   English (en-gb). Fixed backslash and hash keys.
+22-Mar-2004  0,37  Fixed font breakup problem due to plot offset clipping
+                   and go slow due to flex memory compaction time. 
+21-Mar-2004  0,36  Moved to rdesktop 1.3.1 CVS 20-Mar-2004
+10-Feb-2004  0,35  Added horizontal, vertical and diagonal line drawing.
+09-Feb-2004  0,34  Start on line drawing routines.
+08-Feb-2004  0,33  Add option to use Dynamic Areas for memory management.
+06-Feb-2004  0,32  Now compiled against working OpenSSL library components,
+                   can connect to an RDP5 host.
+03-Feb-2004  0,31  Alter RDP5 encryption to use OpenSSL library (was
+                   previously disabled).
+02-Feb-2004  0,30  Alter RDP4 encryption to use OpenSSL library instead of
+                   rdesktop supplied routines.
+01-Feb-2004  0,29  Corrected invisible pointer with complete mask problem.
+31-Jan-2004  0,28  Added auto update to Status Window. Fixed bug causing gaps
+                   in hash pattern tiling. Fixed bug in plot inverted or causing
+                   odd colours on masked icons.
+30-Jan-2004  0,27  Contents of Status window are now displayed.
+29-Jan-2004  0,26  Started on Tabbed Dialog Status window.
+28-Jan-2004  0,25  Identified items to display in Status window. Added calls
+                   to capture true server name and IP address.
+27-Jan-2004  0,24  Corrected issues with not receiving Wimp Messages to enable
+                   Display Save Screen as a Sprite to work.

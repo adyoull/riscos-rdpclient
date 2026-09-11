@@ -1,0 +1,103 @@
+/* FlexShim.c - a malloc-backed implementation of the RISC OS 'flex' shifting
+ * heap API, supplied because the online build service links C:o.flexlib but
+ * does not provide it.
+ *
+ * flex_ptr is an "anchor": a void** whose target points at the allocated block.
+ * We back each block with malloc/realloc and keep the block's size in a small
+ * header immediately before the data the anchor points to. This is
+ * behaviourally correct C-heap memory management; it does NOT provide the real
+ * flex shifting/dynamic-area heap or budging, but MemMan.c only needs correct
+ * alloc/free/extend/reanchor semantics, which this gives. Swap in the genuine
+ * flexlib later if desired (link o.flexlib instead of o.FlexShim).
+ *
+ * Signatures match h.flex exactly. C89.
+ */
+#include <stdlib.h>
+#include <string.h>
+#include "flex.h"
+
+/* 8-byte header keeps the data 8-byte aligned; size stored in the first word. */
+#define FLEX_HDR 8
+
+int flex_alloc(flex_ptr anchor, int n)
+{
+  char *p;
+  if (n < 0) n = 0;
+  p = (char *) malloc((size_t) n + FLEX_HDR);
+  if (p == NULL) { *anchor = NULL; return 0; }
+  ((int *) p)[0] = n;
+  *anchor = (void *) (p + FLEX_HDR);
+  return 1;
+}
+
+void flex_free(flex_ptr anchor)
+{
+  if (*anchor != NULL)
+  {
+    free((char *) *anchor - FLEX_HDR);
+    *anchor = NULL;
+  }
+}
+
+int flex_size(flex_ptr anchor)
+{
+  if (*anchor == NULL) return 0;
+  return ((int *) ((char *) *anchor - FLEX_HDR))[0];
+}
+
+int flex_extend(flex_ptr anchor, int newsize)
+{
+  char *p;
+  if (newsize < 0) newsize = 0;
+  if (*anchor == NULL) return flex_alloc(anchor, newsize);
+  p = (char *) realloc((char *) *anchor - FLEX_HDR, (size_t) newsize + FLEX_HDR);
+  if (p == NULL) return 0;
+  ((int *) p)[0] = newsize;
+  *anchor = (void *) (p + FLEX_HDR);
+  return 1;
+}
+
+int flex_midextend(flex_ptr anchor, int at, int by)
+{
+  int oldsize;
+  char *p;
+  char *data;
+  if (*anchor == NULL) return 0;
+  oldsize = ((int *) ((char *) *anchor - FLEX_HDR))[0];
+  if (at < 0 || at > oldsize || by < 0) return 0;
+  p = (char *) realloc((char *) *anchor - FLEX_HDR,
+                       (size_t) oldsize + (size_t) by + FLEX_HDR);
+  if (p == NULL) return 0;
+  ((int *) p)[0] = oldsize + by;
+  *anchor = (void *) (p + FLEX_HDR);
+  data = (char *) *anchor;
+  memmove(data + at + by, data + at, (size_t) (oldsize - at));
+  return 1;
+}
+
+int flex_reanchor(flex_ptr to, flex_ptr from)
+{
+  *to = *from;
+  *from = NULL;
+  return 1;
+}
+
+void flex_init(char *program_name, int *error_fd, int dynamic_size)
+{
+  (void) program_name; (void) error_fd; (void) dynamic_size;
+}
+
+int flex_set_budge(int newstate)
+{
+  (void) newstate; return 0;
+}
+
+int flex_set_deferred_compaction(int newstate)
+{
+  (void) newstate; return 0;
+}
+
+int flex_compact(void)
+{
+  return 0;
+}

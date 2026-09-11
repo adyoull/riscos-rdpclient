@@ -1,0 +1,960 @@
+
+Instructions for !RDPClient by Andrew Sellors
+
+*****************************************************************************
+* NOTE:                                                                     *
+* !RDPClient is released under the GNU General Public License.              *
+* See the document "Licence" in this directory for more details.            *
+*                                                                           *
+* In no circumstances shall the author be liable for any damage, loss of    *
+* profits, time or data or any indirect or consequential loss rising out of *
+* the use of this software or inability to use this software.               *
+*****************************************************************************
+
+Contents:
+~~~~~~~~~
+
+About !RDPClient
+Compatibility and prerequisites
+Making connections
+Windows capabilities
+Display modes
+Iconbar icon
+Iconbar menu
+Key shortcuts
+Saving the display
+!RDPClient message log
+!RDPClient status window
+Known issues
+Serious errors
+Credits
+The future
+Contacting the author
+
+
+********************************************************************************
+
+About !RDPClient:
+~~~~~~~~~~~~~~~~~
+
+!RDPClient is a RISC OS client for servers running the Remote Desktop Protocol,
+also called Terminal Services.
+
+
+Remote Desktop allows a client machine to log onto a server over a network and
+be presented with a virtual desktop display. Applications run entirely on the
+server under control of the client's keyboard and mouse with the display
+graphics being rendered on the client machine.
+Remote Desktop server software is available for both Linux and Microsoft Windows
+with many editions of Windows having single user versions built in.
+
+
+Some uses of !RDPClient include:
+
+ * Remote control of a Windows XP PC on a home network from a RISC OS machine.
+ * Providing access to Windows applications from a network of RISC OS machines
+   using a Window Terminal Server.
+ * Remote administration of Windows Servers from a RISC OS machine over the
+   Internet.
+
+
+!RDPClient is based on version 1.6.0 of the open source application 'rdesktop'.
+More information on 'rdesktop' can be found at http://www.rdesktop.org/
+
+
+The principle features of !RDPClient are:
+
+ * Multi-tasking windowed operation.
+ * Full screen multi-tasking operation.
+ * Full screen single tasking mode.
+ * Optimised screen updates in the Desktop by utilising an aggregating redraw
+   queue.
+ * Support for 8bit (256 colour), 15bit (32 thousand colour), 16bit
+   (64 thousand colour), 24bit and 32bit (16 million colour) server screen
+   modes.
+ * Sound redirection.
+ * Clipboard redirection.
+ * Full colour animated mouse pointer.
+ * Mouse scroll wheel support (wheel scrolling passed through to the server).
+ * Keyboard.
+ * Server keymap selection.
+ * Configurable keyboard shortcuts.
+ * Dynamic area for screen buffer and bitmap cache.
+ * RDP4 and RDP5 Terminal Server protocols.
+ * Support for RDP data compression.
+ * Windows NT 4.0 Terminal Server(*), Windows 2000 Server, Windows XP
+   Windows 2003 Server, Windows 2008 Server, Windows Vista and Windows 7
+   support.
+
+(*) this server version have not been tested by myself but is supported by
+    rdesktop 1.6.0
+
+Note: the memory space reserved for the Dynamic Area is limited to 32Mb so it
+      will not cause problems with machines fitted with large amounts of RAM.
+      The use of a Dynamic Areas reduces the Wimpslot size and so improves task
+      paging performance.
+
+********************************************************************************
+
+Compatibility and prerequisites:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A minimum of RISC OS 3.50 and Internet 5 are required to run this software.
+
+!RDPClient has been tested on all versions of RISC OS from 3.70 upwards and is
+compatible with the Castle Iyonix PC and Advantage6 A9Home (*).
+
+(*) requires the A9Home patch dated 30/10/2005.
+
+This program requires the 32bit Shared C Library to be installed which can be
+downloaded from the Castle !System updates page at:
+  http://www.iyonix.co.uk/32bit/system.shtml
+
+
+This program also requires the DeepKeys module must be loaded at boot time.
+DeepKeys version 2.06 is supplied in the archive in the 'DeepKeys' directory.
+To install, double click on 'DeepKeys.InstDeepK' to copy the module into !Boot
+and reboot the computer to allow the installation to take effect.
+
+DeepKeys © Cerilica Ltd 1999-2003  Contact: <simon@cerilica.com>
+
+
+!RDPClient utilises the SharedSoundBuffer and StreamManager modules by
+John Duffell. These are not included in this archive but can be downloaded
+from the !RDPClient page on my website. See the end of this document for
+details.
+Note: these modules require 'SharedSound' version 1.07 or later to be installed.
+
+********************************************************************************
+
+Making connections:
+~~~~~~~~~~~~~~~~~~~
+
+!RDPClient is driven by calling it with a set of command line options.
+A convenient way to make a connection to a Remote Desktop server is to set up
+an Obey file with the relevant options. An example 'ConnectEx' Obey file is
+supplied in this archive.
+
+The syntax for calling !RDPClient is as follows:
+
+  Run <RDPClient$Dir>.Connect [options] server[:port]
+
+Example:
+
+  Run <RDPClient$Dir>.Connect -g 1024x768 -a 8 -q -x 0x04 servername
+
+The full list of available options can be obtained at any time by double
+clicking the !RDPClient application icon or calling the software with the -?
+option.
+
+
+Note: this current version of !RDPClient will cause the machine to pause when
+      connecting if the server is unavailable until the connection times out.
+      If this happens, the connection attempt can be stopped by issuing an
+      <Alt><Break> keypress to stop the task. This will be rectified in a
+      future release of the software.
+
+
+The full list of available options is as follows:
+
+ -C: connection name (for window title)
+     (Optional)
+
+     This allows a friendly name for the session to be provided. This is
+     displayed in the title bar of the !RDPClient window.
+
+     e.g.
+
+     -C "My Terminal Server"
+
+
+ -u: user name
+ -p: password
+ -d: domain
+     (Optional)
+
+     A user name may be supplied to default the login screen presented
+     when connecting. If both the user name and password are supplied and
+     the server supports automatic login, the login screen will be bypassed.
+
+     The domain name parameter can be used to specify which Windows Domain
+     the user name belongs to. To specify an account local to the server,
+     supply the server name as the domain name.
+
+     e.g.
+
+     -u username -p password  
+
+
+ -s: shell
+     (Optional)
+
+     This option allows a different start up shell application to be used
+     instead of Windows Explorer.
+
+     e.g.
+
+     -s progman.exe
+
+
+ -c: working directory
+     (Optional)
+
+     This option sets up an alternate working directory for the session.
+     This is often combined with the -s option to set up a fixed application
+     environment.
+
+     e.g.
+
+                              (run Internet Explorer only in the session)
+     -c "C:\Program Files\Internet Explorer" -s iexplore.exe
+
+
+ -n: client hostname
+     (Optional)
+
+     This option may be used to supply a different host name to that set
+     on the client for the server connection.
+
+     e.g.
+
+     -n myriscpc
+
+
+ -k: keyboard layout on server (en-us, de, sv, etc.)
+     (Optional)
+
+     This option tells the server which keyboard layout to use to interpret
+     the keypresses sent by the client. The default layout used if this
+     option is not supplied is 'en-uk' : English - United Kingdom.
+
+     e.g.
+
+     -k en-uk
+
+
+ -g: desktop geometry (WxH or [s]creen)
+     (Mandatory)
+
+     This configures the display resolution of the virtual desktop for the
+     session in pixels. Any resolution can be specified but full screen
+     mode will only be available if it matches a screenmode selectable on the
+     client machine.
+
+     Specifying 'screen' instead of the resolution will cause the software
+     to use the current screen mode's resolution for the connection. This
+     is useful when operating in full screen mode as it automatically selects
+     the current screen resolution.
+
+     e.g.
+
+     -g 1024x768              (1024 pixels wide by 768 pixels height)
+
+     -g screen                (use the current screen resolution)
+     or
+     -g s
+
+
+ -a: connection colour depth (BPP or [s]creen)
+     (Mandatory)
+
+     This option specifies the colour depth (number of colours) of the virtual
+     desktop for the session in bits per pixel.
+
+     Note: some versions of Windows do not support all colour depths, see the
+           section 'Windows capabilities' for more details.
+
+     Specifying 'screen' will cause the software to use the current screen
+     mode's colour depth for the connection. This is useful when operating in
+     full screen mode as it automatically selects the current screen's colour
+     depth.
+
+     e.g.
+
+     -a 8                     (256 colour display)
+
+     -a 15                    (32 thousand colour display)
+
+     -a 16                    (64 thousand colour display)
+
+     -a 24                    (16 million colour display)
+
+     -a screen                (use the current screen colour depth)
+     or
+     -a s
+
+
+ -D: display mode ([w]indow, [f]ullwindow or full[s]creen)
+     (Optional)
+
+     This option configures the display mode that the program starts up in.
+     See below for more details of the different display modes.
+
+     By default, window mode will be selected if this option is not supplied.
+
+     e.g.
+
+     -D window                (start up in window mode)
+     or
+     -D w
+
+     -D fullwindow            (start up in fullscreen multi-tasking mode)
+     or
+     -D f
+
+     -D fullscreen            (start up in fullscreen single-tasking mode)
+     or
+     -D s
+
+
+ -b: disable bitmap cache
+     (Optional)
+
+     By default, RDPClient stores frequently plotted bitmaps (sprites) in
+     a memory cache to maximise performance by reducing the amount of data
+     that is required to be transferred across the network. Supplying this
+     option will reduce the memory required to run RDPClient at the expense
+     of screen update speed by disabling the cache.
+
+     e.g.
+
+     -b
+
+
+ -e: disable encryption (French TS)
+ -E: disable encryption from client to server
+     (Optional)
+
+     By default, the communication between the client and server is encrypted.
+     This for example, prevents network snooping from capturing keypresses sent
+     between the client and server but slows down the display update slightly.
+
+     -E disables encryption after the initial connection is made. The automatic
+     login user name and password are sent encrypted, but everything afterwards
+     is not. This means that if the manual login screen is used, this password
+     will not be encrypted when sent over the network.
+
+     -e disables encryption totally. This option is only supported by the
+     French version of Windows NT 4.0 Terminal Server.
+
+     e.g.
+
+     -E                       (disable encryption after connecting to server)
+
+
+ -t: specify key names for <ctrl><shift> shortcuts
+     ([desktop],[window],[fullwindow],[fullscreen],[bringtofront])
+     (Optional)
+
+     By default, the key shortcuts utilised by !RDPClient are as follows:
+
+        <Ctrl><Shift><W>   Switch to windowed mode
+
+        <Ctrl><Shift><F>   Switch to full window mode
+                           (Multi-tasking full screen mode)
+
+        <Ctrl><Shift><S>   Switch to full screen mode
+                           (Single-tasking full screen mode)
+
+        <Ctrl><Shift><D>   Go back to the desktop when in full screen mode
+
+        <Ctrl><Shift><T>   Bring full window mode display to front
+
+     This parameter takes 5 comma separated key names to change the key
+     press required in combination with <Ctrl><Shift> to activate each of
+     the actions listed above. See the key name table in the 'Key shortcuts'
+     section of the document for a list of all the possible key names.
+
+     e.g.
+
+     -t w,f,s,d,t
+
+
+ -f: use keypress to bring fullwindow to front
+     (Optional)
+
+     By default, the !RDPClient 'screen' when running in full window mode will
+     be brought to the front and cover other windows on any mouseclick.
+     By specifying this option, the 'screen' will not move when clicked upon
+     and instead only move to the front on action of the 'Bring to front'
+     key shortcut sequence.
+
+     e.g.
+
+     -f                       (use key shortcut to bring screen to front)
+     
+
+ -z: enable RDP compression
+     (Optional)
+
+     By default only basic data compression is used by !RDPClient. Specifying
+     this option enables more advanced RDP data compression which reduces the
+     amount of information that is required to be sent across the network.
+
+     e.g.
+
+     -z                       (enable enhanced RDP data compression)
+
+
+ -P: use persistent bitmap cacheing
+     (Optional)
+
+     By default, !RDPClient holds frequently used graphics in memory so that
+     they can be repeatedly plotted without having to request them from the
+     server each time.
+
+     By specifying this option, this cache is enhanced by including a much
+     larger disc file based store. This store is held in the configured
+     WimpScrap directory and is separate for each running instance of
+     !RDPClient.
+
+     A use of this cache option would be to speed up screen updates when
+     using a very slow network connection such as a modem. In practice
+     however most RISC OS machines do not have a hard drive interface fast
+     enough to make good use of this option.
+
+     The location of the cache file directory can be overridden by setting the
+     system variable <RDPClient$PstCacheDir> to point to a different
+     pre-existing location.
+
+     e.g.
+
+     -P                       (enable persistent bitmap cache)
+
+
+ -x: RDP5 experience (m[odem 28.8], b[roadband], l[an] or hex number)
+     (Optional)
+
+     On Windows 2000 and later, this option can be used to disable various
+     visualisation effects to improve performance and reduce network bandwidth
+     requirements. The default is to disable the wallpaper, full window drags
+     and menu animations.
+
+     This parameter can take 3 letter values or a hexadecimal number:
+
+     -x l     Lan mode: all visualisation effects are enabled
+
+     -x b     Broadband mode: only the wallpaper is disabled
+
+     -x m     Modem mode: the wallpaper, full window drags, menu animations and
+              theming are disabled.
+
+     -x 0xnn  Hexadecimal value: The value supplied can be made up of the
+              following options. To create the value, add the required options
+              together.
+
+                 Disable nothing       0x00
+                 No wallpaper          0x01
+                 No full window drag   0x02
+                 No menu animations    0x04
+                 No theming            0x08
+                 No cursor shadow      0x20
+                 No cursor blinking    0x40
+
+     e.g.
+
+     -x 0x04                  (disable menu animations)
+
+
+ -r sound:[local|off|remote] : enable sound redirection
+            remote would leave sound on server
+     (Optional)
+
+     RDP 5.1 and latter versions allow sound to be redirected to the client.
+     This is supported by Windows XP, Windows 2003 and later versions.
+     By default, sound redirection is disabled.
+
+     To control the sound redirection, supply one of the following parameters:
+
+     -r sound:off     Sound is disabled for the session (default).
+
+     -r sound:local   Sound is sent to the client and output.
+
+     -r sound:remote  Sound is enabled on the server (will be output from the
+                      server's speakers).
+
+     Note: if sound redirection is turned off, the application will not attempt
+     to load the sound support modules.
+
+     e.g.
+
+     -r sound:local           (sound output is played on the client)
+     
+
+ -r clipboard:[off|active][,datalimit] : control clipboard redirection
+            datalimit specifies maximum data transfer in KB
+            default is 16 KB, 0 indicates no limit
+     (Optional)
+
+     Windows Terminal Services allows the session's copy and paste clipboard to
+     be redirected to the client machine. By enabling 'active' redirection using
+     this option, text copied in the remote session can be pasted into RISC OS
+     applications and vice versa.
+
+     To control the clipboard redirection, supply one of the following
+     parameters:
+
+     -r clipboard:off     The server clipboard is not redirected (default).
+
+     -r clipboard:active  Clipboard data is sent between the client and server
+                          on the action of a Copy operation performed at either
+                          side.
+
+     By default, the amount of text that can be copied between the client and
+     remote server session is limited to 16 KB. This prevents large copy
+     operations from overwhelming the network and client machine. The maximum
+     amount of text that will be transferred can be specified by supplying the
+     number of KB after a comma (,) at the end of the option.
+
+     Note: only copied text can currently be transferred. Other types of data
+     such as graphics will be ignored and not be available to paste if copied.
+     
+     e.g.
+
+     -r clipboard:active,32   (clipboard is redirected with a 32 KB limit)
+
+
+ -0: attach to console
+     (Optional)
+
+     By default, when connecting to a Windows 2003 Server, the session opens a
+     new virtual desktop. By supplying this option, the connection will take
+     over the desktop displayed on the monitor attached to the server.
+
+     e.g.
+     
+     -0                       (take over server's console)
+
+ -4: use RDP version 4
+     (Optional)
+
+     By default, !RDPClient will attempt to connect to the server using RDP
+     version 5. By supplying this option, the connection will be made using
+     RDP version 4. RDP 4 is used by Windows NT 4.0 Terminal Server.
+
+     e.g.
+
+     -4                       (force connection to use RDP version 4)
+
+
+ -q: quit application when finished
+     (Optional)
+
+     By default when the server connection is closed, the !RDPClient application
+     will continue running. By specifying this option, the application will
+     quit automatically when the connection is closed.
+
+     e.g.
+
+     -q                       (quit application on connection close)
+
+ -i: swap colours for Iyonix graphics card
+     (Optional)
+
+     This option should be enabled when the software is used on an Iyonix PC
+     fitted with the nVidia FX series of graphics cards. These graphics cards do
+     not have the "colour swap" modification and would as a result normally show
+     the wrong screen colours in 15/16bit colour full screen mode. By specifying
+     this option, RDPClient swaps the colours in software to ensure that the
+     screen display is correct.
+
+ -M: disable screen mode validation
+     (Optional)
+
+     RDPClient normally validates the chosen screen resolution and colour depth
+     and uses this information to enable or disable the "Full window" and
+     "Full screen" options. Some A9Home owners have reported problems where by
+     they have selected a valid screen resolution for the RDPClient display on
+     their machine but RISC OS says that the mode is not available even though
+     if chosen, the choice would be successfully applied.
+     Providing this option disables the validity check and always allows the
+     "Full window" and "Full screen" options to be selected to work round this
+     problem.     
+
+
+********************************************************************************
+
+Windows capabilities:
+~~~~~~~~~~~~~~~~~~~~~
+
+Different versions of Microsoft Windows support different Remote Desktop
+features. The following table describes what is available.
+
+                            | Colour Depth (bits/pixel)   | Redirection
+Windows version             | 8   | 15  | 16  | 24  | 32  | Sound | Clipboard
+==============================================================================
+Windows NT 4.0 Workstation  | X   | X   | X   | X   | X   |  X    |  X
+Windows NT 4.0 Server (*)   | Yes | No  | No  | No  | No  |  No   |  No
+Windows 2000 Professional   | X   | X   | X   | X   | X   |  X    |  X
+Windows 2000 Server         | Yes | No  | No  | No  | No  |  No   |  Yes
+Windows XP Home             | X   | X   | X   | X   | X   |  X    |  X
+Windows XP Professional     | Yes | Yes | Yes | No  | No  |  Yes  |  Yes
+Windows 2003 Server         | Yes | Yes | Yes | Yes | No  |  Yes  |  Yes
+Windows Vista Starter       | X   | X   | X   | X   | X   |  X    |  X
+Windows Vista Home          | X   | X   | X   | X   | X   |  X    |  X
+Windows Vista Business      | Yes | Yes | Yes | Yes | Yes |  Yes  |  Yes
+Windows Vista Ultimate      | Yes | Yes | Yes | Yes | Yes |  Yes  |  Yes
+Windows 7 Starter           | X   | X   | X   | X   | X   |  X    |  X
+Windows 7 Home              | X   | X   | X   | X   | X   |  X    |  X
+Windows 7 Professional      | Yes | Yes | Yes | Yes | Yes |  Yes  |  Yes
+Windows 7 Ultimate          | Yes | Yes | Yes | Yes | Yes |  Yes  |  Yes
+Windows 7 Enterprise        | Yes | Yes | Yes | Yes | Yes |  Yes  |  Yes
+
+X = these versions of Windows do not support Remote Desktop.
+
+(*) Terminal Server Edition only.
+
+Note: the server configuration may also limit the maximum available colour
+      depth, clipboard and sound redirection features to less than the full
+      capabilities of the operating system to save network bandwidth.
+
+********************************************************************************
+
+Display modes:
+~~~~~~~~~~~~~~
+
+The current display mode can be changed using the iconbar icon menu or pressing
+one of the key shortcuts (see section 'Key shortcuts').
+
+
+Window mode:
+------------
+
+In window mode, the Remote Desktop display is shown inside a normal Desktop
+window. This can be moved, resized as with any other window. The connection to
+the server is not closed when the window is closed and can be returned to by
+clicking on the iconbar icon.
+
+When the mouse pointer moves into the !RDPClient window, the window gains
+keyboard focus (indicated by the title bar turning yellow) and keypresses are
+sent to the server. The mouse pointer also changes to that determined by the
+remote connection.
+When the mouse pointer leaves the !RDPClient window, the window looses focus.
+
+
+Fullwindow mode:
+----------------
+
+Fullwindow mode may be used if the chosen Remote Desktop display resolution
+is available as a screen mode.
+
+In fullwindow mode, the Remote Desktop display takes up the complete screen
+area. When entering fullwindow mode, if the current screen resolution is not
+the same as the Remote Desktop display, the screen mode is changed to match.
+The screen's colour depth will be attempted to be chosen to match the server
+but if the combination of resolution and colour depth are not available, the
+nearest lower colour depth is selected.
+
+When leaving fullwindow mode, if the screen mode needed to be changed, the
+original mode is restored.
+
+In this mode, !RDPClient is still multi-tasking in the Desktop and other
+applications can be accessed. The iconbar can also be reached on RISC OS 4
+or later by moving the mouse pointer to the bottom of the screen and allowing
+it to pop up.
+
+Windows can be opened on top of the !RDPClient screen, however by default,
+clicking on the Remote Desktop display will cause it to be moved above all
+other windows. If the -t option is specified, the display can be moved to the
+front by pressing the 'Bring to front' keyboard shortcut sequence (by default
+<Ctrl><Shift><T>) instead of clicking with the mouse.
+
+
+Fullscreen mode:
+----------------
+
+Fullscreen mode is only available if the chosen Remote Desktop display
+resolution and colour depth are available as a screen mode.
+
+Fullscreen mode provides greater performance by directly plotting graphics to
+the screen and utilising the machine's hardware mouse pointer (instead of
+plotting the mouse pointer on the screen). As a result of this, the mouse
+pointer is limited to 3 colours due to the capabilities of the graphics
+hardware.
+
+On entering fullscreen mode, the screen mode is changed to match the Remote
+Desktop display and the application single-tasks.
+
+When leaving fullscreen mode, the screen mode is changed back to that which it
+was previously and the Desktop is re-entered. The session is still active
+while in the Desktop and can be returned to by clicking on the iconbar icon.
+
+********************************************************************************
+
+Iconbar icon:
+~~~~~~~~~~~~~
+
+When running, !RDPClient places an icon in the iconbar with the name of the
+connected server.
+
+
+Clicking Select (left mouse button) on the iconbar icon will open the display
+window or enter full screen depending on the current display mode selection.
+
+Clicking Menu (middle mouse button) on the iconbar icon will display the
+!RDPClient menu.
+
+Clicking Adjust (right mouse button) on the iconbar icon will close the display
+window or exit full window mode as applicable.
+
+********************************************************************************
+
+Iconbar menu:
+~~~~~~~~~~~~~
+
+   +=============+
+   |  RDPClient  |
+   +=============+
+   | Info      ‰ | ‰ opens the 'About this program' window
+   +-------------+
+   | Window      | selects window display mode
+   | Full window | selects full screen multi-tasking mode
+   | Full screen | selects full screen single-tasking mode
+   +-------------+
+   | Save      ‰ | ‰ opens the 'Save' window to save the display as a Sprite
+   | View log... | opens the 'RDPClient message log' window
+   | Status...   | opens the 'RDPClient Status' window
+   | Quit        | Quits program
+   +=============+
+
+********************************************************************************
+
+Key shortcuts:
+~~~~~~~~~~~~~~
+
+Certain key combinations are interpreted by !RDPClient itself and not sent to
+the server. These combinations provide quick access to commonly used functions
+and access where the application menu is not available (e.g. in full screen
+mode).
+
+By default the following key sequences are supported:
+
+ <Ctrl><Shift><W>   Switch to windowed mode
+
+ <Ctrl><Shift><F>   Switch to full window mode
+                    (Multi-tasking full screen mode)
+
+ <Ctrl><Shift><S>   Switch to full screen mode
+                    (Single-tasking full screen mode)
+
+ <Ctrl><Shift><D>   Go back to the desktop when in full screen mode
+
+ <Ctrl><Shift><T>   Bring full window mode display to front (*)
+
+(*) the bring to front key shortcut is only active when the -f option is
+    supplied.
+
+The -k option allows the last key of the above sequences to be customised by
+specifying a comma separated list of the five key names to used for the above
+commands. The table below shows the key names in the layout of a standard
+UK keyboard.
+
+ -----------------------------------------------------------------------------
+| esc  f1  f2  f3  f4   f5  f6  f7  f8   f9  f10 f11 f12   prtsc scrloc break
+|
+| '   1   2   3   4   5   6   7   8   9   0   -   =   bs     ins  home pgup
+| tab  q   w   e   r   t   y   u   i   o   p   [   ]         del  end  pgdn
+|       a   s   d   f   g   h   j   k   l   ;   '   # ret
+|     \  z   x   c   v   b   n   m  com dot  /                     up
+|                       spc                                  left down right
+ -----------------------------------------------------------------------------
+
+ ------------------------
+                         |
+                         |
+  numlock n/   n*   n-   |
+     n7   n8   n9        |
+     n4   n5   n6   n+   |
+     n1   n2   n3        |
+     n0       ndot enter |
+ ------------------------
+                      
+********************************************************************************
+
+Saving the display:
+~~~~~~~~~~~~~~~~~~~
+
+The Remote Desktop display may be saved as a Sprite using the 'Save' submenu
+of the iconbar icon menu. The Sprite is created with the same resolution and
+colour depth as the server display.
+
+********************************************************************************
+
+!RDPClient message log:
+~~~~~~~~~~~~~~~~~~~~~~~
+
+!RDPClient can output textual messages. The last 100 messages are stored and
+displayed in the 'RDPClient message log' window which can be opened by clicking
+on the 'View log...' item in the iconbar icon menu.
+
+Messages can be information (shown in black), warnings (shown in blue) and
+errors (shown in red). When a error message is added to the log, the window
+is automatically shown.
+
+The window shows all stored messages in reverse order so the latest message will
+always be at the top.
+
+If any messages have been added to the log whilst !RDPClient was running, the
+window is automatically shown on quitting the application to inform the user
+of what happened. !RDPClient then only quits when the message window is closed.
+
+The stored message text may be saved as a Text File by clicking on the 'Save'
+button in the message window. 
+
+********************************************************************************
+
+!RDPClient status window:
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The 'RDPClient Status' window can be opened by clicking on the the 'Status...'
+item in the iconbar icon menu. This window displays information about the
+current connection:
+
+Network tab:
+
+  Status                Whether the session is connected
+  Username              User name specified for automatic logon
+  Domain                Domain name specified for automatic logon
+  Server name           Name of the server connected to
+  Server address        Numeric IP address of the server
+  Server port           TCP/IP server port connected to
+  Hostname              Client hostname sent for the connection
+
+Connection tab:
+
+  Connection name       Friendly name for the connection
+  Licence               Whether the server has issued a new license
+  Compression           Type of compression used
+  Encryption            What data is encrypted on the network connection
+  Protocol              RDP protocol version specified on connection
+  Keyboard mapping      Selected server keymap
+  Clipboard             Status of clipboard redirection
+  Sound status          Status of sound redirection
+  Sound buffer          Bar showing the amount of sound data in the play buffer
+
+Display tab:
+
+  Screen width          Width of the Remote Desktop display in pixels
+  Screen height         Height of the Remote Desktop display in pixels
+  Screen colours        Number of colours in the Remote Desktop display
+  Display mode          Currently selected display mode
+  Update Palette        Whether the palette is changed in the Desktop (*)
+  Bitmap cache          Whether graphics will be held in client side cache
+  Persistent cache      Whether graphics will be held in a disc file cache
+  Cached glyphs         Number of cached font characters
+  Cached bitmaps        Number of cached graphic areas
+
+(*) this feature is not available in this version
+
+********************************************************************************
+
+Known issues:
+~~~~~~~~~~~~~
+
+ * When running in Fullscreen mode on a machine equipped with a ViewFinder
+   graphics card, the edges of plotted bitmaps appear in the wrong colours for
+   colour depths of 15bit, 16bit and 24bit.
+   This does not affect Fullwindow or Window display modes.
+
+********************************************************************************
+
+Serious errors:
+~~~~~~~~~~~~~~~
+
+If a serious error occurs, a Wimp Error Window is displayed with the message:
+
+  '!RDPClient has suffered an unrecoverable internal error (type X) and
+  must exit immediately, choose 'OK' to save the display and logs in the
+  Scrap directory.'
+
+The type number displayed indicates the general reason for the error.
+
+Clicking on the 'OK' button will cause the Display to be saved to a Sprite,
+the Message log to be saved as a Text File and any programatic error messages
+to be saved as another Text File in the !Scrap directory. A Filer window for
+this directory is then opened afterwards.
+
+These files can lead to understanding the cause of the error so if this does
+occur, I would appreciate an email containing the files and a brief description
+of what was happening when the error occurred.
+
+Note: a type 20 error is deemed to be an abnormal termination of the
+      application. This can be caused by an error in the program or by using the
+      <Alt><Break> task kill function to stop the application. If the task kill
+      function is used, the type 20 error can be safely ignored.
+
+********************************************************************************
+
+Credits:
+~~~~~~~~
+
+Many thanks must go to all those who beta tested the software, provided
+suggestions and encouragement. Without them, !RDPClient would not be what it is
+today.
+
+********************************************************************************
+
+The future:
+~~~~~~~~~~~
+
+!RDPClient is not finished. rdesktop, the software which it is based upon
+includes other features that are not currently supported by this application.
+Although some of these features are still experimental, once they have matured,
+I will endeavour to support them in !RDPClient. These include:
+
+ * File system redirection
+ * Seamless mode
+ * Serial port redirection
+ * Parallel port redirection
+ * Printer redirection
+
+I also plan to improve the compatibility of !RDPClient with RISC OS and add
+extra RISC OS specific features. These may include:
+
+ * A keyboard handler for full screen mode to prevent the "lost keypress"
+   problem.
+ * A graphical connection manager.
+ * Display update performance enhancements.
+ * Improved compatibility for the sound support.
+ * Use of 'non blocking' sockets to prevent the machine hanging when the server
+   is unavailable
+ * Memory management performance enhancements.
+ * Graphics acceleration
+
+Any other suggestions will be gladly accepted.
+
+********************************************************************************
+
+Version history:
+~~~~~~~~~~~~~~~
+
+0.90 (09-Sep-2026)
+ * Added mouse scroll wheel support: wheel movements over the RDP display
+   (in windowed, fullwindow and fullscreen modes) are now sent to the server.
+ * Rebuilt as a 32-bit application for RISC OS 5.
+
+0.88 (05-Apr-2010)
+ * Previous release (based on rdesktop 1.6.0).
+
+********************************************************************************
+
+Contacting the author:
+~~~~~~~~~~~~~~~~~~~~~~
+
+I, Andrew Sellors, can be contacted either at
+   8 Epsom Down
+   Alton
+   Hampshire
+   GU34 2TS
+   England
+
+Or via Internet email at
+   asellors@orac.co.uk
+   
+New versions of my software may be available from
+   http://www.orac.co.uk
+
+Any feedback from users (bugs reports, requests for new features, praise,
+money etc.) is gladly received.
+
+

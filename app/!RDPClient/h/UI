@@ -1,0 +1,20 @@
+/************************************************************************
+ *                                                                      *
+ *        File: UI.h                                                    *
+ *                                                                      *
+ *     Purpose: UI interface to rdesktop.                               *
+ *                                                                      *
+ ************************************************************************/
+
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void UI_Init(void);
+
+
+ /*
+  * returns TRUE if UI was polled
+  */
+extern BOOL UI_CalledPoll(void);
+

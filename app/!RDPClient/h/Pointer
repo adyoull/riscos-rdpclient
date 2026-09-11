@@ -1,0 +1,96 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Pointer.h                                               *
+ *                                                                      *
+ *     Purpose: Handle mouse pointer sprites.                           *
+ *                                                                      *
+ ************************************************************************/
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+#ifndef __dl_sprite_h
+#include "DeskLib:Sprite.h"
+#endif
+
+
+ /*
+  * pointer information
+  */
+typedef struct {
+    wimp_point            origin;              /* origin coord for pointer tip */
+    BOOL                  plot_mask;           /* when TRUE pointer has a mask */
+    spritelib_block       *base_sprite;        /* 24bit sprite with mask */
+    spritelib_block       *hardware_sprite;    /* 2bit old style sprite - palette but no mask */
+} pointer_block;
+    
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Pointer_Init(void);
+
+
+ /*
+  * Set up pointer for single task mode
+  */
+extern void Pointer_SingleTask(void);
+
+
+ /*
+  * Ensure that the correct hardware pointer is enabled
+  */
+extern void Pointer_EnsureHardwarePointer(void);
+
+
+ /*
+  * Initialise pointer environment for image of size width, height
+  */
+extern pointer_block *Pointer_Create(int width, int height, int origin_x, int origin_y,
+                                     BOOL has_mask);
+
+
+ /*
+  * Destroy everything
+  */
+extern void Pointer_Destroy(pointer_block *pointerblock);
+
+
+ /*
+  * Prepare 1bpp mask data for use with Sprite Mask.
+  * If all mask bits are 0, NULL is returned as no mask is present.
+  * Returned pointer needs to be free()ed after use.
+  */
+extern unsigned char *Pointer_PrepMaskData(int width, int height, unsigned char *mask_data,
+                                           BOOL flip_vertical);
+
+
+ /*
+  * Fill pointer sprite with 24bit image data and 1bpp mask data
+  */
+extern BOOL Pointer_SetData(pointer_block *pointerblock,
+                            int image_bpp, unsigned char *image_data,
+                            unsigned char *mask_data);
+
+
+
+ /*
+  * Calculate update areas for pointer movement
+  */
+extern int Pointer_PlotArea(pointer_block *last_pointer, wimp_point *last_pos,
+                            pointer_block *next_pointer, wimp_point *next_pos,
+                            wimp_rect *area1, wimp_rect *area2);
+
+
+ /*
+  * Programs hardware pointer with sprite in pointerblock
+  */
+extern BOOL Pointer_SetHardwarePointer(pointer_block *pointerblock);
+
+ /*
+  * Moves hardware pointer to supplied coordinates
+  * origin (0, 0) is on top left
+  */
+extern void Pointer_MoveHardwarePointer(int x, int y);
+

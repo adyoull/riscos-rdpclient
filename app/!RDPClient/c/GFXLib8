@@ -1,0 +1,2561 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib8.c                                               *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 8bpp images.          *
+ *                                                                      *
+ ************************************************************************/
+
+#include "SpriteLib.h"
+#include "Utils.h"
+
+#include <string.h>
+#include <stdio.h>
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Copy_line(unsigned char foreground_colour,
+                                                     int source_start,
+                                                     int source_width,
+                                                     unsigned char **source_area,
+                                                     int source_initial_x,
+                                                     unsigned char **dest_area,
+                                                     int dest_start,
+                                                     int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_line(unsigned char foreground_colour,
+                                                        unsigned char background_colour,
+                                                        int source_start,
+                                                        int source_width,
+                                                        unsigned char **source_area,
+                                                        int source_initial_x,
+                                                        unsigned char **dest_area,
+                                                        int dest_start,
+                                                        int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Xor_line(unsigned char foreground_colour,
+                                                    int source_start,
+                                                    int source_width,
+                                                    unsigned char **source_area,
+                                                    int source_initial_x,
+                                                    unsigned char **dest_area,
+                                                    int dest_start,
+                                                    int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor_line(unsigned char foreground_colour,
+                                                       unsigned char background_colour,
+                                                       int source_start,
+                                                       int source_width,
+                                                       unsigned char **source_area,
+                                                       int source_initial_x,
+                                                       unsigned char **dest_area,
+                                                       int dest_start,
+                                                       int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_And_line(unsigned char foreground_colour,
+                                                    int source_start,
+                                                    int source_width,
+                                                    unsigned char **source_area,
+                                                    int source_initial_x,
+                                                    unsigned char **dest_area,
+                                                    int dest_start,
+                                                    int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_And_line(unsigned char foreground_colour,
+                                                       unsigned char background_colour,
+                                                       int source_start,
+                                                       int source_width,
+                                                       unsigned char **source_area,
+                                                       int source_initial_x,
+                                                       unsigned char **dest_area,
+                                                       int dest_start,
+                                                       int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Or_line(unsigned char foreground_colour,
+                                                   int source_start,
+                                                   int source_width,
+                                                   unsigned char **source_area,
+                                                   int source_initial_x,
+                                                   unsigned char **dest_area,
+                                                   int dest_start,
+                                                   int dest_end);
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_Or_line(unsigned char foreground_colour,
+                                                      unsigned char background_colour,
+                                                      int source_start,
+                                                      int source_width,
+                                                      unsigned char **source_area,
+                                                      int source_initial_x,
+                                                      unsigned char **dest_area,
+                                                      int dest_start,
+                                                      int dest_end);
+
+static void PlotSpriteTiledToSprite_8_Copy_line(int source_start,
+                                                int source_width,
+                                                unsigned char **source_area,
+                                                int source_initial_x,
+                                                unsigned char **dest_area,
+                                                int dest_start,
+                                                int plot_length);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_AndInverted(int source_linebytes,
+                                                    int dest_linebytes,
+                                                    int plot_length,
+                                                    int plot_lines,
+                                                    unsigned char **source_area,
+                                                    int source_start,
+                                                    unsigned char **dest_area,
+                                                    int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr & (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = *dest_ptr32 & (~ *source_ptr32);
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr & (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr & (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = *dest_ptr32 & (~ source_pixel);
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr & (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_Xor(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr ^ *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = *dest_ptr32 ^ *source_ptr32;
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr ^ *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr ^ *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = *dest_ptr32 ^ source_pixel;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr ^ *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_Nand(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = (~*dest_ptr) | (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = (~*dest_ptr32) | (~*source_ptr32);
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = (~*dest_ptr) | (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = (~*dest_ptr) | (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = (~*dest_ptr32) | (~source_pixel);
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = (~*dest_ptr) | (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_And(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr & *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = *dest_ptr32 & *source_ptr32;
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr & *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr & *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = *dest_ptr32 & source_pixel;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr & *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_Equiv(int source_linebytes,
+                                              int dest_linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **source_area,
+                                              int source_start,
+                                              unsigned char **dest_area,
+                                              int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr ^ (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = *dest_ptr32 ^ (~*source_ptr32);
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr ^ (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr ^ (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = *dest_ptr32 ^ (~source_pixel);
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr ^ (~*source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_OrInverted(int source_linebytes,
+                                                   int dest_linebytes,
+                                                   int plot_length,
+                                                   int plot_lines,
+                                                   unsigned char **source_area,
+                                                   int source_start,
+                                                   unsigned char **dest_area,
+                                                   int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr | (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = *dest_ptr32 | (~ *source_ptr32);
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr | (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr | (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = *dest_ptr32 | (~ source_pixel);
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr | (~ *source_ptr);
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_Copy(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     memcpy(dest_ptr, source_ptr, plot_length);
+
+     source_ptr += source_linebytes;
+     dest_ptr += dest_linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_Or(int source_linebytes,
+                                           int dest_linebytes,
+                                           int plot_length,
+                                           int plot_lines,
+                                           unsigned char **source_area,
+                                           int source_start,
+                                           unsigned char **dest_area,
+                                           int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned int *source_ptr32;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned int *dest_ptr32;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int source_pixel;
+
+  if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+    /*
+     * both source and dest are aligned the same
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr | *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           source_ptr32 = (unsigned int *)source_ptr;
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              *dest_ptr32 = *dest_ptr32 | *source_ptr32;
+              source_ptr32++;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              source_ptr = (unsigned char *)source_ptr32;
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr | *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+  else{
+    /*
+     * source and dest are not aligned
+     */
+     while(dest_y_counter > 0){
+
+        dest_x_counter = plot_length;
+
+        while(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           *dest_ptr = *dest_ptr | *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 4){
+           dest_ptr32 = (unsigned int *)dest_ptr;
+
+           do{
+
+              source_pixel = *source_ptr++;
+              source_pixel = source_pixel | (*source_ptr++ << 8);
+              source_pixel = source_pixel | (*source_ptr++ << 16);
+              source_pixel = source_pixel | (*source_ptr++ << 24);
+
+              *dest_ptr32 = *dest_ptr32 | source_pixel;
+              dest_ptr32++;
+
+              dest_x_counter -= 4;
+
+           }while(dest_x_counter >= 4);
+
+           if(dest_x_counter > 0){
+              dest_ptr = (unsigned char *)dest_ptr32;
+           }
+        }
+
+        while(dest_x_counter > 0){
+
+           *dest_ptr = *dest_ptr | *source_ptr;
+           source_ptr++;
+           dest_ptr++;
+
+           dest_x_counter--;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_FlipVertical_8_Copy(int source_linebytes,
+                                                          int dest_linebytes,
+                                                          int plot_length,
+                                                          int plot_lines,
+                                                          unsigned char **source_area,
+                                                          int source_start,
+                                                          unsigned char **dest_area,
+                                                          int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start +
+                              ((plot_lines - 1) * source_linebytes);
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     memcpy(dest_ptr, source_ptr, plot_length);
+
+     source_ptr -= source_linebytes;
+     dest_ptr += dest_linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotRectangleToSprite_8_Clear(int linebytes,
+                                                 int plot_length,
+                                                 int plot_lines,
+                                                 unsigned char **sprite_area,
+                                                 int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     memset(image_ptr, 0x00, plot_length);
+
+     image_ptr += linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotRectangleToSprite_8_Copy(int linebytes,
+                                                int plot_length,
+                                                int plot_lines,
+                                                unsigned char colour,
+                                                unsigned char **sprite_area,
+                                                int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     memset(image_ptr, colour, plot_length);
+
+     image_ptr += linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotRectangleToSprite_8_Xor(int linebytes,
+                                               int plot_length,
+                                               int plot_lines,
+                                               unsigned char colour,
+                                               unsigned char **sprite_area,
+                                               int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  unsigned int *image_ptr32;
+  unsigned char *image_ptr2 = image_ptr;
+  int y_counter = plot_lines;
+  int x_counter;
+  unsigned int colour32;
+
+  colour32 = colour;
+  colour32 = colour32 | (colour << 8);
+  colour32 = colour32 | (colour << 16);
+  colour32 = colour32 | (colour << 24);
+
+  while(y_counter > 0){
+
+     x_counter = plot_length;
+
+     while(x_counter > 0 && ((unsigned int)image_ptr & 0x3) != 0){
+
+        *image_ptr = *image_ptr ^ colour;
+        image_ptr++;
+
+        x_counter--;
+
+     }
+
+     if(x_counter >= 4){
+        image_ptr32 = (unsigned int *)image_ptr;
+
+        do{
+
+           *image_ptr32 = *image_ptr32 ^ colour32;
+           image_ptr32++;
+
+           x_counter -= 4;
+
+        }while(x_counter >= 4);
+
+        if(x_counter > 0){
+           image_ptr = (unsigned char *)image_ptr32;
+        }
+     }
+
+     while(x_counter > 0){
+
+        *image_ptr = *image_ptr ^ colour;
+        image_ptr++;
+
+        x_counter--;
+
+     }
+
+     image_ptr2 += linebytes;
+     image_ptr = image_ptr2;
+
+     y_counter--;
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotRectangleToSprite_8_Invert(int linebytes,
+                                                  int plot_length,
+                                                  int plot_lines,
+                                                  unsigned char **sprite_area,
+                                                  int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  unsigned int *image_ptr32;
+  unsigned char *image_ptr2 = image_ptr;
+  int y_counter = plot_lines;
+  int x_counter;
+
+  while(y_counter > 0){
+
+     x_counter = plot_length;
+
+     while(x_counter > 0 && ((unsigned int)image_ptr & 0x3) != 0){
+
+        *image_ptr = ~*image_ptr;
+        image_ptr++;
+
+        x_counter--;
+
+     }
+
+     if(x_counter >= 4){
+        image_ptr32 = (unsigned int *)image_ptr;
+
+        do{
+
+           *image_ptr32 = ~*image_ptr32;
+           image_ptr32++;
+
+           x_counter -= 4;
+
+        }while(x_counter >= 4);
+
+        if(x_counter > 0){
+           image_ptr = (unsigned char *)image_ptr32;
+        }
+     }
+
+     while(x_counter > 0){
+
+        *image_ptr = ~*image_ptr;
+        image_ptr++;
+
+        x_counter--;
+
+     }
+
+     image_ptr2 += linebytes;
+     image_ptr = image_ptr2;
+
+     y_counter--;
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotRectangleToSprite_8_Set(int linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **sprite_area,
+                                              int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     memset(image_ptr, 0xFF, plot_length);
+
+     image_ptr += linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotHorizontalLineToSprite_8_Copy(int plot_length,
+                                                     unsigned char colour,
+                                                     unsigned char **sprite_area,
+                                                     int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  unsigned int *image_ptr32;
+  int x_counter = plot_length;
+  unsigned int colour32;
+
+  colour32 = colour;
+  colour32 = colour32 | (colour << 8);
+  colour32 = colour32 | (colour << 16);
+  colour32 = colour32 | (colour << 24);
+
+  while(x_counter > 0 && ((unsigned int)image_ptr & 0x3) != 0){
+
+     *image_ptr++ = colour;
+
+     x_counter--;
+
+  }
+
+  if(x_counter >= 4){
+     image_ptr32 = (unsigned int *)image_ptr;
+
+     do{
+
+        *image_ptr32++ = colour32;
+
+        x_counter -= 4;
+
+     }while(x_counter >= 4);
+
+     if(x_counter > 0){
+        image_ptr = (unsigned char *)image_ptr32;
+     }
+  }
+
+  while(x_counter > 0){
+
+     *image_ptr++ = colour;
+
+     x_counter--;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotHorizontalLineToSprite_8_Invert(int plot_length,
+                                                       unsigned char **sprite_area,
+                                                       int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  unsigned int *image_ptr32;
+  int x_counter = plot_length;
+
+  while(x_counter > 0 && ((unsigned int)image_ptr & 0x3) != 0){
+
+     *image_ptr = (~ *image_ptr);
+     image_ptr++;
+
+     x_counter--;
+
+  }
+
+  if(x_counter >= 4){
+     image_ptr32 = (unsigned int *)image_ptr;
+
+     do{
+
+        *image_ptr32 = (~ *image_ptr32);
+        image_ptr32++;
+
+        x_counter -= 4;
+
+     }while(x_counter >= 4);
+
+     if(x_counter > 0){
+        image_ptr = (unsigned char *)image_ptr32;
+     }
+  }
+
+  while(x_counter > 0){
+
+     *image_ptr = (~ *image_ptr);
+     image_ptr++;
+
+     x_counter--;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotHorizontalLineToSprite_8_Xor(int plot_length,
+                                                    unsigned char colour,
+                                                    unsigned char **sprite_area,
+                                                    int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start;
+  unsigned int *image_ptr32;
+  int x_counter = plot_length;
+  unsigned int colour32;
+
+  colour32 = colour;
+  colour32 = colour32 | (colour << 8);
+  colour32 = colour32 | (colour << 16);
+  colour32 = colour32 | (colour << 24);
+
+  while(x_counter > 0 && ((unsigned int)image_ptr & 0x3) != 0){
+
+     *image_ptr = *image_ptr ^ colour;
+     image_ptr++;
+
+     x_counter--;
+
+  }
+
+  if(x_counter >= 4){
+     image_ptr32 = (unsigned int *)image_ptr;
+
+     do{
+
+        *image_ptr32 = *image_ptr32 ^ colour32;
+        image_ptr32++;
+
+        x_counter -= 4;
+
+     }while(x_counter >= 4);
+
+     if(x_counter > 0){
+        image_ptr = (unsigned char *)image_ptr32;
+     }
+  }
+
+  while(x_counter > 0){
+
+     *image_ptr = *image_ptr ^ colour;
+     image_ptr++;
+
+     x_counter--;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotVerticalLineToSprite_8_Copy(int linebytes,
+                                                   int plot_lines,
+                                                   unsigned char colour,
+                                                   unsigned char **sprite_area,
+                                                   int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start; 
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     *image_ptr = colour;
+     image_ptr += linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotVerticalLineToSprite_8_Invert(int linebytes,
+                                                     int plot_lines,
+                                                     unsigned char **sprite_area,
+                                                     int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start; 
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     *image_ptr = (~ *image_ptr);
+     image_ptr += linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotVerticalLineToSprite_8_Xor(int linebytes,
+                                                  int plot_lines,
+                                                  unsigned char colour,
+                                                  unsigned char **sprite_area,
+                                                  int start)
+{
+  unsigned char *image_ptr = (*sprite_area) + start; 
+  int y_index;
+
+  for(y_index = 0; y_index < plot_lines; y_index++){
+
+     *image_ptr = *image_ptr ^ colour;
+     image_ptr += linebytes;
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_CopyRectangleSprite_8_Copy(int linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **area,
+                                              int source_start,
+                                              int dest_start)
+{
+  int source_offset = source_start;
+  int dest_offset = dest_start;
+  int y_index;
+
+  if(dest_offset < source_offset){
+
+     for(y_index = 0; y_index < plot_lines; y_index++){
+
+        memcpy((*area) + dest_offset, (*area) + source_offset, plot_length);
+/*
+        Utils_MemMove_Flex(dest_offset, source_offset,
+                           (void **)area, (void **)area,
+                           (unsigned int)plot_length);
+*/
+        source_offset += linebytes;
+        dest_offset += linebytes;
+
+     }
+  }
+  else{
+
+     source_offset += linebytes * (plot_lines - 1);
+     dest_offset += linebytes * (plot_lines - 1);
+
+     for(y_index = plot_lines; y_index > 0; y_index--){
+
+        memcpy((*area) + dest_offset, (*area) + source_offset, plot_length);
+/*
+        Utils_MemMove_Flex(dest_offset, source_offset,
+                           (void **)area, (void **)area,
+                           (unsigned int)plot_length);
+*/
+        source_offset -= linebytes;
+        dest_offset -= linebytes;
+     }
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Copy(int source_linebytes,
+                                                       int source_initial_x,
+                                                       int source_initial_y,
+                                                       int dest_linebytes,
+                                                       int plot_length,
+                                                       int plot_lines,
+                                                       unsigned char foreground_colour,
+                                                       int source_width,
+                                                       int source_height,
+                                                       unsigned char **source_area,
+                                                       int source_start,
+                                                       unsigned char **dest_area,
+                                                       int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Copy_line(foreground_colour,
+                                              source_start_offset,
+                                              source_width,
+                                              source_area,
+                                              source_initial_x,
+                                              dest_area,
+                                              dest_start_offset,
+                                              dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Copy_line(unsigned char foreground_colour,
+                                                     int source_start,
+                                                     int source_width,
+                                                     unsigned char **source_area,
+                                                     int source_initial_x,
+                                                     unsigned char **dest_area,
+                                                     int dest_start,
+                                                     int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = foreground_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy(int source_linebytes,
+                                                          int source_initial_x,
+                                                          int source_initial_y,
+                                                          int dest_linebytes,
+                                                          int plot_length,
+                                                          int plot_lines,
+                                                          unsigned char foreground_colour,
+                                                          unsigned char background_colour,
+                                                          int source_width,
+                                                          int source_height,
+                                                          unsigned char **source_area,
+                                                          int source_start,
+                                                          unsigned char **dest_area,
+                                                          int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+//if(plot_length == 1){
+//fprintf(stderr, "GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy(source_linebytes=%i, source_initial_x=%i, source_initial_y=%i, dest_linebytes=%i, plot_length=%i, plot_lines=%i, foreground_colour=%i, background_colour=%i, source_width=%i, source_height=%i, *source_area=%i, source_start=%i, *dest_area=%i, dest_start=%i)\n", source_linebytes, source_initial_x, source_initial_y, dest_linebytes, plot_length, plot_lines, foreground_colour, background_colour, source_width, source_height, *source_area, source_start, *dest_area, dest_start);
+//}
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_line(foreground_colour,
+                                                 background_colour,
+                                                 source_start_offset,
+                                                 source_width,
+                                                 source_area,
+                                                 source_initial_x,
+                                                 dest_area,
+                                                 dest_start_offset,
+                                                 dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_line(unsigned char foreground_colour,
+                                                        unsigned char background_colour,
+                                                        int source_start,
+                                                        int source_width,
+                                                        unsigned char **source_area,
+                                                        int source_initial_x,
+                                                        unsigned char **dest_area,
+                                                        int dest_start,
+                                                        int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = foreground_colour;
+     else
+        *dest_ptr = background_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Copy_Byte(int source_linebytes,
+                                                            int dest_linebytes,
+                                                            int plot_length,
+                                                            int plot_lines,
+                                                            unsigned char foreground_colour,
+                                                            unsigned char **source_area,
+                                                            int source_start,
+                                                            unsigned char **dest_area,
+                                                            int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  int source_pixel;
+
+  while(dest_y_counter > 0){
+
+     dest_x_counter = plot_length;
+
+     source_pixel = *source_ptr;
+
+     while(dest_x_counter > 0){
+
+        if((source_pixel & 0x80) != 0)
+           *dest_ptr = foreground_colour;
+
+        source_pixel = source_pixel << 1;
+
+        dest_ptr++;
+
+        dest_x_counter--;
+    }
+
+    source_ptr += source_linebytes;
+
+    dest_ptr2 += dest_linebytes;
+    dest_ptr = dest_ptr2;
+
+    dest_y_counter--;
+  }
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_Byte(int source_linebytes,
+                                                               int dest_linebytes,
+                                                               int plot_length,
+                                                               int plot_lines,
+                                                               unsigned char foreground_colour,
+                                                               unsigned char background_colour,
+                                                               unsigned char **source_area,
+                                                               int source_start,
+                                                               unsigned char **dest_area,
+                                                               int dest_start)
+{
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  int source_pixel;
+
+//if(plot_length == 1){
+//fprintf(stderr, "GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_Byte(source_linebytes=%i, dest_linebytes=%i, plot_length=%i, plot_lines=%i, foreground_colour=%i, background_colour=%i, *source_area=%i, source_start=%i, *dest_area=%i, dest_start=%i)\n", source_linebytes, dest_linebytes, plot_length, plot_lines, foreground_colour, background_colour, *source_area, source_start, *dest_area, dest_start);
+//}
+
+  while(dest_y_counter > 0){
+
+     dest_x_counter = plot_length;
+
+     source_pixel = *source_ptr;
+
+     while(dest_x_counter > 0){
+
+        if((source_pixel & 0x80) != 0)
+           *dest_ptr = foreground_colour;
+        else
+           *dest_ptr = background_colour;
+
+        source_pixel = source_pixel << 1;
+
+        dest_ptr++;
+
+        dest_x_counter--;
+    }
+
+    source_ptr += source_linebytes;
+
+    dest_ptr2 += dest_linebytes;
+    dest_ptr = dest_ptr2;
+
+    dest_y_counter--;
+  }
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Xor(int source_linebytes,
+                                                      int source_initial_x,
+                                                      int source_initial_y,
+                                                      int dest_linebytes,
+                                                      int plot_length,
+                                                      int plot_lines,
+                                                      unsigned char foreground_colour,
+                                                      int source_width,
+                                                      int source_height,
+                                                      unsigned char **source_area,
+                                                      int source_start,
+                                                      unsigned char **dest_area,
+                                                      int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Xor_line(foreground_colour,
+                                             source_start_offset,
+                                             source_width,
+                                             source_area,
+                                             source_initial_x,
+                                             dest_area,
+                                             dest_start_offset,
+                                             dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Xor_line(unsigned char foreground_colour,
+                                                    int source_start,
+                                                    int source_width,
+                                                    unsigned char **source_area,
+                                                    int source_initial_x,
+                                                    unsigned char **dest_area,
+                                                    int dest_start,
+                                                    int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = *dest_ptr ^ foreground_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor(int source_linebytes,
+                                                         int source_initial_x,
+                                                         int source_initial_y,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char foreground_colour,
+                                                         unsigned char background_colour,
+                                                         int source_width,
+                                                         int source_height,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor_line(foreground_colour,
+                                                background_colour,
+                                                source_start_offset,
+                                                source_width,
+                                                source_area,
+                                                source_initial_x,
+                                                dest_area,
+                                                dest_start_offset,
+                                                dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor_line(unsigned char foreground_colour,
+                                                       unsigned char background_colour,
+                                                       int source_start,
+                                                       int source_width,
+                                                       unsigned char **source_area,
+                                                       int source_initial_x,
+                                                       unsigned char **dest_area,
+                                                       int dest_start,
+                                                       int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = *dest_ptr ^ foreground_colour;
+     else
+        *dest_ptr = *dest_ptr ^ background_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_And(int source_linebytes,
+                                                      int source_initial_x,
+                                                      int source_initial_y,
+                                                      int dest_linebytes,
+                                                      int plot_length,
+                                                      int plot_lines,
+                                                      unsigned char foreground_colour,
+                                                      int source_width,
+                                                      int source_height,
+                                                      unsigned char **source_area,
+                                                      int source_start,
+                                                      unsigned char **dest_area,
+                                                      int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_And_line(foreground_colour,
+                                             source_start_offset,
+                                             source_width,
+                                             source_area,
+                                             source_initial_x,
+                                             dest_area,
+                                             dest_start_offset,
+                                             dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_And_line(unsigned char foreground_colour,
+                                                    int source_start,
+                                                    int source_width,
+                                                    unsigned char **source_area,
+                                                    int source_initial_x,
+                                                    unsigned char **dest_area,
+                                                    int dest_start,
+                                                    int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = *dest_ptr & foreground_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_And(int source_linebytes,
+                                                         int source_initial_x,
+                                                         int source_initial_y,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char foreground_colour,
+                                                         unsigned char background_colour,
+                                                         int source_width,
+                                                         int source_height,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Bg_And_line(foreground_colour,
+                                                background_colour,
+                                                source_start_offset,
+                                                source_width,
+                                                source_area,
+                                                source_initial_x,
+                                                dest_area,
+                                                dest_start_offset,
+                                                dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_And_line(unsigned char foreground_colour,
+                                                       unsigned char background_colour,
+                                                       int source_start,
+                                                       int source_width,
+                                                       unsigned char **source_area,
+                                                       int source_initial_x,
+                                                       unsigned char **dest_area,
+                                                       int dest_start,
+                                                       int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = *dest_ptr & foreground_colour;
+     else
+        *dest_ptr = *dest_ptr & background_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Or(int source_linebytes,
+                                                     int source_initial_x,
+                                                     int source_initial_y,
+                                                     int dest_linebytes,
+                                                     int plot_length,
+                                                     int plot_lines,
+                                                     unsigned char foreground_colour,
+                                                     int source_width,
+                                                     int source_height,
+                                                     unsigned char **source_area,
+                                                     int source_start,
+                                                     unsigned char **dest_area,
+                                                     int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Or_line(foreground_colour,
+                                            source_start_offset,
+                                            source_width,
+                                            source_area,
+                                            source_initial_x,
+                                            dest_area,
+                                            dest_start_offset,
+                                            dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Or_line(unsigned char foreground_colour,
+                                                   int source_start,
+                                                   int source_width,
+                                                   unsigned char **source_area,
+                                                   int source_initial_x,
+                                                   unsigned char **dest_area,
+                                                   int dest_start,
+                                                   int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = *dest_ptr | foreground_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Or(int source_linebytes,
+                                                        int source_initial_x,
+                                                        int source_initial_y,
+                                                        int dest_linebytes,
+                                                        int plot_length,
+                                                        int plot_lines,
+                                                        unsigned char foreground_colour,
+                                                        unsigned char background_colour,
+                                                        int source_width,
+                                                        int source_height,
+                                                        unsigned char **source_area,
+                                                        int source_start,
+                                                        unsigned char **dest_area,
+                                                        int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int dest_end_offset = dest_start_offset + plot_length;
+  int source_start_offset;
+
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteBitMaskToSprite_8_Fg_Bg_Or_line(foreground_colour,
+                                               background_colour,
+                                               source_start_offset,
+                                               source_width,
+                                               source_area,
+                                               source_initial_x,
+                                               dest_area,
+                                               dest_start_offset,
+                                               dest_end_offset);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+     dest_end_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteBitMaskToSprite_8_Fg_Bg_Or_line(unsigned char foreground_colour,
+                                                      unsigned char background_colour,
+                                                      int source_start,
+                                                      int source_width,
+                                                      unsigned char **source_area,
+                                                      int source_initial_x,
+                                                      unsigned char **dest_area,
+                                                      int dest_start,
+                                                      int dest_end)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  unsigned char *dest_end_ptr;
+  int source_x;
+  int source_pixel;
+
+  source_ptr = (*source_area) + source_start + (source_initial_x >> 3);
+  dest_ptr = (*dest_area) + dest_start;
+  dest_end_ptr = (*dest_area) + dest_end;
+
+  source_x = source_initial_x;
+
+  source_pixel = *source_ptr++;
+  source_pixel = source_pixel << (source_initial_x & 0x7);
+
+  while(dest_ptr < dest_end_ptr){
+
+     if((source_pixel & 0x80) != 0)
+        *dest_ptr = *dest_ptr | foreground_colour;
+     else
+        *dest_ptr = *dest_ptr | background_colour;
+
+     source_x++;
+
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+
+     if((source_x & 0x7) == 0)
+        source_pixel = *source_ptr++;
+     else
+        source_pixel = source_pixel << 1;
+
+     dest_ptr++; 
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotSpriteTiledToSprite_8_Copy(int source_linebytes,
+                                                  int source_initial_x,
+                                                  int source_initial_y,
+                                                  int dest_linebytes,
+                                                  int plot_length,
+                                                  int plot_lines,
+                                                  int source_width,
+                                                  int source_height,
+                                                  unsigned char **source_area,
+                                                  int source_start,
+                                                  unsigned char **dest_area,
+                                                  int dest_start)
+{
+  int dest_y_index;
+  int source_y_index;
+  int dest_start_offset = dest_start;
+  int source_start_offset;
+
+//if(plot_length == 1){
+//fprintf(stderr, "GFXLib_PlotSpriteTiledToSprite_8_Fg_Bg_Copy(source_linebytes=%i, source_initial_x=%i, source_initial_y=%i, dest_linebytes=%i, plot_length=%i, plot_lines=%i, source_width=%i, source_height=%i, *source_area=%i, source_start=%i, *dest_area=%i, dest_start=%i)\n", source_linebytes, source_initial_x, source_initial_y, dest_linebytes, plot_length, plot_lines, source_width, source_height, *source_area, source_start, *dest_area, dest_start);
+//}
+  source_y_index = source_initial_y;
+
+  for(dest_y_index = 0; dest_y_index < plot_lines; dest_y_index++){
+
+     source_start_offset = source_start + (source_y_index * source_linebytes);
+
+     PlotSpriteTiledToSprite_8_Copy_line(source_start_offset,
+                                         source_width,
+                                         source_area,
+                                         source_initial_x,
+                                         dest_area,
+                                         dest_start_offset,
+                                         plot_length);
+
+     source_y_index++;
+     if(source_y_index >= source_height)
+        source_y_index = 0;
+
+     dest_start_offset += dest_linebytes;
+  }
+
+}
+
+/******************************************************************************/
+
+static void PlotSpriteTiledToSprite_8_Copy_line(int source_start,
+                                                int source_width,
+                                                unsigned char **source_area,
+                                                int source_initial_x,
+                                                unsigned char **dest_area,
+                                                int dest_start,
+                                                int plot_length)
+{
+  unsigned char *source_ptr;
+  unsigned char *dest_ptr;
+  int source_x;
+  int dest_x_counter;
+  
+  source_ptr = (*source_area) + source_start + source_initial_x;
+  dest_ptr = (*dest_area) + dest_start;
+
+  source_x = source_initial_x;
+  dest_x_counter = plot_length;
+
+  while(dest_x_counter > 0){
+
+     *dest_ptr = *dest_ptr = *source_ptr;
+     source_ptr++;
+     dest_ptr++;
+
+     dest_x_counter--;
+     
+     source_x++;
+ 
+     if(source_x >= source_width){
+        source_ptr = (*source_area) + source_start;
+        source_x = 0;
+     }
+  }
+
+}
+

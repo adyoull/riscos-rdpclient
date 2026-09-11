@@ -1,0 +1,259 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Disk.c                                                  *
+ *                                                                      *
+ *     Purpose: Disc interface to rdesktop.                             *
+ *                                                                      *
+ ************************************************************************/
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+/*#include <socklib.h>*/
+
+#include "rdesktop/rdesktop.h"
+
+#define FILE_ATTRIBUTE_READONLY			0x00000001
+#define FILE_ATTRIBUTE_HIDDEN			0x00000002
+#define FILE_ATTRIBUTE_SYSTEM			0x00000004
+#define FILE_ATTRIBUTE_DIRECTORY		0x00000010
+#define FILE_ATTRIBUTE_ARCHIVE			0x00000020
+#define FILE_ATTRIBUTE_DEVICE			0x00000040
+#define FILE_ATTRIBUTE_UNKNOWNXXX0		0x00000060	/* ??? ACTION i.e. 0x860 == compress this file ? */
+#define FILE_ATTRIBUTE_NORMAL			0x00000080
+#define FILE_ATTRIBUTE_TEMPORARY		0x00000100
+#define FILE_ATTRIBUTE_SPARSE_FILE		0x00000200
+#define FILE_ATTRIBUTE_REPARSE_POINT		0x00000400
+#define FILE_ATTRIBUTE_COMPRESSED		0x00000800
+#define FILE_ATTRIBUTE_OFFLINE			0x00001000
+#define FILE_ATTRIBUTE_NOT_CONTENT_INDEXED	0x00002000
+#define FILE_ATTRIBUTE_ENCRYPTED		0x00004000
+
+#define FILE_FLAG_OPEN_NO_RECALL		0x00100000
+#define FILE_FLAG_OPEN_REPARSE_POINT		0x00200000
+#define FILE_FLAG_POSIX_SEMANTICS		0x01000000
+#define FILE_FLAG_BACKUP_SEMANTICS		0x02000000	/* sometimes used to create a directory */
+#define FILE_FLAG_DELETE_ON_CLOSE		0x04000000
+#define FILE_FLAG_SEQUENTIAL_SCAN		0x08000000
+#define FILE_FLAG_RANDOM_ACCESS			0x10000000
+#define FILE_FLAG_NO_BUFFERING			0x20000000
+#define FILE_FLAG_OVERLAPPED			0x40000000
+#define FILE_FLAG_WRITE_THROUGH			0x80000000
+
+#define FILE_SHARE_READ				0x01
+#define FILE_SHARE_WRITE			0x02
+#define FILE_SHARE_DELETE			0x04
+
+#define FILE_BASIC_INFORMATION			0x04
+#define FILE_STANDARD_INFORMATION		0x05
+
+#define FS_CASE_SENSITIVE			0x00000001
+#define FS_CASE_IS_PRESERVED			0x00000002
+#define FS_UNICODE_STORED_ON_DISK		0x00000004
+#define FS_PERSISTENT_ACLS			0x00000008
+#define FS_FILE_COMPRESSION			0x00000010
+#define FS_VOLUME_QUOTAS			0x00000020
+#define FS_SUPPORTS_SPARSE_FILES		0x00000040
+#define FS_SUPPORTS_REPARSE_POINTS		0x00000080
+#define FS_SUPPORTS_REMOTE_STORAGE		0X00000100
+#define FS_VOL_IS_COMPRESSED			0x00008000
+#define FILE_READ_ONLY_VOLUME			0x00080000
+
+#define OPEN_EXISTING				1
+#define CREATE_NEW				2
+#define OPEN_ALWAYS				3
+#define TRUNCATE_EXISTING			4
+#define CREATE_ALWAYS				5
+
+#define GENERIC_READ				0x80000000
+#define GENERIC_WRITE				0x40000000
+#define GENERIC_EXECUTE				0x20000000
+#define GENERIC_ALL				0x10000000
+
+#define ERROR_FILE_NOT_FOUND			2L
+#define ERROR_ALREADY_EXISTS			183L
+
+#define	MAX_OPEN_FILES	0x100
+
+extern RDPDR_DEVICE g_rdpdr_device[];
+
+FILEINFO g_fileinfo[MAX_OPEN_FILES];
+RD_BOOL g_notify_stamp = False;
+
+typedef struct
+{
+	char name[PATH_MAX];
+	char label[PATH_MAX];
+	unsigned long serial;
+	char type[PATH_MAX];
+} FsInfoType;
+
+/* although these routines are static, they are called from outside using */
+/* the disk_fns function pointer table */
+static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 sharemode,
+                            uint32 create_disposition, uint32 flags_and_attributes,
+                            char *filename, RD_NTHANDLE *handle);
+static RD_NTSTATUS Disk_Close(RD_NTHANDLE handle);
+static RD_NTSTATUS Disk_Read(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                          uint32 *result);
+static RD_NTSTATUS Disk_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                           uint32 *result);
+static RD_NTSTATUS Disk_DeviceControl(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out);
+
+/* function table for disc control routines */
+DEVICE_FNS disk_fns = {
+  Disk_Create,
+  Disk_Close,
+  Disk_Read,
+  Disk_Write,
+  Disk_DeviceControl
+};
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Disk_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 sharemode,
+                               uint32 create_disposition, uint32 flags_and_attributes,
+                               char *filename, RD_NTHANDLE *handle)
+{
+ /*
+  * Initialise connection to disc drive
+  */
+  fprintf(stderr, "Called Disk_Create(device_id=%li, accessmask=%li, sharemode=%li, create_disposition=%li, flags_and_attributes=%li, filename='%s', handle=%li, *handle=%li)\n", device_id, accessmask, sharemode, create_disposition, flags_and_attributes, filename, handle, *handle);
+
+ /* return STATUS_ACCESS_DENIED */
+
+ /*
+  * Return success state
+  */
+//  *handle = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Disk_Close(RD_NTHANDLE handle)
+{
+ /*
+  * Close connetion to disc drive
+  */
+  fprintf(stderr, "Called Disk_Close(handle=%li)\n", handle);
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Disk_Read(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                             uint32 *result)
+{
+ /*
+  */
+  fprintf(stderr, "Called Disk_Read(handle=%li, data=%li, *data=%c, length=%li, offset=%li)\n", handle, data, *data, length, offset);
+
+  *result = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Disk_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                              uint32 *result)
+{
+ /*
+  */
+  fprintf(stderr, "Called Disk_Write(handle=%li, data=%li, length=%li, offset=%li)\n", handle, data, length, offset);
+
+  *result = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Disk_DeviceControl(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
+{
+ /*
+  * Read and Write various configuration parameters
+  */
+  fprintf(stderr, "Called Disk_DeviceControl(handle=%li, request=%li)\n", handle, request);
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+extern RD_NTSTATUS disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
+{
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM out)
+{
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+extern RD_NTSTATUS disk_check_notify(RD_NTHANDLE handle)
+{
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+extern RD_NTSTATUS disk_create_notify(RD_NTHANDLE handle, uint32 info_class)
+{
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+extern RD_NTSTATUS disk_query_volume_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
+{
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+extern RD_NTSTATUS disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREAM out)
+{
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+

@@ -1,0 +1,56 @@
+/************************************************************************
+ *                                                                      *
+ *        File: CacheIO.h                                               *
+ *                                                                      *
+ *     Purpose: Loading and saving of persistant bitmap cache.          *
+ *                                                                      *
+ ************************************************************************/
+
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void CacheIO_Init(void);
+
+
+ /*
+  * Create unique session cache directory
+  */
+extern BOOL CacheIO_CreateCacheDirectory(void);
+
+
+ /*
+  * Open file in session cache directory, ignoring any UNIX style directory
+  * name prefix.
+  * Return file handle or -1 if fails.
+  */
+extern int CacheIO_OpenCacheFile(char *filename);
+
+
+ /*
+  * Close cache file
+  */
+extern void CacheIO_CloseCacheFile(int fd);
+
+
+ /*
+  * Read 'len' bytes into 'ptr' from file 'fd'
+  * Return number of bytes read.
+  */
+extern int CacheIO_ReadCacheFile(int fd, void *ptr, int len);
+
+
+ /*
+  * Write 'len' bytes into 'ptr' from file 'fd'
+  * Return number of bytes read.
+  */
+extern int CacheIO_WriteCacheFile(int fd, void *ptr, int len);
+
+
+ /*
+  * Seek file pointer to 'offset' in file 'fd'
+  */
+extern int CacheIO_SeekCacheFile(int fd, int offset);
+
+
+

@@ -1,0 +1,93 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib15S.h                                             *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 15bit images.         *
+ *              With colour swap for Iyonix DSA                         *
+ *                                                                      *
+ ************************************************************************/
+
+extern unsigned int GFXLib_TranslateColour_15S(unsigned int windows_colour);
+
+extern void GFXLib_PlotDataToSprite_15S_Copy(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);
+
+
+
+extern void GFXLib_PlotSpriteToSprite_15S_Copy(int source_linebytes,
+                                               int dest_linebytes,
+                                               int plot_length,
+                                               int plot_lines,
+                                               unsigned char **source_area,
+                                               int source_start,
+                                               unsigned char **dest_area,
+                                               int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_AndInverted(int source_linebytes,
+                                                      int dest_linebytes,
+                                                      int plot_length,
+                                                      int plot_lines,
+                                                      unsigned char **source_area,
+                                                      int source_start,
+                                                      unsigned char **dest_area,
+                                                      int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_Xor(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_Nand(int source_linebytes,
+                                              int dest_linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **source_area,
+                                              int source_start,
+                                              unsigned char **dest_area,
+                                              int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_And(int source_linebytes,
+                                              int dest_linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **source_area,
+                                              int source_start,
+                                              unsigned char **dest_area,
+                                              int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_Equiv(int source_linebytes,
+                                                int dest_linebytes,
+                                                int plot_length,
+                                                int plot_lines,
+                                                unsigned char **source_area,
+                                                int source_start,
+                                                unsigned char **dest_area,
+                                                int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_OrInverted(int source_linebytes,
+                                                     int dest_linebytes,
+                                                     int plot_length,
+                                                     int plot_lines,
+                                                     unsigned char **source_area,
+                                                     int source_start,
+                                                     unsigned char **dest_area,
+                                                     int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15S_Or(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);

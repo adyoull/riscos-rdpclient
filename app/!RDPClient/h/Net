@@ -1,0 +1,27 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Utils.h                                                 *
+ *                                                                      *
+ *     Purpose: Network related routines.                               *
+ *                                                                      *
+ ************************************************************************/
+
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Net_Init(void);
+
+
+ /*
+  * Gets host name and fills hostname (up to maxsize).
+  * Returns -1 on success and 0 on failure
+  */
+extern int Net_GetHostName(char *hostname, int maxsize);
+
+
+ /*
+  * Set non blocking flag according to 'nonblocking'
+  * Return TRUE if successful or FALSE if not
+  */
+extern BOOL Net_SetNonBlockingSocket(int socket, BOOL nonblocking);

@@ -1,0 +1,626 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Mouse.c                                                 *
+ *                                                                      *
+ *     Purpose: Mouse handling.                                         *
+ *                                                                      *
+ ************************************************************************/
+
+/*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Mouse-wheel modifications (C) 2026 Andrew Youll, released under the same
+ * GNU General Public License. The complete corresponding modified source is
+ * distributed alongside the binary.
+ *
+ * Andrew Youll's change in this file: forward the RISC OS scroll wheel to the
+ * remote RDP desktop by reading the wheel directly via OS_Pointer 2 (the OS
+ * "alternate positioning device" — the scroll wheel) every poll, and sending
+ * each notch of movement to the remote as an RDP wheel event
+ * (MOUSE_FLAG_BUTTON4 = up / MOUSE_FLAG_BUTTON5 = down). Reading the wheel
+ * directly means it works identically in windowed, "Full Window" and
+ * "Full Screen" (single-task) modes and needs no scroll-bar furniture on the
+ * display window -- see poll_wheel() below.
+ */
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Time.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "rdesktop/rdesktop.h"
+#include "rdesktop/scancodes.h"
+
+extern int g_use_rdp5;
+
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Mouse.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+
+static mouse_button_block saved_buttons;
+static wimp_point saved_position;
+static BOOL click_position;
+
+static unsigned int motion_update_interval;
+static unsigned int next_motion_update;
+
+/*
+ * (C) 2026 Andrew Youll -- scroll-wheel support.
+ *
+ * OS_Pointer 2 (SWI &64) returns the accumulated position of the "alternate
+ * positioning device" (the scroll wheel) in R1 (signed 32-bit Y). We remember
+ * the last value and forward the difference to the remote each poll. The
+ * counter is unbounded and may wrap; a wrap shows up as an implausibly large
+ * jump, which we ignore.
+ */
+#ifndef SWI_OS_Pointer
+#define SWI_OS_Pointer                  0x000064
+#endif
+
+/*
+ * Scroll-wheel calibration:
+ *   WHEEL_UNITS_PER_NOTCH -- OS_Pointer alternate-Y units that make up one
+ *                            "step" of wheel movement.
+ *   WHEEL_MAX_STEP        -- cap steps detected in a single poll so a large
+ *                            accumulated jump can't flood the remote.
+ *   WHEEL_WRAP_LIMIT      -- deltas larger than this are treated as a counter
+ *                            wrap (or first-run garbage) and ignored.
+ *
+ * User-adjustable settings (iconbar menu -> Scroll; saved to Choices):
+ *   wheel_invert -- 0 = normal, 1 = reverse the scroll direction.
+ *   wheel_speed  -- remote wheel notches sent per detected step,
+ *                   WHEEL_SPEED_MIN..WHEEL_SPEED_MAX (1 = the original 1:1).
+ */
+#define WHEEL_UNITS_PER_NOTCH           1
+#define WHEEL_MAX_STEP                  4
+#define WHEEL_WRAP_LIMIT                1000000
+
+#define WHEEL_SPEED_MIN                 1
+#define WHEEL_SPEED_MAX                 5
+#define WHEEL_SPEED_DEFAULT             1
+
+#define WHEEL_CHOICES_READ              "Choices:RDPClientWheel"
+#define WHEEL_CHOICES_WRITE             "<Choices$Write>.RDPClientWheel"
+
+static int  wheel_last_y;
+static BOOL wheel_have_last;
+static int  wheel_accum;
+
+static int  wheel_invert = 0;                  /* (C) 2026 Andrew Youll */
+static int  wheel_speed  = WHEEL_SPEED_DEFAULT; /* (C) 2026 Andrew Youll */
+
+static void get_mouse_state(mouse_button_block *buttons, wimp_point *position);
+static void update_mouse(mouse_button_block *current_buttons, wimp_point *current_position,
+                         BOOL force);
+static BOOL read_pointer_enabled_state(void);
+static void set_pointer_enabled_state(BOOL enabled);
+static void poll_wheel(void);
+static void send_wheel_notch(BOOL up);
+static void load_wheel_choices(void);
+static void save_wheel_choices(void);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Mouse_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  saved_buttons.value = 0;
+  saved_position.x = 0;
+  saved_position.y = 0;
+  click_position = FALSE;
+
+  motion_update_interval = 15;
+  next_motion_update = Time_Monotonic();
+
+ /*
+  * (C) 2026 Andrew Youll -- scroll-wheel state.
+  */
+  wheel_last_y = 0;
+  wheel_have_last = FALSE;
+  wheel_accum = 0;
+
+  wheel_invert = 0;
+  wheel_speed  = WHEEL_SPEED_DEFAULT;
+  load_wheel_choices();          /* override defaults with saved settings */
+}
+
+/******************************************************************************/
+
+extern void Mouse_SetMotionUpdateInterval(int interval)
+{
+ /*
+  * Set minimum time between sending mouse position packets
+  */
+  motion_update_interval = interval;
+}
+
+/******************************************************************************/
+
+extern void Mouse_MouseClick(mouse_button_block *current_buttons,
+                             wimp_point *current_position)
+{
+ /*
+  * Process MouseClick events
+  */
+  wimp_point display_position;
+  BOOL in_display;
+
+  in_display = Display_ScreenToDisplayCoords(current_position, &display_position);
+
+  if(in_display){
+
+     click_position = TRUE;
+
+     Mouse_EnsurePointerDisabled();
+
+     update_mouse(current_buttons, &display_position, FALSE);
+
+     Display_EnsureWindowOnTopWhenFullscreen(fullscreen_bringtofront_MOUSECLICK);
+  }
+  else{
+     Mouse_EnsurePointerEnabled();
+  }
+}
+
+/******************************************************************************/
+
+extern void Mouse_Poll(void)
+{
+ /*
+  * Called at various times to handle checking for buttons being released
+  * and movement
+  */
+  mouse_button_block current_buttons;
+  wimp_point current_position;
+  wimp_point display_position;
+  BOOL in_display;
+
+  if(Display_HasInputFocus()){
+
+     get_mouse_state(&current_buttons, &current_position);
+
+     in_display = Display_ScreenToDisplayCoords(&current_position, &display_position);
+
+     if(in_display){
+
+        if(Display_SingleTask())
+           Pointer_EnsureHardwarePointer();
+        else
+           Mouse_EnsurePointerDisabled();
+
+        click_position = FALSE;
+
+        update_mouse(&current_buttons, &display_position, FALSE);
+
+       /*
+        * (C) 2026 Andrew Youll -- forward any scroll-wheel movement to the
+        * remote. Done here (pointer is over the remote display) so the wheel
+        * behaves like the other mouse input, and in every display mode.
+        */
+        poll_wheel();
+
+     }
+     else{
+
+        if(!Display_SingleTask())
+           Mouse_EnsurePointerEnabled();
+
+     }
+  }
+}
+
+/******************************************************************************/
+
+extern void Mouse_UpdatePointerPosition(int x, int y)
+{
+ /*
+  * Update stored mouse pointer position
+  */
+
+  saved_position.x = x;
+  saved_position.y = y;
+}
+
+/******************************************************************************/
+
+extern void Mouse_LooseFocus(void)
+{
+ /*
+  * Called when the Display looses input focus
+  */
+
+ /*
+  * Turn on system pointer when leaving window
+  */
+  Mouse_EnsurePointerEnabled();
+}
+
+/******************************************************************************/
+
+extern void Mouse_GainFocus(void)
+{
+ /*
+  * Called when the Display gains input focus
+  */
+
+ /*
+  * Turn off system pointer when entering window
+  */
+  Mouse_EnsurePointerDisabled();
+}
+
+/******************************************************************************/
+
+extern void Mouse_EnsurePointerEnabled(void)
+{
+ /*
+  * Ensure that the system pointer is enabled
+  */
+  if(!read_pointer_enabled_state())
+     set_pointer_enabled_state(TRUE);
+}
+
+/******************************************************************************/
+
+extern void Mouse_EnsurePointerDisabled(void)
+{
+ /*
+  * Ensure that the system pointer is enabled
+  */
+  if(read_pointer_enabled_state())
+     set_pointer_enabled_state(FALSE);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void get_mouse_state(mouse_button_block *buttons, wimp_point *position)
+{
+  _kernel_swi_regs r;
+
+  buttons->value = 0;
+  position->x = 0;
+  position->y = 0;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_OS_Mouse, &r, &r) == NULL){
+
+     position->x = r.r[0];
+     position->y = r.r[1];
+     buttons->value = r.r[2];
+
+  }
+}
+
+/******************************************************************************/
+
+static void send_wheel_notch(BOOL up)
+{
+ /*
+  * (C) 2026 Andrew Youll.
+  * Send a single scroll-wheel notch to the remote. The wheel carries no
+  * position of its own, so use the current pointer, mapped into the remote
+  * display (as Mouse_MouseClick / update_mouse do).
+  */
+  mouse_button_block current_buttons;
+  wimp_point current_position;
+  wimp_point display_position;
+
+  get_mouse_state(&current_buttons, &current_position);
+
+  if(!Display_ScreenToDisplayCoords(&current_position, &display_position))
+     return;
+
+  rdp_send_input(time(NULL), RDP_INPUT_MOUSE,
+                 (up ? MOUSE_FLAG_BUTTON4 : MOUSE_FLAG_BUTTON5),
+                 display_position.x, display_position.y);
+}
+
+/******************************************************************************/
+
+static void poll_wheel(void)
+{
+  int y;
+  int delta;
+  int notches;
+  int index;
+ /*
+  * (C) 2026 Andrew Youll.
+  * Read the scroll wheel directly via OS_Pointer 2 (the OS "alternate
+  * positioning device") and forward any movement since the last poll to the
+  * remote as wheel notches. Reading it here -- rather than relying on the Wimp
+  * WindowScroll module auto-scrolling a window -- means the wheel works in
+  * every display mode (windowed, "Full Window" and single-task "Full Screen")
+  * and needs no visible scroll bar on the display window.
+  *
+  * OS_Pointer 2:  R0 = 2 on entry;  on exit R0 = X, R1 = Y accumulated
+  * position of the alternate device. +ve Y is the wheel pushed away from the
+  * user, i.e. scroll up.
+  */
+  _kernel_swi_regs r;
+
+  r.r[0] = 2;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_OS_Pointer, &r, &r) != NULL)
+     return;                       /* OS_Pointer unavailable -- no wheel      */
+
+  y = r.r[1];
+
+  if(!wheel_have_last){            /* first read: establish a baseline only   */
+     wheel_last_y = y;
+     wheel_have_last = TRUE;
+     return;
+  }
+
+  delta = y - wheel_last_y;
+  wheel_last_y = y;
+
+  if(delta == 0)
+     return;
+
+  if(delta > WHEEL_WRAP_LIMIT || delta < -WHEEL_WRAP_LIMIT)
+     return;                       /* counter wrapped -- ignore this step     */
+
+  wheel_accum += delta;
+
+  notches = wheel_accum / WHEEL_UNITS_PER_NOTCH;
+
+  if(notches == 0)
+     return;
+
+  wheel_accum -= notches * WHEEL_UNITS_PER_NOTCH;   /* keep the remainder     */
+
+  if(notches > WHEEL_MAX_STEP)                       /* clamp a big jump       */
+     notches = WHEEL_MAX_STEP;
+  if(notches < -WHEEL_MAX_STEP)
+     notches = -WHEEL_MAX_STEP;
+
+  notches *= wheel_speed;                            /* apply speed setting    */
+
+  if(wheel_invert)                                   /* apply invert setting   */
+     notches = -notches;
+
+  for(index = 0; index < notches; index++)          /* +ve = wheel up         */
+     send_wheel_notch(TRUE);
+
+  for(index = 0; index > notches; index--)          /* -ve = wheel down       */
+     send_wheel_notch(FALSE);
+}
+
+/******************************************************************************/
+
+extern int Mouse_GetWheelInvert(void)
+{
+  return(wheel_invert);
+}
+
+/******************************************************************************/
+
+extern void Mouse_SetWheelInvert(int invert)
+{
+ /*
+  * (C) 2026 Andrew Youll -- set/toggle scroll-wheel direction and persist.
+  */
+  wheel_invert = (invert ? 1 : 0);
+  save_wheel_choices();
+}
+
+/******************************************************************************/
+
+extern int Mouse_GetWheelSpeed(void)
+{
+  return(wheel_speed);
+}
+
+/******************************************************************************/
+
+extern void Mouse_WheelSpeedFaster(void)
+{
+ /*
+  * (C) 2026 Andrew Youll -- step the scroll speed up (clamped) and persist.
+  */
+  if(wheel_speed < WHEEL_SPEED_MAX){
+     wheel_speed++;
+     save_wheel_choices();
+  }
+}
+
+/******************************************************************************/
+
+extern void Mouse_WheelSpeedSlower(void)
+{
+ /*
+  * (C) 2026 Andrew Youll -- step the scroll speed down (clamped) and persist.
+  */
+  if(wheel_speed > WHEEL_SPEED_MIN){
+     wheel_speed--;
+     save_wheel_choices();
+  }
+}
+
+/******************************************************************************/
+
+static void load_wheel_choices(void)
+{
+  int invert;
+  int speed;
+ /*
+  * (C) 2026 Andrew Youll -- read the saved wheel settings, if any. Missing or
+  * unreadable file just leaves the defaults in place.
+  */
+  FILE *f;
+
+  f = fopen(WHEEL_CHOICES_READ, "r");
+
+  if(f == NULL)
+     return;
+
+  if(fscanf(f, "%d %d", &invert, &speed) == 2){
+
+     wheel_invert = (invert ? 1 : 0);
+
+     if(speed < WHEEL_SPEED_MIN) speed = WHEEL_SPEED_MIN;
+     if(speed > WHEEL_SPEED_MAX) speed = WHEEL_SPEED_MAX;
+     wheel_speed = speed;
+  }
+
+  fclose(f);
+}
+
+/******************************************************************************/
+
+static void save_wheel_choices(void)
+{
+ /*
+  * (C) 2026 Andrew Youll -- persist the wheel settings. Best effort: if
+  * <Choices$Write> is not configured / not writable, the settings simply do
+  * not persist across sessions (no error to the user).
+  */
+  FILE *f;
+
+  f = fopen(WHEEL_CHOICES_WRITE, "w");
+
+  if(f == NULL)
+     return;
+
+  fprintf(f, "%d %d\n", wheel_invert, wheel_speed);
+
+  fclose(f);
+}
+
+/******************************************************************************/
+
+static void update_mouse(mouse_button_block *current_buttons, wimp_point *current_position,
+                         BOOL force)
+{
+ /*
+  * Always move the pointer in the Display
+  */
+  Display_MovePointer(current_position->x, current_position->y);
+  
+  if(!force && current_buttons->value == saved_buttons.value &&
+     Time_Monotonic() < next_motion_update)
+     return;
+
+  if(!force && current_buttons->value == saved_buttons.value &&
+               current_position->x == saved_position.x &&
+               current_position->y == saved_position.y)
+     return;
+
+
+ /*
+  * movement
+  */
+  if(force ||
+     current_buttons->value != saved_buttons.value ||
+     (current_buttons->value == saved_buttons.value &&
+      Time_Monotonic() >= next_motion_update)){
+
+     if(force ||
+        current_position->x != saved_position.x || current_position->y != saved_position.y){
+//fprintf(stderr, "rdp_send_input(x=%i, y=%i) mouse move\n", current_position->x, current_position->y);
+        rdp_send_input(time(NULL), RDP_INPUT_MOUSE, MOUSE_FLAG_MOVE,
+                       current_position->x, current_position->y);
+
+        saved_position.x = current_position->x;
+        saved_position.y = current_position->y;
+
+        next_motion_update = Time_Monotonic() + motion_update_interval;
+     }
+  }
+
+ /*
+  * button press
+  */
+  if(force || current_buttons->value != saved_buttons.value){
+
+     if(force || current_buttons->data.select != saved_buttons.data.select){
+//fprintf(stderr, "rdp_send_input(x=%i, y=%i) button select\n", current_position->x, current_position->y);
+        rdp_send_input(time(NULL), RDP_INPUT_MOUSE,
+                       MOUSE_FLAG_BUTTON1 |
+                       (current_buttons->data.select == 1 ? MOUSE_FLAG_DOWN : 0),
+                       current_position->x, current_position->y);
+     }
+
+     if(force || current_buttons->data.menu != saved_buttons.data.menu){
+//fprintf(stderr, "rdp_send_input(x=%i, y=%i) button menu\n", current_position->x, current_position->y);
+        rdp_send_input(time(NULL), RDP_INPUT_MOUSE,
+                       MOUSE_FLAG_BUTTON3 |
+                       (current_buttons->data.menu == 1 ? MOUSE_FLAG_DOWN : 0),
+                       current_position->x, current_position->y);
+     }
+
+     if(force || current_buttons->data.adjust != saved_buttons.data.adjust){
+//fprintf(stderr, "rdp_send_input(x=%i, y=%i) button adjust\n", current_position->x, current_position->y);
+        rdp_send_input(time(NULL), RDP_INPUT_MOUSE,
+                       MOUSE_FLAG_BUTTON2 |
+                       (current_buttons->data.adjust == 1 ? MOUSE_FLAG_DOWN : 0),
+                       current_position->x, current_position->y);
+     }
+
+     saved_buttons.value = current_buttons->value;
+  }
+}
+
+/******************************************************************************/
+
+static BOOL read_pointer_enabled_state(void)
+{
+  int r1out, r2out;
+  BOOL enabled = FALSE;
+
+  OS_Byte(osbyte_SELECTPOINTER, -1, 0, &r1out, &r2out);
+
+  if((0x7 & r1out) > 0)
+     enabled = TRUE;
+
+  return(enabled);
+}
+
+/******************************************************************************/
+
+static void set_pointer_enabled_state(BOOL enabled)
+{
+  int r1out, r2out, r1in;
+
+  OS_Byte(osbyte_SELECTPOINTER, -1, 0, &r1out, &r2out);
+  
+  r1in = ~0x7 & r1out; /* reset point shape bits (this turns off the pointer) */
+
+  if(enabled)
+     r1in = r1in | 0x1; /* enable pointer shape 1 */
+
+  OS_Byte(osbyte_SELECTPOINTER, r1in, 0, &r1out, &r2out);
+}

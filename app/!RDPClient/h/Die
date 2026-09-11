@@ -1,0 +1,26 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Die.h                                                   *
+ *                                                                      *
+ *     Purpose: Allows images to be saved when program dies.            *
+ *                                                                      *
+ ************************************************************************/
+
+ /*
+  * initialisation to be done on startup, must be done just before Event_Poll
+  */
+extern void Die_Init(void);
+
+
+ /*
+  * set Wimp mode to return to from single tasking mode
+  * if program dies
+  */
+extern void Die_SetReturnMode(mode_select_block *mode);
+
+
+ /*
+  * clear use of Wimp mode to return to if program dies
+  */
+extern void Die_ClearReturnMode(void);
+

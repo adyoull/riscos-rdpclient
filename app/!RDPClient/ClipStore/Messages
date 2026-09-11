@@ -1,0 +1,11 @@
+#  Messages file for ClipStore
+
+# Application Name
+app.name: Clipboard Store
+
+# version text 
+info.version: 1.01 (01-Feb-2010)
+
+# error messages
+err.die: %s has suffered an unrecoverable internal error (type %i) and must exit immediately, choose 'OK' to save the display and logs in the Scrap directory.
+err.data01: Unable to create scrap directory

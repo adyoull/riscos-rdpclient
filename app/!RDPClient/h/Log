@@ -1,0 +1,114 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Log.h                                                   *
+ *                                                                      *
+ *     Purpose: Log window display.                                     *
+ *                                                                      *
+ ************************************************************************/
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+#ifndef __dl_linklist_h
+#include "DeskLib:LinkList.h"
+#endif
+
+
+#define message_type_TEXT    0
+#define message_type_WARNING 1
+#define message_type_ERROR   2
+
+ /*
+  * log information
+  */
+typedef struct {
+    window_handle       main_window;
+    window_handle       text_window;
+    int                 messages;
+    wimp_point          plot_offset;
+    wimp_point          min_window_size;
+    wimp_point          current_window_size;
+    int                 total_height;
+    BOOL                quit_on_close;
+    linklist_header     text_blocks;
+} log_block;
+
+typedef struct {
+    linklist_header     header;
+    int                 message_type;
+    char                *text;
+    int                 height;
+    int                 lines;
+} log_text_block;
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Log_Init(void);
+
+
+ /*
+  * Open log window
+  */
+extern BOOL Log_OpenWindow(void);
+
+
+ /*
+  * Open log window if any messages are present and sets quit on close
+  * or quits straight away of no messages
+  */
+extern BOOL Log_OpenWindowIfAnyQuitOnClose(void);
+
+
+ /*
+  * Open log window if any errors are present and sets quit on close
+  * or quits straight away of no error messages
+  */
+extern BOOL Log_OpenWindowIfErrorsSetQuitOnClose(BOOL quit_on_close);
+
+
+ /*
+  * Close log window
+  */
+extern void Log_CloseWindow(void);
+
+
+ /*
+  * Add a message of text and message_type
+  */
+extern BOOL Log_AddMessage(int message_type, char *text);
+
+
+ /*
+  * If quit_on_close is TRUE then app quits when log window is next
+  * closed
+  */
+extern void Log_SetQuitOnClose(BOOL quit_on_close);
+
+
+ /*
+  * Save contents of log as text
+  */
+extern BOOL Log_Save(char *filename);
+
+
+ /*
+  * Returns length of all text in the log
+  */
+extern int Log_TextSize(void);
+
+
+ /*
+  * Returns TRUE if Log window is open
+  */
+extern BOOL Log_WindowOpen(void);
+
+
+ /*
+  * Return handle for behind state to ensure that
+  * no windows open above the log window
+  */
+extern BOOL Log_OpenWindowBehind(BOOL on_top, window_handle *open_behind);
+

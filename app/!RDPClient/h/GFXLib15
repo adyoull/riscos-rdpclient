@@ -1,0 +1,277 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib15.h                                              *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 15bit images.         *
+ *                                                                      *
+ ************************************************************************/
+
+extern unsigned int GFXLib_TranslateColour_15(unsigned int windows_colour);
+
+extern void GFXLib_PlotDataToSprite_15_Copy(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotRectangleToSprite_15_Invert(int linebytes,
+                                                   int plot_length,
+                                                   int plot_lines,
+                                                   unsigned char **sprite_area,
+                                                   int start);
+
+extern void GFXLib_PlotRectangleToSprite_15_Xor(int linebytes,
+                                                int plot_length,
+                                                int plot_lines,
+                                                unsigned int colour,
+                                                unsigned char **sprite_area,
+                                                int start);
+
+extern void GFXLib_PlotRectangleToSprite_15_Copy(int linebytes,
+                                                 int plot_length,
+                                                 int plot_lines,
+                                                 unsigned int colour,
+                                                 unsigned char **sprite_area,
+                                                 int start);
+
+extern void GFXLib_PlotRectangleToSprite_15_Set(int linebytes,
+                                                int plot_length,
+                                                int plot_lines,
+                                                unsigned char **sprite_area,
+                                                int start);
+
+extern void GFXLib_PlotHorizontalLineToSprite_15_Invert(int plot_length,
+                                                       unsigned char **sprite_area,
+                                                       int start);
+
+extern void GFXLib_PlotHorizontalLineToSprite_15_Xor(int plot_length,
+                                                     unsigned int colour,
+                                                     unsigned char **sprite_area,
+                                                     int start);
+
+extern void GFXLib_PlotHorizontalLineToSprite_15_Copy(int plot_length,
+                                                      unsigned int colour,
+                                                      unsigned char **sprite_area,
+                                                      int start);
+
+extern void GFXLib_PlotVerticalLineToSprite_15_Invert(int linebytes,
+                                                     int plot_lines,
+                                                     unsigned char **sprite_area,
+                                                     int start);
+
+extern void GFXLib_PlotVerticalLineToSprite_15_Xor(int linebytes,
+                                                   int plot_lines,
+                                                   unsigned int colour,
+                                                   unsigned char **sprite_area,
+                                                   int start);
+
+extern void GFXLib_PlotVerticalLineToSprite_15_Copy(int linebytes,
+                                                    int plot_lines,
+                                                    unsigned int colour,
+                                                    unsigned char **sprite_area,
+                                                    int start);
+
+extern void GFXLib_PlotSpriteToSprite_15_AndInverted(int source_linebytes,
+                                                     int dest_linebytes,
+                                                     int plot_length,
+                                                     int plot_lines,
+                                                     unsigned char **source_area,
+                                                     int source_start,
+                                                     unsigned char **dest_area,
+                                                     int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15_Xor(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15_Nand(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15_And(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15_Equiv(int source_linebytes,
+                                               int dest_linebytes,
+                                               int plot_length,
+                                               int plot_lines,
+                                               unsigned char **source_area,
+                                               int source_start,
+                                               unsigned char **dest_area,
+                                               int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15_OrInverted(int source_linebytes,
+                                                    int dest_linebytes,
+                                                    int plot_length,
+                                                    int plot_lines,
+                                                    unsigned char **source_area,
+                                                    int source_start,
+                                                    unsigned char **dest_area,
+                                                    int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_15_Or(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Copy_Byte(int source_linebytes,
+                                                             int dest_linebytes,
+                                                             int plot_length,
+                                                             int plot_lines,
+                                                             unsigned int foreground_colour,
+                                                             unsigned char **source_area,
+                                                             int source_start,
+                                                             unsigned char **dest_area,
+                                                             int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Copy_Byte(int source_linebytes,
+                                                                int dest_linebytes,
+                                                                int plot_length,
+                                                                int plot_lines,
+                                                                unsigned int foreground_colour,
+                                                                unsigned int background_colour,
+                                                                unsigned char **source_area,
+                                                                int source_start,
+                                                                unsigned char **dest_area,
+                                                                int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Xor(int source_linebytes,
+                                                       int source_initial_x,
+                                                       int source_initial_y,
+                                                       int dest_linebytes,
+                                                       int plot_length,
+                                                       int plot_lines,
+                                                       unsigned int foreground_colour,
+                                                       int source_width,
+                                                       int source_height,
+                                                       unsigned char **source_area,
+                                                       int source_start,
+                                                       unsigned char **dest_area,
+                                                       int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Xor(int source_linebytes,
+                                                          int source_initial_x,
+                                                          int source_initial_y,
+                                                          int dest_linebytes,
+                                                          int plot_length,
+                                                          int plot_lines,
+                                                          unsigned int foreground_colour,
+                                                          unsigned int background_colour,
+                                                          int source_width,
+                                                          int source_height,
+                                                          unsigned char **source_area,
+                                                          int source_start,
+                                                          unsigned char **dest_area,
+                                                          int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_And(int source_linebytes,
+                                                       int source_initial_x,
+                                                       int source_initial_y,
+                                                       int dest_linebytes,
+                                                       int plot_length,
+                                                       int plot_lines,
+                                                       unsigned int foreground_colour,
+                                                       int source_width,
+                                                       int source_height,
+                                                       unsigned char **source_area,
+                                                       int source_start,
+                                                       unsigned char **dest_area,
+                                                       int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_And(int source_linebytes,
+                                                          int source_initial_x,
+                                                          int source_initial_y,
+                                                          int dest_linebytes,
+                                                          int plot_length,
+                                                          int plot_lines,
+                                                          unsigned int foreground_colour,
+                                                          unsigned int background_colour,
+                                                          int source_width,
+                                                          int source_height,
+                                                          unsigned char **source_area,
+                                                          int source_start,
+                                                          unsigned char **dest_area,
+                                                          int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Copy(int source_linebytes,
+                                                        int source_initial_x,
+                                                        int source_initial_y,
+                                                        int dest_linebytes,
+                                                        int plot_length,
+                                                        int plot_lines,
+                                                        unsigned int foreground_colour,
+                                                        int source_width,
+                                                        int source_height,
+                                                        unsigned char **source_area,
+                                                        int source_start,
+                                                        unsigned char **dest_area,
+                                                        int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Copy(int source_linebytes,
+                                                           int source_initial_x,
+                                                           int source_initial_y,
+                                                           int dest_linebytes,
+                                                           int plot_length,
+                                                           int plot_lines,
+                                                           unsigned int foreground_colour,
+                                                           unsigned int background_colour,
+                                                           int source_width,
+                                                           int source_height,
+                                                           unsigned char **source_area,
+                                                           int source_start,
+                                                           unsigned char **dest_area,
+                                                           int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Or(int source_linebytes,
+                                                      int source_initial_x,
+                                                      int source_initial_y,
+                                                      int dest_linebytes,
+                                                      int plot_length,
+                                                      int plot_lines,
+                                                      unsigned int foreground_colour,
+                                                      int source_width,
+                                                      int source_height,
+                                                      unsigned char **source_area,
+                                                      int source_start,
+                                                      unsigned char **dest_area,
+                                                      int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Or(int source_linebytes,
+                                                         int source_initial_x,
+                                                         int source_initial_y,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned int foreground_colour,
+                                                         unsigned int background_colour,
+                                                         int source_width,
+                                                         int source_height,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start);
+
+

@@ -1,0 +1,137 @@
+#  Messages file for RDPClient
+
+# Application Name
+app.name: RDPClient
+
+# version text for info box
+info.version: 0.90 (10-Sep-2026)
+info.rversion: 1.6.0 (CSV 01-Mar-2010)
+info.rdpclurl: http://www.orac2.demon.co.uk/software/rdpclient/rdpclient.html
+info.rdeskurl: http://www.rdesktop.org/
+
+# iconbar menu definition
+title.main: RDPClient
+menu.main: >Info|Window,Full window,Full screen|>Save,View logå,Statuså,Scroll,Quit
+
+# network status window
+statnet.status0: Not connected
+statnet.status1: Connected
+
+# connection status window
+statcon.namena: N/A
+statcon.licence0: Not issued
+statcon.licence1: Issued
+statcon.compres0: None
+statcon.compres1: Bitmap
+statcon.compres2: RDP
+statcon.encrypt0: None
+statcon.encrypt1: Login only
+statcon.encrypt2: All data
+statcon.protoco0: RDP4
+statcon.protoco1: RDP5
+statcon.clip0: Off
+statcon.clip1: Passive
+statcon.clip2: Active
+statcon.sound0: Off
+statcon.sound1: On (client)
+statcon.sound2: On (server)
+statcon.soundbit: bit
+statcon.soundc1: mono
+statcon.soundc2: stereo
+statcon.soundhz: Hz
+
+# display status window
+statdis.colour8: 256 colours
+statdis.colour15: 32 thousand
+statdis.colour16: 64 thousand
+statdis.colour24: 16 million
+statdis.colour32: 16 million (32bit)
+statdis.display0: Window
+statdis.display1: Full window
+statdis.display2: Full screen
+statdis.palette0: No
+statdis.palette1: Yes
+statdis.cache0: Off
+statdis.cache1: Enabled
+statdis.persist0: Off
+statdis.persist1: Enabled
+
+# message log window
+mlog.close: Close
+mlog.quit: Quit
+
+# sound
+sound.error: Sound support has been disabled.
+
+# error messages
+err.die: %s has suffered an unrecoverable internal error (type %i) and must exit immediately, choose 'OK' to save the display and logs in the Scrap directory.
+err.opt01: Invalid display geometry
+err.opt02: Invalid display bpp
+err.opt03: Not compiled with sound support
+err.opt04: Unknown -r argument, possible arguments are: sound, clipboard
+err.opt05: Could not determine local hostname, use -n
+err.opt06: Unknown connection error
+err.opt07: Screen resolution %i x %i is unavailable, reverting to Window display
+err.opt08: Screen resolution %i x %i with %s colours is unavailable, reverting to Window display
+err.opt09: Unknown key name '%s' specified for key shortcut
+err.cache01: Cache directory creation error
+err.cache02: Cache file open error
+err.cache03: Cache file close error
+err.cache04: Cache file read error
+err.cache05: Cache file write error
+err.cache06: Cache file seek error
+
+# keymaps
+keymap.ar: 0x401
+keymap.da: 0x406
+keymap.de: 0x407
+keymap.de-ch: 0x807
+keymap.en-gb: 0x809
+keymap.en-us: 0x409
+keymap.es: 0x40a
+keymap.fi: 0x40b
+keymap.fo: 0x438
+keymap.fr: 0x40c
+keymap.fr-be: 0x80c
+keymap.fr-ca: 0xc0c
+keymap.fr-ch: 0x100c
+keymap.hr: 0x41a
+keymap.hu: 0x40e
+keymap.it: 0x410
+keymap.ja: 0x411
+keymap.lt: 0x427
+keymap.lv: 0x426
+keymap.mk: 0x42f
+keymap.no: 0x414
+keymap.pl: 0x415
+keymap.pt: 0x816
+keymap.pt-br: 0x416
+keymap.ru: 0x419
+keymap.sl: 0x424
+keymap.sv: 0x41d
+keymap.th: 0x41e
+keymap.tr: 0x41f
+
+# disconnect reasons
+disc.0000: No information available
+disc.0001: Server initiated disconnect
+disc.0002: Server initiated logoff
+disc.0003: Server idle timeout reached
+disc.0004: Server logon timeout reached
+disc.0005: The session was replaced
+disc.0006: The server is out of memory
+disc.0007: The server denied the connection
+disc.0008: The server denied the connection for security reason
+disc.0100: Internal licensing error
+disc.0101: No license server available
+disc.0102: No valid license available
+disc.0103: Invalid licensing message
+disc.0104: Hardware id doesn't match software license
+disc.0105: Client license error
+disc.0106: Network error during licensing protocol
+disc.0107: Licensing protocol was not completed
+disc.0108: Incorrect client license enryption
+disc.0109: Can't upgrade license
+disc.010a: The server is not licensed to accept remote connections
+disc.int: Internal protocol error
+disc.unkn: Unknown reason

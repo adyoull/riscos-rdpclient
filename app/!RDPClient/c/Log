@@ -1,0 +1,1143 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Log.c                                                   *
+ *                                                                      *
+ *     Purpose: Log display window.                                     *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+#include "DeskLib:Time.h"
+#include "DeskLib:Pane2.h"
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "RDPClient.h"
+#include "MemMan.h"
+#include "Log.h"      
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+static log_block *logblock = NULL;
+
+#define buffer_SIZE 1024
+static char buffer[buffer_SIZE + 1];
+
+#define icon_SAVE            2
+#define icon_CLOSE           3
+
+#define plot_BORDER_X        20
+#define plot_BORDER_Y        16
+#define plot_LINE_HEIGHT     44
+#define plot_BASELINE_OFFSET 14
+
+#define log_MAX_MESSAGES     200
+
+#define colour32_WHITE  0xFFFFFF00
+#define colour32_GREY1  0xDDDDDD00
+#define colour32_RED    0x0000DD00
+#define colour32_BLUE   0xFFBB0000
+#define colour32_BLACK  0x00000000
+
+#ifndef message_WIMPFONTCHANGE
+#define message_WIMPFONTCHANGE 0x400CF
+#endif
+
+/*
+#define LINE_BORDER
+*/
+
+static BOOL CloseWindow(event_pollblock *event, void *reference);
+static BOOL UserMessage(event_pollblock *event, void *reference);
+static BOOL Click(event_pollblock *event, void *reference);
+static BOOL Key(event_pollblock *event, void *reference);
+static BOOL Redraw(event_pollblock *event, void *reference);
+static BOOL OpenWindow(event_pollblock *event, void *reference);
+static void text_height(char *text, int *height, int *lines);
+static void update_window_height(int height);
+static void set_window_height(void);
+static void recalculate_all_heights(void);
+static void remove_last_message(void);
+static void set_quit_on_close(BOOL quit_on_close, BOOL force);
+static void set_text_colours(int message_type);
+static void refresh_text(void);
+static void redraw_loop(window_redrawblock *redraw, log_block *block);
+static void enable_fontchange_message(void);
+static void multi_line_text_plot(char *text, int x, int y, int lines);
+static void wimp_textop_colours(unsigned int foreground, unsigned int background);
+static int wimp_textop_width(char *text, int length);
+static void wimp_textop_plot(char *text, int x, int y);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Log_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  wimp_point paneoffset;
+  wimp_point panesize;
+  window_info windowinfo;
+
+  logblock = malloc(sizeof(log_block));
+
+  if(logblock == NULL){
+     Error_OutOfMemory(TRUE, "Message Log");
+     return;
+  }
+
+  logblock->main_window = NULL;
+  logblock->text_window = NULL;
+  logblock->messages = 0;
+  logblock->plot_offset.x = 0;
+  logblock->plot_offset.y = 0;
+  logblock->min_window_size.x = 0;
+  logblock->min_window_size.y = 0;
+  logblock->current_window_size.x = 0;
+  logblock->current_window_size.y = 0;
+
+  logblock->main_window = Pane2_CreateAndAddMain("Log", template_TITLEMIN);
+
+  if(logblock->main_window == NULL)
+     return;
+
+  Pane2_ReadIcon(logblock->main_window, 0, "LogMessages", &paneoffset, &panesize);
+  logblock->text_window = Pane2_CreateAndAddPane("LogMessages",
+                                                 template_TITLEMIN,
+                                                 logblock->main_window,
+                                                 &paneoffset, &panesize,
+                                                 pane2_FIXED|pane2_MAINTOP|pane2_PANETOP);
+  if(logblock->text_window == NULL){
+     Pane2_Delete(logblock->main_window);
+     logblock->main_window = NULL;
+     return;
+  }
+
+  Event_Claim(event_REDRAW, logblock->text_window, event_ANY, Redraw, logblock);
+  Event_Claim(event_CLOSE, logblock->main_window, event_ANY, CloseWindow, logblock);
+  Event_Claim(event_OPEN, logblock->main_window, event_ANY, OpenWindow, logblock);
+  Event_Claim(event_CLICK, logblock->main_window, event_ANY, Click, logblock);
+  Event_Claim(event_KEY, logblock->main_window, event_ANY, Key, logblock);
+
+ /*
+  * Set up text control
+  */
+  logblock->messages = 0;
+
+  logblock->plot_offset.x = plot_BORDER_X;
+  logblock->plot_offset.y = plot_BORDER_Y;
+
+  Window_GetInfo(logblock->text_window, &windowinfo);
+
+  logblock->min_window_size.x = windowinfo.block.workarearect.max.x -
+                                windowinfo.block.workarearect.min.x;
+  logblock->min_window_size.y = windowinfo.block.workarearect.max.y -
+                                windowinfo.block.workarearect.min.y;
+
+  logblock->current_window_size.x = logblock->min_window_size.x;
+  logblock->current_window_size.y = logblock->min_window_size.y;
+
+  logblock->total_height = 0;
+
+  set_quit_on_close(FALSE, TRUE);
+
+  LinkList_InitItem(&(logblock->text_blocks));
+
+  Event_Claim(event_USERMESSAGE, event_ANY, event_ANY, UserMessage, logblock);
+
+  enable_fontchange_message();
+}
+
+/******************************************************************************/
+
+extern BOOL Log_OpenWindow(void)
+{
+ /*
+  * Open log window
+  */
+
+  if(logblock != NULL){
+
+     if(logblock->main_window != NULL)
+        Pane2_Show(logblock->main_window, open_CENTERED);
+
+     return(TRUE);
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+extern BOOL Log_OpenWindowIfAnyQuitOnClose(void)
+{
+ /*
+  * Open log window if any messages are present and sets quit on close
+  * or quits straight away of no messages
+  */
+
+  if(logblock != NULL){
+
+     if(logblock->main_window != NULL){
+
+        if(logblock->messages > 0){
+
+           Log_SetQuitOnClose(TRUE);
+
+           Pane2_Show(logblock->main_window, open_CENTERED);
+
+        }
+        else{
+
+           rdpclient_quit = TRUE;
+
+        }
+
+     }
+
+     return(TRUE);
+  }
+  else
+     rdpclient_quit = TRUE;
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+extern BOOL Log_OpenWindowIfErrorsSetQuitOnClose(BOOL quit_on_close)
+{
+ /*
+  * Open log window if any errors are present and sets quit on close
+  * or quits straight away if no error messages
+  */
+  BOOL open = FALSE;
+  log_text_block *item;
+  BOOL success = FALSE;
+
+  if(logblock != NULL){
+
+     if(logblock->main_window != NULL){
+
+        if(logblock->messages > 0){
+
+           item = LinkList_NextItem(&(logblock->text_blocks));
+
+           while(item != NULL && !open){
+
+              if(item->message_type == message_type_ERROR)
+                 open = TRUE;
+
+              item = LinkList_NextItem(&(item->header));
+
+           }
+
+        }
+
+     }
+
+     success = TRUE;
+  }
+
+  if(open){
+
+     Log_SetQuitOnClose(quit_on_close);
+
+     Pane2_Show(logblock->main_window, open_CENTERED);
+
+  }
+  else if(!rdpclient_quit)
+     rdpclient_quit = quit_on_close;
+
+  return(success);
+}
+
+/******************************************************************************/
+
+extern void Log_CloseWindow(void)
+{
+ /*
+  * Close log window
+  */
+  if(logblock != NULL){
+
+     if(logblock->main_window != NULL){
+        Pane2_Hide(logblock->main_window);
+
+        RDPClient_HideSaveWindow();
+     }
+
+     if(logblock->quit_on_close)
+        rdpclient_quit = TRUE;
+  }
+
+}
+
+/******************************************************************************/
+
+extern BOOL Log_AddMessage(int message_type, char *text)
+{
+ /*
+  * Add a message of text and message_type
+  */
+  log_text_block *item;
+  int length;
+  int index;
+
+  if(logblock == NULL)
+     return(FALSE);
+
+  if(logblock->messages >= log_MAX_MESSAGES)
+     remove_last_message();
+     
+  item = malloc(sizeof(log_text_block));
+
+  if(item == NULL)
+     return(FALSE);
+
+  LinkList_InitItem(&(item->header));
+
+  item->message_type = message_type;
+
+  length = strlen(text);
+
+  if(length > 0){
+
+     if(text[length - 1] == '\n')
+        length -= 1;
+
+  }
+
+  item->text = malloc(length + 1);
+
+  if(item->text == NULL){
+     free(item);
+     return(FALSE);
+  }
+
+  strncpy(item->text, text, length);
+  (item->text)[length] = '\0';
+
+  for(index = 0; index < length; index++){
+
+     if((item->text)[index] == '\n')
+        (item->text)[index] = ' ';
+
+  }
+
+  text_height(item->text, &(item->height), &(item->lines));
+
+  LinkList_AddToHead(&(logblock->text_blocks), &(item->header));
+
+  logblock->messages++;
+
+  update_window_height(item->height);
+
+  if(message_type == message_type_ERROR){
+
+     if(!Log_WindowOpen())
+        Log_OpenWindow();
+
+  }
+
+  refresh_text();
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern void Log_SetQuitOnClose(BOOL quit_on_close)
+{
+ /*
+  * If quit_on_close is TRUE then app quits when log window is next
+  * closed
+  */
+  if(logblock != NULL){
+
+     set_quit_on_close(quit_on_close, FALSE);
+
+  }
+
+}
+
+/******************************************************************************/
+
+extern BOOL Log_Save(char *filename)
+{
+  BOOL success;
+  log_text_block *item;
+ /*
+  * Save contents of log as text
+  */
+  FILE *channel;
+  success = FALSE;
+
+  channel = fopen(filename, "w");
+
+  if(channel != NULL){
+
+     success = TRUE;
+
+     File_SetType(filename, filetype_TEXT);
+
+     if(logblock != NULL){
+
+        if(logblock->messages > 0){
+
+           item = LinkList_NextItem(&(logblock->text_blocks));
+
+           while(item != NULL){
+
+              fprintf(channel, "%s\n", item->text);
+
+              item = LinkList_NextItem(&(item->header));
+
+           }
+
+        }
+
+     }
+
+     fclose(channel);
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+extern int Log_TextSize(void)
+{
+ /*
+  * Returns length of all text in the log
+  */
+  int size = 0;
+  log_text_block *item;
+
+  if(logblock != NULL){
+
+     if(logblock->messages > 0){
+
+        item = LinkList_NextItem(&(logblock->text_blocks));
+
+        while(item != NULL){
+
+           size += strlen(item->text) + 1;
+
+           item = LinkList_NextItem(&(item->header));
+
+        }
+
+     }
+
+  }
+
+  return(size);
+}
+
+/******************************************************************************/
+
+extern BOOL Log_WindowOpen(void)
+{
+  BOOL open;
+ /*
+  * Returns TRUE if Log window is open
+  */
+  window_state windowstate;
+  open = FALSE;
+
+  if(logblock != NULL){
+
+     if(logblock->main_window != NULL){
+
+        if(Wimp_GetWindowState(logblock->main_window, &windowstate) == 0){
+
+           if(windowstate.flags.data.open == 1)
+              open = TRUE;
+
+        }
+
+     }
+
+  }
+
+  return(open);
+}
+
+/******************************************************************************/
+
+extern BOOL Log_OpenWindowBehind(BOOL on_top, window_handle *open_behind)
+{
+  BOOL open;
+ /*
+  * Return handle for behind state to ensure that
+  * no windows open above the log window
+  */
+  window_state windowstate;
+  open = FALSE;
+
+  if(logblock != NULL){
+
+     if(logblock->main_window != NULL){
+
+        if(Wimp_GetWindowState(logblock->text_window, &windowstate) == 0){
+
+           if(windowstate.flags.data.open == 1){
+
+              open = TRUE;
+
+              if(on_top){
+
+                 if(windowstate.openblock.behind != -1)
+                    Pane2_Show(logblock->main_window, open_WHEREVER);
+
+              }
+
+              *open_behind = logblock->main_window;
+
+           }
+
+        }
+
+     }
+
+  }
+
+  return(open);
+}
+
+/******************************************************************************
+ *                               close handlers                               *
+ ******************************************************************************/
+
+static BOOL CloseWindow(event_pollblock *event, void *reference)
+{
+ /*
+  * called when window is closed
+  */
+/*
+  log_block *block = reference;
+*/
+  Log_CloseWindow();
+  
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                            UserMessage handlers                            *
+ ******************************************************************************/
+
+static BOOL UserMessage(event_pollblock *event, void *reference)
+{
+  message_block *message = &(event->data.message);
+
+  if(message->header.action == message_WIMPFONTCHANGE){
+
+     recalculate_all_heights();
+
+     refresh_text();
+
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************
+ *                              Click handlers                                *
+ ******************************************************************************/
+
+static BOOL Click(event_pollblock *event, void *reference)
+{
+  switch(event->data.mouse.icon)
+  {
+    case icon_SAVE:
+      RDPClient_SetSaveWindowProperties(FALSE, filetype_TEXT, Log_TextSize(), "Log",
+                                        save_type_LOG);
+      RDPClient_OpenSaveWindow(open_CENTEREDUNDERPOINTER);
+      break;
+
+    case icon_CLOSE:
+      Log_CloseWindow();
+      break;
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                             keypress handlers                              *
+ ******************************************************************************/
+
+static BOOL Key(event_pollblock *event, void *reference)
+{
+  /* display_block *block = reference; */
+  /* window_handle window = event->data.key.caret.window; */
+ 
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                            redraw handlers                                 *
+ ******************************************************************************/
+
+static BOOL Redraw(event_pollblock *event, void *reference)
+{
+ /*
+  * called to redraw the log window
+  */
+  window_redrawblock redraw;
+  BOOL more;
+
+  redraw.window = event->data.openblock.window;
+  Wimp_RedrawWindow(&redraw, &more);
+
+  if(more)
+     redraw_loop(&redraw, logblock);
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                           open window handlers                             *
+ ******************************************************************************/
+
+static BOOL OpenWindow(event_pollblock *event, void *reference)
+{
+ /*
+  * handler to go before the normal open handler
+  */
+/*
+  log_block *block = (log_block *)reference;
+*/
+  return(FALSE);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void text_height(char *text, int *height, int *lines)
+{
+ /*
+  * Calculate height of wrapped text area based on current desktop font
+  */
+  int max_width = logblock->current_window_size.x - plot_BORDER_X - plot_BORDER_X;
+  int width = 0; /* width of text on previous lines */
+  int index = 0; /* currect character index */
+  int separator_index = 0; /* index of separator on current line */
+  int last_separator_index = 0; /* index of separator on previous line */
+  int length = strlen(text);
+  char character;
+
+  *lines = 1;
+
+  while(index < length){
+
+    character = text[index];
+
+    if(character == ' ' || character == '\t' || character == '\n')
+       separator_index = index;
+
+    if(wimp_textop_width(text, index + 1) - width > max_width){
+      /*
+       * width of text after all previous lines is greater than line width
+       */
+
+       if(separator_index > last_separator_index){
+         /*
+          * there is a separator character in this line so make it the
+          * last character in the line and move the scan point back to it
+          */
+
+          index = separator_index;
+       }
+       else{
+         /*
+          * otherwise separator point is the previous character as no
+          * actual separators are in the line
+          */
+
+          index -= 1;
+       }
+
+      /*
+       * always make the end of this line, the separator
+       */
+       last_separator_index = index;
+       separator_index = index;
+
+      /*
+       * update width to be all lines including this one
+       */
+       width = wimp_textop_width(text, index + 1);
+
+       *lines += 1;
+
+     }
+
+     index += 1;
+  }
+
+  *height = *lines * plot_LINE_HEIGHT;
+
+}
+
+/******************************************************************************/
+
+static void update_window_height(int height)
+{
+ /*
+  * Update window height to accomodate extra text
+  */
+
+  logblock->total_height += height;
+
+  if(logblock->total_height + plot_BORDER_Y + plot_BORDER_Y !=
+     logblock->current_window_size.y){
+
+     set_window_height();
+  }
+}
+
+/******************************************************************************/
+
+static void set_window_height(void)
+{
+ /*
+  * Update text window height
+  */
+  int new_height;
+
+  wimp_box newworkarea;
+
+  new_height = logblock->total_height + plot_BORDER_Y + plot_BORDER_Y;
+
+  if(new_height < logblock->min_window_size.y)
+     new_height = logblock->min_window_size.y;
+
+  if(new_height != logblock->current_window_size.y){
+
+     newworkarea.min.x = 0;
+     newworkarea.max.x = logblock->current_window_size.x;
+     newworkarea.min.y = 0 - new_height;
+     newworkarea.max.y = 0;
+
+     Wimp_SetExtent(logblock->text_window, &newworkarea);
+
+  }  
+}
+
+/******************************************************************************/
+
+static void recalculate_all_heights(void)
+{
+ /*
+  * Recalculate all heights (e.g. on font change)
+  */
+  log_text_block *item;
+
+  item = LinkList_NextItem(&(logblock->text_blocks));
+
+  logblock->total_height = 0;
+
+  while(item != NULL){
+
+     text_height(item->text, &(item->height), &(item->lines));
+
+     logblock->total_height += item->height;
+
+     item = LinkList_NextItem(&(item->header));
+
+  }
+
+  set_window_height();
+}
+
+/******************************************************************************/
+
+static void remove_last_message(void)
+{
+ /*
+  * Remove last message from the log if present
+  */
+  log_text_block *item;
+
+  item = LinkList_LastItem(&(logblock->text_blocks));
+
+  if(item != NULL){
+
+     logblock->total_height -= item->height;
+     
+     LinkList_Unlink(&(logblock->text_blocks), &(item->header));
+
+     free(item->text);
+
+     free(item);
+
+  }
+
+}
+
+/******************************************************************************/
+
+static void set_quit_on_close(BOOL quit_on_close, BOOL force)
+{
+  char text[100];
+
+  if((logblock->quit_on_close != quit_on_close || force) &&
+     logblock->main_window != NULL){
+
+     logblock->quit_on_close = quit_on_close;
+     
+     if(quit_on_close)
+        Msgs_Lookup("mlog.quit", text, 90);
+     else
+        Msgs_Lookup("mlog.close", text, 90);
+
+     Icon_SetText(logblock->main_window, icon_CLOSE, text);
+
+  }
+
+}
+
+/******************************************************************************/
+
+static void set_text_colours(int message_type)
+{
+  switch(message_type)
+  {
+    case message_type_TEXT:
+      wimp_textop_colours(colour32_BLACK, colour32_WHITE);
+      break;
+
+    case message_type_WARNING:
+      wimp_textop_colours(colour32_BLUE, colour32_WHITE);
+      break;
+
+    case message_type_ERROR:
+      wimp_textop_colours(colour32_RED, colour32_WHITE);
+      break;
+  }
+}
+
+/******************************************************************************/
+
+static void refresh_text(void)
+{
+  window_redrawblock redraw;
+  BOOL more;
+  window_state windowstate;
+
+  if(logblock != NULL){
+
+     if(logblock->text_window != NULL){
+
+        if(Wimp_GetWindowState(logblock->text_window, &windowstate) == 0){
+
+           if(windowstate.flags.data.open == 1){
+
+              redraw.window = logblock->text_window;
+
+              redraw.rect.min.x = windowstate.openblock.scroll.x;
+              redraw.rect.max.y = windowstate.openblock.scroll.y;
+              redraw.rect.max.x = redraw.rect.min.x + logblock->min_window_size.x;
+              redraw.rect.min.y = redraw.rect.max.y - logblock->min_window_size.y;
+
+              Wimp_UpdateWindow(&redraw, &more);
+
+              if(more)
+                 redraw_loop(&redraw, logblock);
+/*
+        fprintf(stderr, "min x %i  max x %i  min y %i  max y %i  scroll x %i  scroll y %i\n",
+                windowstate.openblock.screenrect.min.x, windowstate.openblock.screenrect.max.x,
+                windowstate.openblock.screenrect.min.y, windowstate.openblock.screenrect.max.y,
+                windowstate.openblock.scroll.x, windowstate.openblock.scroll.y);
+*/                
+
+           }
+
+        }
+
+     }
+  }
+  
+}
+
+/******************************************************************************/
+
+static void redraw_loop(window_redrawblock *redraw, log_block *block)
+{
+ /*
+  * called to redraw the log window
+  */
+  BOOL more;
+  log_text_block *item;
+  int plot_x;
+  int plot_top_y;
+  int plot_bottom_y;
+  BOOL intersect;
+  BOOL finished;
+
+  more = TRUE;
+
+  while(more){
+
+     if(logblock != NULL){
+
+        wimp_textop_colours(colour32_BLACK, colour32_WHITE);
+        GFX_CLG();
+
+        plot_x = redraw->rect.min.x - redraw->scroll.x + logblock->plot_offset.x;
+        plot_top_y = redraw->rect.max.y - redraw->scroll.y - logblock->plot_offset.y;
+
+        intersect = FALSE;
+        finished = FALSE;
+
+        item = LinkList_NextItem(&(logblock->text_blocks));
+
+        while(item != NULL){
+
+           plot_bottom_y = plot_top_y - item->height;
+
+           if(redraw->cliprect.max.y >= plot_bottom_y && redraw->cliprect.min.y <= plot_top_y){
+
+              intersect = TRUE;
+
+              set_text_colours(item->message_type);
+
+              if(item->lines == 1)
+                 wimp_textop_plot(item->text, plot_x, plot_bottom_y + plot_BASELINE_OFFSET);
+              else
+                 multi_line_text_plot(item->text, plot_x, plot_bottom_y + plot_BASELINE_OFFSET,
+                                      item->lines);
+
+#ifdef LINE_BORDER
+              GFX_Move(redraw->rect.min.x - redraw->scroll.x, plot_top_y);
+              GFX_Draw(redraw->rect.max.x - redraw->scroll.x, plot_top_y);
+
+              GFX_Move(redraw->rect.min.x - redraw->scroll.x, plot_bottom_y);
+              GFX_Draw(redraw->rect.max.x - redraw->scroll.x, plot_bottom_y);
+#endif
+           }
+           else{
+
+              if(intersect)
+                 finished = TRUE;
+
+           }
+
+           plot_top_y = plot_bottom_y;
+
+           item = LinkList_NextItem(&(item->header));
+
+        }
+/*
+     fprintf(stderr, "min x %i  max x %i  min y %i  max y %i  scroll x %i  scroll y %i\n"
+                     "clip min x %i  clip max x %i  clip min y %i  clip max y %i\n"
+                     "topleft x %i  topleft y %i\n",
+             redraw->rect.min.x, redraw->rect.max.x, redraw->rect.min.y, redraw->rect.max.y,
+             redraw->scroll.x, redraw->scroll.y,
+             redraw->cliprect.min.x, redraw->cliprect.max.x, redraw->cliprect.min.y,
+             redraw->cliprect.max.y,
+             redraw->rect.min.x - redraw->scroll.x, redraw->rect.max.y - redraw->scroll.y);
+*/
+     }
+                     
+     Wimp_GetRectangle(redraw, &more);
+  }
+
+}
+
+/******************************************************************************/
+
+static void multi_line_text_plot(char *text, int x, int y, int lines)
+{
+ /*
+  * Plot multi line text
+  */
+  int max_width = logblock->current_window_size.x - plot_BORDER_X - plot_BORDER_X;
+  int width = 0; /* width of text on previous lines */
+  int index = 0; /* currect character index */
+  int separator_index = 0; /* index of separator on current line */
+  int last_separator_index = 0; /* index of separator on previous line */
+  int length = strlen(text);
+  char character;
+  int plot_y = y + ((lines - 1) * plot_LINE_HEIGHT);
+
+  while(index < length){
+
+    character = text[index];
+
+    if(character == ' ' || character == '\t' || character == '\n')
+       separator_index = index;
+
+    if(wimp_textop_width(text, index + 1) - width > max_width){
+      /*
+       * width of text after all previous lines is greater than line width
+       */
+
+       if(separator_index > last_separator_index){
+         /*
+          * there is a separator character in this line so make it the
+          * last character in the line and move the scan point back to it
+          */
+
+          index = separator_index;
+       }
+       else{
+         /*
+          * otherwise separator point is the previous character as no
+          * actual separators are in the line
+          */
+
+          index -= 1;
+       }
+
+      /*
+       * always make the end of this line, the separator
+       */
+       separator_index = index;
+
+      /*
+       * plot this line
+       */
+       if(last_separator_index == 0){
+          if(index + 1 <= buffer_SIZE){
+             strncpy(buffer, text, index + 1);
+             buffer[index + 1] = '\0';
+          }
+          else
+             buffer[0] = '\0';
+       }
+       else{
+          if(index - last_separator_index <= buffer_SIZE){
+             strncpy(buffer, text + last_separator_index + 1, index - last_separator_index);
+             buffer[index - last_separator_index] = '\0';
+          }
+          else
+             buffer[0] = '\0';
+       }
+
+       wimp_textop_plot(buffer, x, plot_y);
+
+       plot_y -= plot_LINE_HEIGHT;
+
+
+       last_separator_index = index;
+
+      /*
+       * update width to be all lines including this one
+       */
+       width = wimp_textop_width(text, index + 1);
+
+     }
+
+     index += 1;
+  }
+
+  if(length - last_separator_index <= buffer_SIZE){
+     strncpy(buffer, text + last_separator_index + 1, length - last_separator_index);
+     buffer[length - last_separator_index] = '\0';
+
+     wimp_textop_plot(buffer, x, plot_y);
+  }
+
+}
+
+/******************************************************************************/
+
+static void enable_fontchange_message(void)
+{
+  int message_list[] = {message_WIMPFONTCHANGE, 0};
+
+  Wimp_AddMessages(message_list);
+}
+
+/******************************************************************************/
+
+static void wimp_textop_colours(unsigned int foreground, unsigned int background)
+{
+ /*
+  * Sets text colours
+  */
+  _kernel_swi_regs r;
+
+  r.r[0] = 0;
+  r.r[1] = (int)foreground;
+  r.r[2] = (int)background;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_Wimp_TextOp, &r, &r);
+}
+
+/******************************************************************************/
+
+static int wimp_textop_width(char *text, int length)
+{
+  int plot_length;
+ /*
+  * Calculates width of a single line of text of up to length characters.
+  * If length is 0 then whole string is calculated.
+  */
+  _kernel_swi_regs r;
+  plot_length = 0;
+
+  r.r[0] = 1;
+  r.r[1] = (int)text;
+  r.r[2] = length;
+
+  if(_kernel_swi(SWI_XOS_Bit | SWI_Wimp_TextOp, &r, &r) == NULL){
+
+     plot_length = r.r[0];
+
+  }
+
+  return(plot_length);
+}
+
+/******************************************************************************/
+
+static void wimp_textop_plot(char *text, int x, int y)
+{
+ /*
+  * Plot text left justified at x and y coordinates
+  */
+  _kernel_swi_regs r;
+
+  r.r[0] = 2;
+  r.r[1] = (int)text;
+  r.r[2] = -1;
+  r.r[3] = -1;
+  r.r[4] = x;
+  r.r[5] = y;
+
+  _kernel_swi(SWI_XOS_Bit | SWI_Wimp_TextOp, &r, &r);
+}

@@ -1,0 +1,24 @@
+/* flex.h - Acorn shifting heap (flex) memory allocation library.
+ *
+ * Supplied for the online build because the service provides C:o.flexlib
+ * (linked) but not the flex.h header. Declarations match the standard Acorn
+ * flex ABI used by c.MemMan; linkage is by name against flexlib.
+ */
+#ifndef flex_H
+#define flex_H
+
+typedef void **flex_ptr;
+
+extern void flex_init(char *program_name, int *error_fd, int dynamic_size);
+extern int  flex_alloc(flex_ptr anchor, int n);
+extern void flex_free(flex_ptr anchor);
+extern int  flex_size(flex_ptr anchor);
+extern int  flex_extend(flex_ptr anchor, int newsize);
+extern int  flex_midextend(flex_ptr anchor, int at, int by);
+extern int  flex_reanchor(flex_ptr to, flex_ptr from);
+extern int  flex_set_budge(int newstate);
+extern int  flex_set_deferred_compaction(int newstate);
+extern int  flex_compact(void);
+extern int  flex_save_heap_info(char *filename);
+
+#endif

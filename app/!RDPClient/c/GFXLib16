@@ -1,0 +1,332 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib16.c                                              *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 16bpp images.         *
+ *                                                                      *
+ ************************************************************************/
+
+#include "SpriteLib.h"
+#include "Utils.h"
+
+#include <string.h>
+#include <stdio.h>
+
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern unsigned int GFXLib_TranslateColour_16(unsigned int windows_colour)
+{
+ /*
+  * Converts 16bit Windows colour into 15bit RISC OS colour
+  */
+  unsigned int riscos_colour;
+
+ /*
+  *  Source
+  *  Red    00000 000000 00000 11111 000000 00000  = 0x 0000 F800 
+  *  Green  00000 000000 00000 00000 111111 00000  = 0x 0000 07E0 
+  *  Blue   00000 000000 00000 00000 000000 11111  = 0x 0000 001F 
+  */
+
+ /*
+  *  Destination
+  *  Red    0 00000 00000 00000 0 00000 00000 11111  = 0x 0000 001F 
+  *  Green  0 00000 00000 00000 0 00000 11111 00000  = 0x 0000 03E0 
+  *  Blue   0 00000 00000 00000 0 11111 00000 00000  = 0x 0000 7C00 
+  */
+
+  riscos_colour = ((windows_colour & 0x0000001F) << 10) |
+                  ((windows_colour & 0x0000F800) >> 11) |
+                  ((windows_colour & 0x000007C0) >> 1); /* discard lsb of green */ 
+
+  return(riscos_colour);
+}
+
+/******************************************************************************/
+
+extern void GFXLib_PlotDataToSprite_16_Copy(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start)
+{
+ /*
+  * Copy 16bit Windows bitmap data into a 15bit RISC OS sprite.
+  */
+  unsigned char *source_ptr = (*source_area) + source_start;
+  unsigned char *source_ptr2 = source_ptr;
+  unsigned char *dest_ptr = (*dest_area) + dest_start;
+  unsigned char *dest_ptr2 = dest_ptr;
+  int dest_y_counter = plot_lines;
+  int dest_x_counter;
+  unsigned int next_source_pixel;
+  unsigned int source_pixel;
+  unsigned int dest_pixel;
+
+  while(dest_y_counter > 0){
+
+     if(((unsigned int)source_ptr & 0x3) == ((unsigned int)dest_ptr & 0x3)){
+       /*
+        * both source and dest are aligned the same
+        */
+
+        dest_x_counter = plot_length;
+
+        if(dest_x_counter > 0 && ((unsigned int)dest_ptr & 0x3) != 0){
+
+           source_ptr -= 2;
+           dest_ptr -= 2;
+
+           source_pixel = *((unsigned int *)(source_ptr));
+
+          /*
+           *  Source
+           *  Red    11111 000000 00000 00000 000000 00000 = 0x F800 0000
+           *  Green  00000 111111 00000 00000 000000 00000 = 0x 07E0 0000
+           *  Blue   00000 000000 11111 00000 000000 00000 = 0x 001F 0000
+           */
+
+           source_pixel = ((source_pixel & 0x001F0000) << 10) |
+                          ((source_pixel & 0xF8000000) >> 11) |
+                          ((source_pixel & 0x07C00000) >> 1); /* discard lsb of green */
+
+          /*
+           *  Destination
+           *  Red    0 00000 00000 11111 0 00000 00000 00000 = 0x 001F 0000
+           *  Green  0 00000 11111 00000 0 00000 00000 00000 = 0x 03E0 0000
+           *  Blue   0 11111 00000 00000 0 00000 00000 00000 = 0x 7C00 0000
+           */
+
+           dest_pixel = *((unsigned int *)(dest_ptr));
+
+           *((unsigned int *)(dest_ptr)) = (dest_pixel & 0x0000FFFF) | source_pixel;
+
+           source_ptr += 4;
+           dest_ptr += 4;
+
+           dest_x_counter--;
+
+        }
+
+        if(dest_x_counter >= 2){
+
+           do{
+
+             /*
+              *  Source
+              *  Red    11111 000000 00000 11111 000000 00000 = 0x F800 F800
+              *  Green  00000 111111 00000 00000 111111 00000 = 0x 07E0 07E0
+              *  Blue   00000 000000 11111 00000 000000 11111 = 0x 001F 001F
+              */
+              source_pixel = *((unsigned int *)(source_ptr));
+
+              source_pixel = ((source_pixel & 0x001F001F) << 10) |
+                             ((source_pixel & 0xF800F800) >> 11) |
+                             ((source_pixel & 0x07C00000) >> 1) | /* discard lsb of green */
+                             ((source_pixel & 0x000007C0) >> 1); /* discard lsb of green */
+
+             /*
+              *  Destination
+              *  Red    0 00000 00000 11111 0 00000 00000 11111 = 0x 001F 001F
+              *  Green  0 00000 11111 00000 0 00000 11111 00000 = 0x 03E0 03E0
+              *  Blue   0 11111 00000 00000 0 11111 00000 00000 = 0x 7C00 7C00
+              */
+              *((unsigned int *)(dest_ptr)) = source_pixel;
+
+              source_ptr += 4;
+              dest_ptr += 4;
+
+              dest_x_counter -= 2;
+
+           }while(dest_x_counter >= 2);
+
+        }
+
+        if(dest_x_counter > 0){
+
+           source_pixel = *((unsigned int *)(source_ptr));
+
+          /*
+           *  Source
+           *  Red    00000 000000 00000 11111 000000 00000 = 0x 0000 F800
+           *  Green  00000 000000 00000 00000 111111 00000 = 0x 0000 07E0
+           *  Blue   00000 000000 00000 00000 000000 11111 = 0x 0000 001F
+           */
+
+           source_pixel = ((source_pixel & 0x0000001F) << 10) |
+                          ((source_pixel & 0x0000F800) >> 11) |
+                          ((source_pixel & 0x000007C0) >> 1); /* discard lsb of green */
+
+          /*
+           *  Destination
+           *  Red    0 00000 00000 00000 0 00000 00000 11111 = 0x 0000 001F
+           *  Green  0 00000 00000 00000 0 00000 11111 00000 = 0x 0000 03E0
+           *  Blue   0 00000 00000 00000 0 11111 00000 00000 = 0x 0000 7C00
+           */
+
+           dest_pixel = *((unsigned int *)(dest_ptr));
+
+           *((unsigned int *)(dest_ptr)) = (dest_pixel & 0xFFFF0000) | source_pixel;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+     else{
+       /*
+        * source and dest are not aligned the same
+        */
+
+        dest_x_counter = plot_length;
+
+        if(dest_x_counter > 0){
+
+           if(((unsigned int)dest_ptr & 0x3) != 0){
+
+             /*
+              * Source is word aligned
+              * Dest is not word aligned
+              */
+
+              dest_ptr -= 2;
+
+              source_pixel = *((unsigned int *)(source_ptr));
+
+
+             /*
+              *  Source
+              *  Red    00000 000000 00000 11111 000000 00000  = 0x 0000 F800
+              *  Green  00000 000000 00000 00000 111111 00000  = 0x 0000 07E0
+              *  Blue   00000 000000 00000 00000 000000 11111  = 0x 0000 001F
+              */
+
+              next_source_pixel = ((source_pixel & 0x0000001F) << 10) |
+                                  ((source_pixel & 0x0000F800) >> 11) |
+                                  ((source_pixel & 0x00007C0) >> 1); /* discard lsb of green */
+
+             /*
+              *  Destination
+              *  Red    0 00000 00000 11111 0 00000 00000 00000 = 0x 001F 0000
+              *  Green  0 00000 11111 00000 0 00000 00000 00000 = 0x 03E0 0000
+              *  Blue   0 11111 00000 00000 0 00000 00000 00000 = 0x 7C00 0000
+              */
+
+              dest_pixel = *((unsigned int *)(dest_ptr));
+
+              *((unsigned int *)(dest_ptr)) = (dest_pixel & 0x0000FFFF) |
+                                              (next_source_pixel << 16);
+
+              source_ptr += 4;
+              dest_ptr += 4;
+
+              dest_x_counter--;
+
+           }
+           else{
+
+             /*
+              * Source is not word aligned
+              * Dest is word aligned
+              */
+
+              source_ptr -= 2;
+
+              source_pixel = *((unsigned int *)(source_ptr));
+
+              source_ptr += 4;
+
+           }
+
+           source_pixel = source_pixel >> 16;
+
+        }
+
+        if(dest_x_counter >= 2){
+
+           do{
+
+             /*
+              *  Source
+              *  Red    11111 000000 00000 11111 000000 00000 = 0x F800 F800
+              *  Green  00000 111111 00000 00000 111111 00000 = 0x 07E0 07E0
+              *  Blue   00000 000000 11111 00000 000000 11111 = 0x 001F 001F
+              */
+
+              next_source_pixel = *((unsigned int *)(source_ptr));
+
+              source_pixel = source_pixel | (next_source_pixel << 16);
+
+              source_pixel = ((source_pixel & 0x001F001F) << 10) |
+                             ((source_pixel & 0xF800F800) >> 11) |
+                             ((source_pixel & 0x07C00000) >> 1) | /* discard lsb of green */
+                             ((source_pixel & 0x000007C0) >> 1); /* discard lsb of green */
+
+
+             /*
+              *  Destination
+              *  Red    0 00000 00000 11111 0 00000 00000 11111 = 0x 001F 001F
+              *  Green  0 00000 11111 00000 0 00000 11111 00000 = 0x 03E0 03E0
+              *  Blue   0 11111 00000 00000 0 11111 00000 00000 = 0x 7C00 7C00
+              */
+              *((unsigned int *)(dest_ptr)) = source_pixel;
+
+              source_ptr += 4;
+              dest_ptr += 4;
+
+              dest_x_counter -= 2;
+
+              source_pixel = next_source_pixel >> 16;
+
+           }while(dest_x_counter >= 2);
+
+        }
+
+        if(dest_x_counter > 0){
+
+          /*
+           *  Source
+           *  Red    00000 000000 00000 11111 000000 00000 = 0x 0000 F800
+           *  Green  00000 000000 00000 00000 111111 00000 = 0x 0000 07E0
+           *  Blue   00000 000000 00000 00000 000000 11111 = 0x 0000 001F
+           */
+
+           source_pixel = ((source_pixel & 0x0000001F) << 10) |
+                          ((source_pixel & 0x0000F800) >> 11) |
+                          ((source_pixel & 0x000007C0) >> 1); /* discard lsb of green */
+
+          /*
+           *  Destination
+           *  Red    0 00000 00000 00000 0 00000 00000 11111 = 0x 0000 001F
+           *  Green  0 00000 00000 00000 0 00000 11111 00000 = 0x 0000 03E0
+           *  Blue   0 00000 00000 00000 0 11111 00000 00000 = 0x 0000 7C00
+           */
+
+           dest_pixel = *((unsigned int *)(dest_ptr));
+
+           *((unsigned int *)(dest_ptr)) = (dest_pixel & 0xFFFF0000) | source_pixel;
+
+        }
+
+        source_ptr2 += source_linebytes;
+        source_ptr = source_ptr2;
+        
+        dest_ptr2 += dest_linebytes;
+        dest_ptr = dest_ptr2;
+
+        dest_y_counter--;
+     }
+  }
+}
+

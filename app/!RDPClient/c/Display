@@ -1,0 +1,2883 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Display.c                                               *
+ *                                                                      *
+ *     Purpose: Display Window or Full Screen access.                   *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+#include "DeskLib:Time.h"
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Keyboard.h"
+#include "Mouse.h"
+#include "RDPClient.h"
+#include "MemMan.h"
+#include "Log.h"
+#include "Die.h"
+
+#include "rdesktop/rdesktop.h"
+extern void messagetext(char *format, ...);
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+//#define DISPLAY_INFO
+
+static display_block *displayblock = NULL;
+
+static int display_mode = display_mode_WINDOW;
+static int fullscreen_bringtofront = fullscreen_bringtofront_MOUSECLICK;
+
+static unsigned int redraw_info_next = 0;
+
+#define DISPLAY_POLL_INTERNVAL 1
+static unsigned int next_display_poll_time = 0;
+
+#define REDRAW_RECTANGLE_TOTAL 10
+static redraw_rectangle_block redraw_rectangle[REDRAW_RECTANGLE_TOTAL]; 
+static unsigned int redraw_rectangle_count = 0;
+#define MERGE_RECTANGLE_CLOSENESS 5
+#define MERGE_RECTANGLE_AREA_GROWTH 2500
+#define MERGE_RECTANGLE_GROWTH_PERCENTAGE 20
+#define RECTANGLE_REDRAW_FLUSH_TIME 7
+
+static BOOL called_display = FALSE;
+ 
+#ifdef DISPLAY_INFO
+static int display_count_plotsprite = 0;
+static int display_count_plotdata = 0;
+static int display_count_plotspritebitmask = 0;
+static int display_count_plotspritetiled = 0;
+static int display_count_plotrectangle = 0;
+static int display_count_plotline = 0;
+static int display_count_copyrectangle = 0;
+static int display_count_update = 0;
+static int display_count_savetocache = 0;
+static int display_count_restorefromcache = 0;
+static int display_count_redraw_queue_max = 0;
+static int display_count_redraw_count = 0;
+static int display_count_poll = 0;
+#endif
+
+static BOOL CloseWindow(event_pollblock *event, void *reference);
+static BOOL Click(event_pollblock *event, void *reference);
+static BOOL Key(event_pollblock *event, void *reference);
+static BOOL ModeChange(event_pollblock *event, void *reference);
+static BOOL Redraw(event_pollblock *event, void *reference);
+static BOOL OpenWindow(event_pollblock *event, void *reference);
+static BOOL BuildPixTransTable(event_pollblock *event, void *reference);
+static void build_pixtranstable(spritelib_block *sprite,
+                                char **pixtranstable, char *pixtransbuffer);
+static BOOL LooseCaret(event_pollblock *event, void *reference);
+static BOOL GainCaret(event_pollblock *event, void *reference);
+static BOOL PointerEnter(event_pollblock *event, void *reference);
+static BOOL PointerLeave(event_pollblock *event, void *reference);
+static void update_screenscale(display_block *block);
+#ifdef DISPLAY_INFO
+static void display_redraw_info(void);
+#endif
+static void redraw_display(int x, int y, int width, int height);
+static BOOL merge_rectangles(redraw_rectangle_block *existing,
+                             redraw_rectangle_block *newrect);
+static void update_redraw_rectangle(redraw_rectangle_block *rectangle);
+static void redraw_expired_rectangles(void);
+static void redraw_overlapping_rectangle(wimp_rect *area);
+//static void redraw_window(int x, int y, int width, int height);
+static void update_window(int x, int y, int width, int height);
+static void redraw_loop(window_redrawblock *redraw, display_block *block);
+static void gain_inputfocus(display_block *block);
+static void loose_inputfocus(display_block *block);
+static void window_open_below_log(void);
+static void set_current_window(void);
+static BOOL open_window(void);
+static void close_window(void);
+static BOOL open_fullscreen(void);
+static void open_window_fullscreen(void);
+static BOOL change_mode_to_display(BOOL wimpmode);
+static BOOL change_mode_to_display_verify(BOOL wimpmode, BOOL palette);
+static void close_fullscreen(void);
+static BOOL open_singletask(void);
+static void close_singletask(void);
+static BOOL switch_to_singletask(void);
+static void switch_from_singletask(void);
+static spritelib_block *create_dsa_sprite(int width, int height, int bpp);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Display_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  int index;
+
+  redraw_info_next = 0;
+
+  for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++)
+     redraw_rectangle[index].used = FALSE;
+
+  redraw_rectangle_count = 0;
+
+  called_display = FALSE;
+  
+  while((next_display_poll_time = Time_Monotonic()) == 0);
+
+  display_mode = display_mode_WINDOW;
+}
+
+/******************************************************************************/
+
+extern BOOL Display_Called(void)
+{
+ /*
+  * Returns TRUE if Display has been called
+  */
+  return(called_display);
+}
+
+/******************************************************************************/
+
+extern void Display_SetDisplayMode(int mode)
+{
+ /*
+  * Set display mode
+  */
+  BOOL reopen = FALSE;
+
+  if(mode == display_mode_WINDOW || mode == display_mode_FULLSCREEN ||
+     mode == display_mode_SINGLETASK){
+
+     display_mode = mode;
+
+     if(displayblock != NULL){
+
+        if(displayblock->window_open){
+           Display_CloseWindow();
+           reopen = TRUE;
+        }
+
+        displayblock->display_mode = display_mode;
+
+        set_current_window();
+
+        if(reopen)
+           Display_OpenWindow();          
+     }
+
+     RDPClient_MenuSetDisplayMode(display_mode);
+  }
+}
+
+/******************************************************************************/
+
+extern int Display_GetDisplayMode(void)
+{
+ /*
+  * Get current display mode
+  */
+
+  return(display_mode);
+}
+
+/******************************************************************************/
+
+extern void Display_SetFullscreenBringToFront(int option)
+{
+ /*
+  * Set fullscreen mode bring to front option
+  */
+  if(option == fullscreen_bringtofront_MOUSECLICK ||
+     option == fullscreen_bringtofront_KEYPRESS){
+
+     fullscreen_bringtofront = option;
+  }
+}
+
+/******************************************************************************/
+
+extern int Display_GetFullscreenBringToFront(void)
+{
+ /*
+  * Get current fullwindow mode bring to front option
+  */
+
+  return(fullscreen_bringtofront);
+}
+
+/******************************************************************************/
+
+extern BOOL Display_Create(int width, int height, int bpp)
+{
+ /*
+  * Initialise display environment for supplied image type
+  */
+/*
+  window_info windowinfo;
+  wimp_box newworkarea;
+*/
+  int total_size, image_size, mask_size;
+  window_block *windowblock;
+
+  if(displayblock != NULL)
+     Display_Destroy();
+
+  displayblock = malloc(sizeof(display_block));
+
+  if(displayblock == NULL)
+     return(FALSE);
+
+  displayblock->display_mode = display_mode;
+  displayblock->update_palette = FALSE;
+  displayblock->window = NULL;
+  displayblock->fullscreen = NULL;
+  displayblock->window_open = FALSE;
+  displayblock->window_opened_before = FALSE;
+  displayblock->input_focus = FALSE;
+  displayblock->requested_modechange = FALSE;
+  displayblock->sprite = NULL;
+  displayblock->display_sprite = NULL;
+  displayblock->screen_sprite = 0;
+  displayblock->singletask = FALSE;
+  displayblock->cache = NULL;
+  displayblock->cache_size = 0;
+  displayblock->pointer_coord.x = 0;
+  displayblock->pointer_coord.y = 0;
+  displayblock->pointer = NULL;
+
+ /*
+  * set up dummy sprite block for DSA
+  */
+  displayblock->screen_sprite = create_dsa_sprite(width, height, bpp);
+
+  if(displayblock->screen_sprite == NULL){
+     free(displayblock);
+     displayblock = NULL;
+     return(FALSE);
+  }
+
+ /*
+  * create real display sprite
+  */
+  displayblock->display_sprite = SpriteLib_Create(width, height, bpp, (bpp == 8), FALSE);
+
+  if(displayblock->display_sprite == NULL){
+     free(displayblock->screen_sprite);
+     free(displayblock);
+     displayblock = NULL;
+     return(FALSE);
+  }
+
+  displayblock->sprite = displayblock->display_sprite;
+
+ /*
+  * set up cache to be able to store complete image
+  */
+  SpriteLib_ImageMemory(&((displayblock->sprite)->size),
+                         (displayblock->sprite)->bpp,
+                         (displayblock->sprite)->has_palette,
+                         (displayblock->sprite)->has_mask,
+                         &total_size, &image_size, &mask_size);
+  displayblock->cache_size = total_size;
+
+  MemMan_Alloc((memman_ptr)&(displayblock->cache), total_size);
+  if(displayblock->cache == NULL){
+     free(displayblock->screen_sprite);
+     SpriteLib_Destroy(displayblock->sprite);
+     free(displayblock);
+     displayblock = NULL;
+     return(FALSE);
+  }
+
+ /*
+  * create window, set size
+  */
+  windowblock = Template_Find("Display");
+  if(windowblock != NULL){
+     windowblock->workarearect.min.y = 0 - ((displayblock->sprite)->size.y * 2);
+     windowblock->workarearect.max.x = (displayblock->sprite)->size.x * 2;
+
+     windowblock->screenrect.max.x = windowblock->screenrect.min.x +
+                                     windowblock->workarearect.max.x;
+     windowblock->screenrect.max.y = windowblock->screenrect.min.y -
+                                     windowblock->workarearect.min.y;
+  } 
+
+  displayblock->window = Window_Create("Display", template_TITLEMIN);
+
+/*
+  Window_GetInfo(displayblock->window, &windowinfo);
+  newworkarea = windowinfo.block.workarearect;
+  newworkarea.min.y = 0 - ((displayblock->sprite)->size.y * 2);
+  newworkarea.max.x = (displayblock->sprite)->size.x * 2;
+  Wimp_SetExtent(displayblock->window, &newworkarea);
+*/
+
+  windowblock = Template_Find("FullScreen");
+  if(windowblock != NULL){
+     windowblock->workarearect.min.y = 0 - ((displayblock->sprite)->size.y * 2);
+     windowblock->workarearect.max.x = (displayblock->sprite)->size.x * 2;
+
+     windowblock->screenrect.max.x = windowblock->screenrect.min.x +
+                                     windowblock->workarearect.max.x;
+     windowblock->screenrect.max.y = windowblock->screenrect.min.y -
+                                     windowblock->workarearect.min.y;
+  }
+  
+  displayblock->fullscreen = Window_Create("FullScreen", template_TITLEMIN);
+
+  set_current_window();
+  
+ /*
+  * plot position in window and set so that image is lined up with edges
+  */
+  update_screenscale(displayblock);
+  displayblock->plotcoord.x = 0;
+  displayblock->plotcoord.y = -((displayblock->sprite)->size.y * 2);
+
+ /*
+  * initialise pixel translation table for current screen palette
+  */
+  build_pixtranstable(displayblock->sprite,
+                      &(displayblock->pixtranstable), (char *)&(displayblock->pixtransbuffer));
+
+  displayblock->pointer_pixtranstable = (char *)-1;
+
+ /*
+  * install event handlers and display window
+  */
+  Event_Claim(event_REDRAW, displayblock->window, event_ANY, Redraw, displayblock);
+  Event_Claim(event_CLOSE, displayblock->window, event_ANY, CloseWindow, displayblock);
+  Event_Claim(event_OPEN, displayblock->window, event_ANY, OpenWindow, displayblock);
+  Event_Claim(event_CLICK, displayblock->window, event_ANY, Click, displayblock);
+  Event_Claim(event_KEY, displayblock->window, event_ANY, Key, displayblock);
+  Event_Claim(event_LOSECARET, displayblock->window, event_ANY, LooseCaret, displayblock);
+  Event_Claim(event_GAINCARET, displayblock->window, event_ANY, GainCaret, displayblock);
+  Event_Claim(event_PTRLEAVE, displayblock->window, event_ANY, PointerLeave, displayblock);
+  Event_Claim(event_PTRENTER, displayblock->window, event_ANY, PointerEnter, displayblock);
+
+  Event_Claim(event_REDRAW, displayblock->fullscreen, event_ANY, Redraw, displayblock);
+  Event_Claim(event_CLOSE, displayblock->fullscreen, event_ANY, CloseWindow, displayblock);
+  Event_Claim(event_OPEN, displayblock->fullscreen, event_ANY, OpenWindow, displayblock);
+  Event_Claim(event_CLICK, displayblock->fullscreen, event_ANY, Click, displayblock);
+  Event_Claim(event_KEY, displayblock->fullscreen, event_ANY, Key, displayblock);
+  Event_Claim(event_LOSECARET, displayblock->fullscreen, event_ANY, LooseCaret, displayblock);
+  Event_Claim(event_GAINCARET, displayblock->fullscreen, event_ANY, GainCaret, displayblock);
+  Event_Claim(event_PTRLEAVE, displayblock->fullscreen, event_ANY, PointerLeave, displayblock);
+  Event_Claim(event_PTRENTER, displayblock->fullscreen, event_ANY, PointerEnter, displayblock);
+
+  EventMsg_Claim(message_PALETTECHANGE, event_ANY, BuildPixTransTable, NULL);
+  EventMsg_Claim(message_MODECHANGE, event_ANY, BuildPixTransTable, NULL);
+  EventMsg_Claim(message_MODECHANGE, event_ANY, ModeChange, NULL);
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern void Display_SetWindowTitle(char *title)
+{
+ /*
+  * Set display window title
+  */
+
+  if(displayblock != NULL){
+     if(displayblock->window != NULL){
+        Window_SetTitle(displayblock->window, title);
+     }
+  }
+}
+
+/******************************************************************************/
+
+extern void Display_SetUpdatePalette(BOOL update_palette)
+{
+ /*
+  * Set whether screen palette is updated to reflect Display palette
+  * when running both at 8bit
+  */
+  if(displayblock != NULL)
+     displayblock->update_palette = update_palette;
+}
+
+/******************************************************************************/
+
+extern BOOL Display_GetUpdatePalette(void)
+{
+ /*
+  * Get whether screen palette is updated to reflect Display palette
+  * when running both at 8bit
+  */
+  if(displayblock != NULL)
+     return(displayblock->update_palette);
+  else
+     return(FALSE);
+}
+
+/******************************************************************************/
+
+extern BOOL Display_SingleTask(void)
+{
+ /*
+  * Returns TRUE if in single tasking mode
+  */
+  if(displayblock != NULL)
+     return(displayblock->singletask);
+  else
+     return(FALSE);
+}
+
+/******************************************************************************/
+
+extern BOOL Display_OpenWindow(void)
+{
+ /*
+  * Open display window
+  */
+  BOOL success = FALSE;
+
+//fprintf(stderr, "Called Display_OpenWindow() Show Display Window\n");
+
+  if(displayblock != NULL){
+
+     switch(displayblock->display_mode)
+     {
+       case display_mode_WINDOW:
+         success = open_window();
+         break;
+
+       case display_mode_FULLSCREEN:
+         success = open_fullscreen();
+         break;
+
+       case display_mode_SINGLETASK:
+         success = open_singletask();
+         break;
+     }
+     
+  }
+  return(success);
+}
+
+/******************************************************************************/
+
+extern void Display_CloseWindow(void)
+{
+ /*
+  * Close display window
+  */
+  if(displayblock != NULL){
+
+     switch(displayblock->display_mode)
+     {
+       case display_mode_WINDOW:
+         close_window();
+         break;
+
+       case display_mode_FULLSCREEN:
+         close_fullscreen();
+         break;
+
+       case display_mode_SINGLETASK:
+         close_singletask();
+         break;
+     }
+  }
+}
+
+/******************************************************************************/
+
+extern void Display_Destroy(void)
+{
+ /*
+  * Destroy everything
+  */
+  if(displayblock != NULL){
+
+     if(displayblock->window_open)
+        Display_CloseWindow();
+
+     displayblock->window_open = FALSE;
+     
+     if(displayblock->window != NULL){
+        Window_Delete(displayblock->window);
+        displayblock->window = NULL;
+     }
+
+     if(displayblock->fullscreen != NULL){
+        Window_Delete(displayblock->fullscreen);
+        displayblock->fullscreen = NULL;
+     }
+
+     if(displayblock->sprite != NULL){
+        SpriteLib_Destroy(displayblock->sprite);
+        displayblock->sprite = NULL;
+     }
+
+     if(displayblock->cache != NULL){
+        MemMan_Free((memman_ptr)&(displayblock->cache));
+        displayblock->cache = NULL;
+     }
+
+     EventMsg_Release(message_PALETTECHANGE, event_ANY, BuildPixTransTable);
+     EventMsg_Release(message_MODECHANGE, event_ANY, BuildPixTransTable);
+     EventMsg_Release(message_MODECHANGE, event_ANY, ModeChange);
+
+     free(displayblock);
+     displayblock = NULL;
+
+  }
+}
+
+/******************************************************************************/
+
+extern BOOL Display_HasInputFocus(void)
+{
+ /*
+  * Returns TRUE when the Display has input focus
+  */
+  if(displayblock != NULL)
+     return(displayblock->input_focus || displayblock->singletask);
+  else
+     return(FALSE);
+}
+
+/******************************************************************************/
+
+extern window_handle Display_CurrentWindowHandle(void)
+{
+ /*
+  * Returns window handle of currently displayed window
+  */
+  if(displayblock != NULL)
+     return(displayblock->current_window);
+  else
+     return((window_handle)-1);
+}
+
+/******************************************************************************/
+
+extern void Display_SetCustomPalette(palette_entry *palette)
+{
+ /*
+  * Set custom 8bit image palette colours
+  */
+  SpriteLib_SetCustomPalette(palette);
+
+  SpriteLib_EnsurePalette(displayblock->display_sprite);
+
+  if(displayblock->singletask){
+     if((displayblock->display_sprite)->bpp == 8)
+        ScreenMode_SetPalette(SpriteLib_GetCustomPalette());
+  }
+  else
+     build_pixtranstable(displayblock->sprite,
+                        &(displayblock->pixtranstable), (char *)&(displayblock->pixtransbuffer));
+}
+
+/******************************************************************************/
+
+extern palette_entry *Display_GetCustomPalette(void)
+{
+ /*
+  * Get custom 8bit image palette colours
+  */
+  if((displayblock->display_sprite)->bpp == 8)
+     return(SpriteLib_GetCustomPalette());
+  else
+     return(NULL);
+}
+
+/******************************************************************************/
+
+extern void Display_SetClipArea(int origin_x, int origin_y, int size_x, int size_y)
+{
+ /*
+  * Set clip area of the Display - this sets a limiting rectangle where output
+  * can only be drawn to
+  */
+  SpriteLib_SetClipArea(displayblock->sprite, origin_x, origin_y, size_x, size_y);
+
+}
+
+/******************************************************************************/
+
+extern void Display_ResetClipArea(void)
+{
+ /*
+  * Reset clip area to whole of the Display
+  */
+  SpriteLib_ResetClipArea(displayblock->sprite);
+  
+}
+
+/******************************************************************************/
+
+extern void Display_PlotSprite(int gfx_op,
+                               int dest_x, int dest_y,
+                               spritelib_block *source_sprite,
+                               int source_x, int source_y,
+                               int source_width, int source_height)
+{
+ /*
+  * Plot area of sprite from source_x, source_y to source_width, source_height
+  * to display at coords dest_x, dest_y
+  */
+  called_display = TRUE;
+
+/*
+fprintf(stderr, "Display_PlotSprite(gfx_op=%i, dest_x=%i, dest_y=%i, source_sprite=%i, source_x=%i, source_y=%i, source_width=%i, source_height=%i\n", gfx_op, dest_x, dest_y, source_sprite, source_x, source_y, source_width, source_height);
+*/
+
+  SpriteLib_PlotSpriteToSprite(gfx_op, displayblock->sprite, dest_x, dest_y,
+                               displayblock->singletask,
+                               source_sprite, source_x, source_y, source_width, source_height);
+
+#ifdef DISPLAY_INFO
+  display_count_plotsprite++;
+#endif
+
+  redraw_display(dest_x, dest_y, source_width, source_height);
+}
+
+/******************************************************************************/
+
+extern void Display_PlotData(int gfx_op,
+                             int dest_x, int dest_y,
+                             unsigned char *source_data,
+                             int source_x, int source_y,
+                             int source_width, int source_height,
+                             int source_image_width, int source_image_height)
+{
+
+ /*
+  * Plot area of source_data from top left to source_width, source_height
+  * to display at coordinate dest_x, dest_y (top left)
+  */
+  called_display = TRUE;
+
+  SpriteLib_PlotDataToSprite(gfx_op, displayblock->sprite, dest_x, dest_y,
+                             displayblock->singletask,
+                             source_data, source_x, source_y, source_width, source_height,
+                             source_image_width, source_image_height);
+
+#ifdef DISPLAY_INFO
+  display_count_plotdata++;
+#endif
+
+  redraw_display(dest_x, dest_y, source_width, source_height);
+}
+
+/******************************************************************************/
+
+extern void Display_PlotSpriteBitMask(int gfx_op,
+                                      int dest_x, int dest_y,
+                                      spritelib_block *source_sprite,
+                                      int source_x, int source_y,
+                                      int plot_origin_x, int plot_origin_y,
+                                      int plot_width, int plot_height,
+                                      int foreground_colour,
+                                      int background_colour, BOOL set_background,
+                                      BOOL update)
+{
+ /*
+  * Plot 1 bit per pixel source_sprite to Display.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  * Where the source_sprite is 1, the dest_sprite is set to foreground_colour.
+  * If set_background is TRUE, where the source_sprite is 0, the dest_sprite is set
+  * to background_colour.
+  */
+  called_display = TRUE;
+
+  SpriteLib_PlotSpriteBitMaskToSprite(gfx_op, displayblock->sprite, dest_x, dest_y,
+                                      displayblock->singletask,
+                                      source_sprite, source_x, source_y,
+                                      plot_origin_x, plot_origin_y,
+                                      plot_width, plot_height,
+                                      foreground_colour, background_colour, set_background);
+
+#ifdef DISPLAY_INFO
+  display_count_plotspritebitmask++;
+#endif
+
+  if(update)
+     redraw_display(dest_x, dest_y, plot_width, plot_height);  
+}
+
+/******************************************************************************/
+
+extern void Display_PlotSpriteTiled(int gfx_op,
+                                    int dest_x, int dest_y,
+                                    spritelib_block *source_sprite,
+                                    int source_x, int source_y,
+                                    int plot_origin_x, int plot_origin_y,
+                                    int plot_width, int plot_height,
+                                    BOOL update)
+{
+ /*
+  * Plot source_sprite to Display.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  */
+  called_display = TRUE;
+
+  SpriteLib_PlotSpriteTiledToSprite(gfx_op, displayblock->sprite, dest_x, dest_y,
+                                    displayblock->singletask,
+                                    source_sprite, source_x, source_y,
+                                    plot_origin_x, plot_origin_y,
+                                    plot_width, plot_height);
+
+#ifdef DISPLAY_INFO
+  display_count_plotspritetiled++;
+#endif
+
+  if(update)
+     redraw_display(dest_x, dest_y, plot_width, plot_height);  
+}
+
+/******************************************************************************/
+
+extern void Display_PlotRectangle(int gfx_op,
+                                  int x, int y,
+                                  int width, int height,
+                                  int colour,
+                                  BOOL update)
+{
+ /*
+  * Plot rectangle of colour 'colour'
+  */
+  called_display = TRUE;
+
+  SpriteLib_PlotRectangleToSprite(gfx_op, displayblock->sprite,
+                                  displayblock->singletask,
+                                  x, y, width, height, colour);
+
+#ifdef DISPLAY_INFO
+  display_count_plotrectangle++;
+#endif
+
+  if(update)
+     redraw_display(x, y, width, height);  
+}
+
+/******************************************************************************/
+
+extern void Display_PlotLine(int gfx_op,
+                             int start_x, int start_y,
+                             int finish_x, int finish_y,
+                             int colour,
+                             BOOL update)
+{
+ /*
+  * Plot a single pixel wide line of colour 'colour'
+  */
+  int temp;
+
+  called_display = TRUE;
+
+  if((start_x != finish_x) && (start_y != finish_y))
+     SpriteLib_PlotLineToSprite(gfx_op, displayblock->sprite, displayblock->singletask,
+                                start_x, start_y,
+                                finish_x, finish_y,
+                                colour);
+
+ /*
+  * Ensure that start is always before finish.
+  *
+  * Non horizontal or vertical line must not have coords changed.
+  * Horizontal and vertical lines must and also must be done for
+  * the bounding box for the screen redraw.
+  */
+  if(start_x > finish_x){
+     temp = finish_x;
+     finish_x = start_x;
+     start_x = temp;
+  }
+
+  if(start_y > finish_y){
+     temp = finish_y;
+     finish_y = start_y;
+     start_y = temp;
+  }
+  
+  if(start_x == finish_x)
+     SpriteLib_PlotVerticalLineToSprite(gfx_op, displayblock->sprite,
+                                        displayblock->singletask,
+                                        start_x, start_y,
+                                        finish_y - start_y + 1,
+                                        colour);
+  else if(start_y == finish_y)
+     SpriteLib_PlotHorizontalLineToSprite(gfx_op, displayblock->sprite,
+                                          displayblock->singletask,
+                                          start_x, start_y,
+                                          finish_x - start_x + 1,
+                                          colour);
+
+#ifdef DISPLAY_INFO
+  display_count_plotline++;
+#endif
+
+  if(update)
+     redraw_display(start_x, start_y, finish_x - start_x + 1, finish_y - start_y + 1);  
+}
+
+/******************************************************************************/
+
+extern void Display_CopyRectangle(int gfx_op,
+                                  int dest_x, int dest_y,
+                                  int source_x, int source_y,
+                                  int width, int height)
+{
+ /*
+  * Copy rectangle area of screen to another place
+  */
+  called_display = TRUE;
+
+  SpriteLib_CopyRectangleSprite(gfx_op, displayblock->sprite, dest_x, dest_y,
+                                source_x, source_y, width, height);
+
+#ifdef DISPLAY_INFO
+  display_count_copyrectangle++;
+#endif
+
+  redraw_display(dest_x, dest_y, width, height);
+}
+
+/******************************************************************************/
+
+extern void Display_Update(int x, int y,
+                           int width, int height)
+{
+ /*
+  * Refresh rectangle of Display from Sprite
+  */
+
+#ifdef DISPLAY_INFO
+  display_count_update++;
+#endif
+
+  redraw_display(x, y, width, height);
+}
+
+/******************************************************************************/
+
+extern BOOL Display_ScreenToDisplayCoords(wimp_point *screen_coord, wimp_point *display_coord)
+{
+  wimp_point bottom_left;
+  wimp_point coord;
+  BOOL in_window;
+ /*
+  * Converts screen coords (origin bottom left) to Display coords
+  * (origin top left of Display).
+  * TRUE is returned if the coords are within the visible area of the display
+  */
+  window_state state;
+     
+  in_window = TRUE;
+
+  coord.x = screen_coord->x;
+  coord.y = screen_coord->y;
+
+  if(!displayblock->singletask){
+
+    /*
+     * calculate bottom left corner of sprite in screen coords
+     */
+     Wimp_GetWindowState(displayblock->current_window, &state);
+     bottom_left.x = (displayblock->plotcoord.x - state.openblock.scroll.x) +
+                     state.openblock.screenrect.min.x;
+     bottom_left.y = (displayblock->plotcoord.y - state.openblock.scroll.y) +
+                     state.openblock.screenrect.max.y;
+
+    /*
+     * clip screen coords to window's visible area
+     */
+     if(coord.y > state.openblock.screenrect.max.y){
+        coord.y = state.openblock.screenrect.max.y;
+        in_window = FALSE;
+     }
+
+     if(coord.y < state.openblock.screenrect.min.y){
+        coord.y = state.openblock.screenrect.min.y;
+        in_window = FALSE;
+     }
+
+     if(coord.x > state.openblock.screenrect.max.x){
+        coord.x = state.openblock.screenrect.max.x;
+        in_window = FALSE;
+     }
+
+     if(coord.x < state.openblock.screenrect.min.x){
+        coord.x = state.openblock.screenrect.min.x;
+        in_window = FALSE;
+     }
+
+    /*
+     * scaled sprite coords (in screen sprite size units)
+     */
+     coord.x = coord.x - bottom_left.x;
+     coord.y = coord.y - bottom_left.y;
+  }
+
+ /*
+  * set to pixels with 0,0 top left
+  */
+  coord.x = coord.x >> 1;
+  coord.y = ((displayblock->sprite)->size.y - 1) - (coord.y >> 1);
+
+ /*
+  * re-clip pixel coords as it is posible to still be outside the image
+  */
+  if(coord.x < 0){
+     coord.x = 0;
+     in_window = displayblock->singletask; /* if single tasking, pointer is always in window */
+  }
+
+  if(coord.x >= (displayblock->sprite)->size.x){
+     coord.x = (displayblock->sprite)->size.x - 1;
+     in_window = displayblock->singletask; /* if single tasking, pointer is always in window */
+  }
+
+  if(coord.y < 0){
+     coord.y = 0;
+     in_window = displayblock->singletask; /* if single tasking, pointer is always in window */
+  }
+
+  if(coord.y >= (displayblock->sprite)->size.y){
+     coord.y = (displayblock->sprite)->size.y - 1;
+     in_window = displayblock->singletask; /* if single tasking, pointer is always in window */
+  }
+
+  display_coord->x = coord.x;
+  display_coord->y = coord.y;
+
+  return(in_window);
+}
+
+/******************************************************************************/
+
+extern void Display_DisplayToScreenCoords(wimp_point *display_coord, wimp_point *screen_coord)
+{
+  wimp_point bottom_left;
+  wimp_point coord;
+ /*
+  * Converts Display coords (origin top left of Display) to screen coords
+  * (origin bottom left).
+  */
+  window_state state;
+     
+  coord.x = display_coord->x;
+  coord.y = display_coord->y;
+
+ /*
+  * clip pixel coords as it is posible to still be outside the image
+  */
+  if(coord.x < 0){
+     coord.x = 0;
+  }
+
+  if(coord.x >= (displayblock->sprite)->size.x){
+     coord.x = (displayblock->sprite)->size.x - 1;
+  }
+
+  if(coord.y < 0){
+     coord.y = 0;
+  }
+
+  if(coord.y >= (displayblock->sprite)->size.y){
+     coord.y = (displayblock->sprite)->size.y - 1;
+  }
+
+
+ /*
+  * set to os units with 0,0 bottom left
+  */
+  coord.x = coord.x << 1;
+  coord.y = ((displayblock->sprite)->size.y - 1) - coord.y;
+  coord.y = coord.y << 1;
+
+  if(!displayblock->singletask){
+
+    /*
+     * calculate bottom left corner of sprite in screen coords
+     */
+     Wimp_GetWindowState(displayblock->current_window, &state);
+     bottom_left.x = (displayblock->plotcoord.x - state.openblock.scroll.x) +
+                     state.openblock.screenrect.min.x;
+     bottom_left.y = (displayblock->plotcoord.y - state.openblock.scroll.y) +
+                     state.openblock.screenrect.max.y;
+
+    /*
+     * scaled sprite coords (in screen sprite size units)
+     */
+     coord.x = coord.x + bottom_left.x;
+     coord.y = coord.y + bottom_left.y;
+  }
+
+  screen_coord->x = coord.x;
+  screen_coord->y = coord.y;
+}
+
+/******************************************************************************/
+
+extern void Display_SaveToCache(unsigned int offset,
+                                int x, int y, int width, int height)
+{
+ /*
+  * Save area of screen into display cache at offset
+  */
+  int pixel_size = SpriteLib_PixelSize(displayblock->sprite);
+  int length = width * height * pixel_size; 
+  int cache_start;
+
+  called_display = TRUE;
+
+#ifdef DISPLAY_INFO
+  display_count_savetocache++;
+#endif
+
+  cache_start = (int)offset * pixel_size;
+
+  if(cache_start >= displayblock->cache_size)
+     cache_start = 0;
+
+  if((cache_start + length) <= displayblock->cache_size){
+
+     SpriteLib_PlotSpriteToFlexData(SpriteLib_GXcopy,
+                                    &(displayblock->cache),
+                                    cache_start, 0,  0,
+                                    width, height,
+                                    displayblock->sprite,
+                                    x, y, width, height,
+                                    displayblock->singletask);
+
+  }
+  else{
+     /*
+      * not enough space in cache
+      */
+      error("put desktop %d:%d\n", cache_start, length);
+  }
+
+}
+
+/******************************************************************************/
+
+extern void Display_RestoreFromCache(unsigned int offset,
+                                     int x, int y, int width, int height)
+{
+ /*
+  * Restore area of screen from display cache at offset
+  */
+  int pixel_size = SpriteLib_PixelSize(displayblock->sprite);
+  int length = width * height * pixel_size;
+  int cache_start;
+
+  called_display = TRUE;
+
+#ifdef DISPLAY_INFO
+  display_count_restorefromcache++;
+#endif
+
+  cache_start = (int)offset * pixel_size;
+
+  if(cache_start >= displayblock->cache_size)
+     cache_start = 0;
+
+  if((cache_start + length) <= displayblock->cache_size){
+
+      SpriteLib_PlotFlexDataToSprite(SpriteLib_GXcopy,
+                                     displayblock->sprite,
+                                     x, y,
+                                     displayblock->singletask,
+                                     &(displayblock->cache),
+                                     cache_start, 0,  0,
+                                     width, height,
+                                     width, height);
+
+      redraw_display(x, y, width, height);
+  }
+  else{
+    /*
+     * offset outside cache
+     */
+     error("get desktop %d:%d\n", offset, length);
+  }
+
+}
+
+/******************************************************************************/
+
+extern void Display_Poll(void)
+{
+  unsigned int time;
+ /*
+  * Called frequently
+  */
+  if(displayblock->singletask)
+     return;
+
+
+  while((time = Time_Monotonic()) == 0);
+
+  if(time >= next_display_poll_time){
+
+     next_display_poll_time = time + DISPLAY_POLL_INTERNVAL;
+
+#ifdef DISPLAY_INFO
+     display_count_poll++;
+#endif
+
+    /*
+     * Redraw any rectangles which have expired
+     */
+     redraw_expired_rectangles();
+
+#ifdef DISPLAY_INFO
+     display_redraw_info();
+#endif
+  }
+}
+
+/******************************************************************************/
+
+extern BOOL Display_ScreenSave(char *filename)
+{
+ /*
+  * Save Display as Sprite
+  */
+  if(displayblock == NULL)
+     return(FALSE);
+
+  if((displayblock->sprite)->spritearea == NULL)
+     return(FALSE);
+
+  return(Sprite_Save((displayblock->sprite)->spritearea, filename) == NULL);
+}
+
+/******************************************************************************/
+
+extern int Display_ScreenSpriteSize(void)
+{
+ /*
+  * Return size of Display sprite
+  */
+  int size;
+
+  if(displayblock == NULL)
+     return(0);
+
+  if((displayblock->sprite)->spritearea == NULL)
+     return(0);
+
+  size = ((displayblock->sprite)->spritearea)->areasize - 4;
+
+  if(size < 0)
+     return(0);
+  else
+     return(size);
+}
+
+/******************************************************************************/
+
+extern void Display_SetPointer(pointer_block *pointer)
+{
+ /*
+  * Set pointer to that supplied or turn off pointer by supplying NULL
+  */
+  int update_count;
+  wimp_rect area1;
+  wimp_rect area2;
+/*
+fprintf(stderr, "Display_SetPointer(pointer=%i) displayblock->pointer=%i displayblock->singletask=%i\n", pointer, displayblock->pointer, displayblock->singletask);
+*/
+  if(displayblock->singletask){
+     displayblock->pointer = pointer;
+     Pointer_SetHardwarePointer(pointer);
+     return;
+  }
+
+
+  update_count = Pointer_PlotArea(displayblock->pointer, &(displayblock->pointer_coord),
+                                  pointer, &(displayblock->pointer_coord),
+                                  &area1, &area2);
+  if(pointer != NULL){
+     build_pixtranstable(pointer->base_sprite,
+                         &(displayblock->pointer_pixtranstable),
+                         (char *)&(displayblock->pointer_pixtransbuffer));
+  }
+
+//if(displayblock->pointer != NULL)
+//   fprintf(stderr, "displayblock->pointer\n  origin x=%i y=%i   width=%i height=%i\n", (displayblock->pointer)->origin.x, (displayblock->pointer)->origin.y, ((displayblock->pointer)->base_sprite)->size.x, ((displayblock->pointer)->base_sprite)->size.y);
+
+//if(pointer != NULL)
+//   fprintf(stderr, "pointer\n  origin x=%i y=%i   width=%i height=%i\n", pointer->origin.x, pointer->origin.y, (pointer->base_sprite)->size.x, (pointer->base_sprite)->size.y);
+
+//fprintf(stderr, "pointer coord x=%i y=%i\n", displayblock->pointer_coord.x, displayblock->pointer_coord.y);
+//if(update_count >= 1)
+//   fprintf(stderr, "  area1 min x=%i y=%i  max x=%i y=%i\n", area1.min.x, area1.min.y, area1.max.x, area1.max.y);
+
+//if(update_count == 2)
+//   fprintf(stderr, "  area2 min x=%i y=%i  max x=%i y=%i\n", area2.min.x, area2.min.y, area2.max.x, area2.max.y);
+//fprintf(stderr, "\n");
+  displayblock->pointer = pointer;
+  
+  if(update_count >= 1)
+     update_window(area1.min.x, area1.min.y,
+                   area1.max.x - area1.min.x,
+                   area1.max.y - area1.min.y);
+
+  if(update_count == 2)
+     update_window(area2.min.x, area2.min.y,
+                   area2.max.x - area2.min.x,
+                   area2.max.y - area2.min.y);
+}
+
+/******************************************************************************/
+
+extern void Display_MovePointer(int x, int y)
+{
+  int update_count;
+  wimp_point new_coord;
+  wimp_rect area1;
+  wimp_rect area2;
+ /*
+  * Move screen position of pointer to x, y
+  */
+  if(displayblock->pointer_coord.x == x && displayblock->pointer_coord.y == y)
+     return;
+
+
+//fprintf(stderr, "Display_MovePointer(x=%i  y=%i)  old x=%i  y=%i\n", x, y, displayblock->pointer_coord.x, displayblock->pointer_coord.y);
+
+
+  if(!displayblock->singletask){
+
+     new_coord.x = x;
+     new_coord.y = y;
+
+//if(displayblock->pointer != NULL)
+//   fprintf(stderr, "displayblock->pointer\n  origin x=%i y=%i   width=%i height=%i\n", (displayblock->pointer)->origin.x, (displayblock->pointer)->origin.y, ((displayblock->pointer)->base_sprite)->size.x, ((displayblock->pointer)->base_sprite)->size.y);
+//fprintf(stderr, "pointer coord x=%i y=%i\n", displayblock->pointer_coord.x, displayblock->pointer_coord.y);
+
+     update_count = Pointer_PlotArea(displayblock->pointer, &(displayblock->pointer_coord),
+                                     displayblock->pointer, &new_coord,
+                                     &area1, &area2);
+//if(update_count >= 1)
+//   fprintf(stderr, "  area1 min x=%i y=%i  max x=%i y=%i\n", area1.min.x, area1.min.y, area1.max.x, area1.max.y);
+
+//if(update_count == 2)
+//   fprintf(stderr, "  area2 min x=%i y=%i  max x=%i y=%i\n", area2.min.x, area2.min.y, area2.max.x, area2.max.y);
+//fprintf(stderr, "\n");
+
+  }
+
+  displayblock->pointer_coord.x = x;
+  displayblock->pointer_coord.y = y;
+
+  if(!displayblock->singletask){
+
+     if(update_count >= 1)
+        redraw_overlapping_rectangle(&area1);
+
+     if(update_count == 2)
+        redraw_overlapping_rectangle(&area1);
+     
+     if(update_count >= 1)
+        update_window(area1.min.x, area1.min.y,
+                      area1.max.x - area1.min.x,
+                      area1.max.y - area1.min.y);
+
+     if(update_count == 2)
+        update_window(area2.min.x, area2.min.y,
+                      area2.max.x - area2.min.x,
+                      area2.max.y - area2.min.y);
+  }
+}
+
+/******************************************************************************/
+
+extern void Display_UpdatePointerPosition(int x, int y)
+{
+ /*
+  * Move screen position of pointer to x, y and update stored pointer position
+  */
+
+  Mouse_UpdatePointerPosition(x, y);
+
+  Display_MovePointer(x, y);
+
+  if(displayblock->singletask)
+     Pointer_MoveHardwarePointer(x, y);
+}
+
+/******************************************************************************/
+
+extern BOOL Display_EnsureWindowOnTopWhenFullscreen(int method)
+{
+  window_handle open_behind;
+ /*
+  * Ensures that the window is on top of the stack.
+  * Return TRUE if action performed.
+  */
+  window_state windowstate;
+  open_behind = (window_handle)-1;
+
+  if(displayblock == NULL)
+     return(FALSE);
+
+  if(displayblock->display_mode != display_mode_FULLSCREEN)
+     return(FALSE);
+     
+  if(displayblock->current_window == NULL || !displayblock->window_open)
+     return(FALSE);
+
+  if(method != fullscreen_bringtofront)
+     return(FALSE);
+
+  Wimp_GetWindowState(displayblock->current_window, &windowstate);
+
+  if(windowstate.flags.data.open == 1){
+
+     if(Log_OpenWindowBehind(TRUE, &open_behind)){
+  
+        windowstate.openblock.behind = open_behind;
+
+        Wimp_OpenWindow(&windowstate.openblock);
+
+     }
+     else{
+
+        if(windowstate.openblock.behind != -1){
+
+           windowstate.openblock.behind = -1;
+
+           Wimp_OpenWindow(&windowstate.openblock);
+        
+        }
+     }
+  }
+  return(TRUE);  
+}
+
+/******************************************************************************/
+
+extern void Display_Validate(BOOL *valid_res, BOOL *valid_bpp)
+{
+ /*
+  * Validates that the display resolution and bpp are available as
+  * screenmodes
+  */
+  int x_res;
+  int y_res;
+  int bpp;
+  
+  *valid_res = FALSE;
+  *valid_bpp = FALSE;
+
+  if(displayblock != NULL){
+
+     if(displayblock->sprite != NULL){
+
+        x_res = (displayblock->sprite)->size.x;
+        y_res = (displayblock->sprite)->size.y;
+        bpp = (displayblock->sprite)->bpp;
+
+        ScreenMode_Validate(x_res, y_res, bpp, 1, 1, valid_res, valid_bpp);
+     }
+
+  } 
+}
+
+/******************************************************************************/
+
+extern void Display_Test(void)
+{
+  int index;
+  unsigned int start, end;
+  window_redrawblock redraw;
+  BOOL more;
+
+  while((start = Time_Monotonic()) == 0);
+
+  for(index = 1; index <= 50; index++){
+
+     redraw.window = displayblock->current_window;
+
+     redraw.rect.min.x = 0 << 1;
+     redraw.rect.max.x = (displayblock->sprite)->size.x << 1;
+     redraw.rect.min.y = -( (displayblock->sprite)->size.y << 1);
+     redraw.rect.max.y = -(0 << 1);
+
+     Wimp_UpdateWindow(&redraw, &more);
+
+     if(more)
+        redraw_loop(&redraw, displayblock);
+
+  }
+
+  while((end = Time_Monotonic()) == 0);
+  fprintf(stderr, "normal %g\n", (double)(end - start) / 50.);
+
+}
+
+/******************************************************************************
+ *                               close handlers                               *
+ ******************************************************************************/
+
+static BOOL CloseWindow(event_pollblock *event, void *reference)
+{
+ /*
+  * called when window is closed
+  */
+  display_block *block = reference;
+  
+  block->window_open = FALSE;
+  block->input_focus = FALSE;
+
+  Display_CloseWindow();
+
+  Keyboard_LooseFocus();
+
+  Mouse_LooseFocus();
+ 
+  return(TRUE);
+}
+
+
+/******************************************************************************
+ *                              Click handlers                                *
+ ******************************************************************************/
+
+static BOOL Click(event_pollblock *event, void *reference)
+{
+  mouse_button_block buttons;
+//fprintf(stderr, "%i\n", event->data.mouse.button.value);
+  buttons.value = 0;
+
+  if(event->data.mouse.button.data.adjust)
+     buttons.data.adjust = 1;
+
+  if(event->data.mouse.button.data.menu)
+     buttons.data.menu = 1;
+
+  if(event->data.mouse.button.data.select)
+     buttons.data.select = 1;     
+
+  Mouse_MouseClick(&buttons, &(event->data.mouse.pos));
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                             keypress handlers                              *
+ ******************************************************************************/
+
+static BOOL Key(event_pollblock *event, void *reference)
+{
+  /* display_block *block = reference; */
+  /* window_handle window = event->data.key.caret.window; */
+ 
+  Keyboard_KeyPress(event->data.key.code, event->data.words[7]);
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                          mode change handlers                              *
+ ******************************************************************************/
+
+static BOOL ModeChange(event_pollblock *event, void *reference)
+{
+  if(displayblock == NULL)
+     return(FALSE);
+
+  update_screenscale(displayblock);
+
+  if(displayblock->display_mode == display_mode_FULLSCREEN){
+
+     if(screen_size.x == ((displayblock->sprite)->size.x << screen_eig.x) &&
+        screen_size.y == ((displayblock->sprite)->size.y << screen_eig.y)){
+
+        if(displayblock->requested_modechange){
+
+           if(!displayblock->window_open)
+              open_window_fullscreen();
+        }
+     }
+     else{
+
+        if(displayblock->requested_modechange || displayblock->window_open){
+
+          /*
+           * Don't change mode back to original, just revert
+           * to Window mode
+           */
+           displayblock->requested_modechange = FALSE;
+           displayblock->window_open = TRUE;
+           Display_SetDisplayMode(display_mode_WINDOW);
+        }
+     }
+
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************
+ *                            redraw handlers                                 *
+ ******************************************************************************/
+
+static BOOL Redraw(event_pollblock *event, void *reference)
+{
+ /*
+  * called to redraw the image window
+  */
+  display_block *block = (display_block *)reference;
+  window_redrawblock redraw;
+  BOOL more;
+
+  block->window_open = TRUE;
+
+  redraw.window = event->data.openblock.window;
+  Wimp_RedrawWindow(&redraw, &more);
+
+  if(more)
+     redraw_loop(&redraw, block);
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                           open window handlers                             *
+ ******************************************************************************/
+
+static BOOL OpenWindow(event_pollblock *event, void *reference)
+{
+  window_handle open_behind;
+ /*
+  * handler to go before the normal open handler
+  */
+  display_block *block = reference;
+  window_state windowstate;
+  open_behind = (window_handle)-1;
+
+  block->window_open = TRUE;
+//fprintf(stderr, "Called OpenWindow()\n");
+
+  if(Log_OpenWindowBehind((event->data.openblock.behind == -1), &open_behind))
+     event->data.openblock.behind = open_behind;
+  
+  Wimp_GetWindowState(event->data.openblock.window, &windowstate);
+
+  Wimp_OpenWindow(&(event->data.openblock));
+
+  if(windowstate.flags.data.istoggling == 1){
+    /*
+     * Toggle size off screen workround
+     */
+     if(event->data.openblock.screenrect.max.y > screen_size.y - 32)
+        Window_Show(event->data.openblock.window, open_CENTERED);
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                        palette change handlers                             *
+ ******************************************************************************/
+
+static BOOL BuildPixTransTable(event_pollblock *event, void *reference)
+{
+ /*
+  * called on palette change to recalculate pixel translation table
+  */
+  if(displayblock == NULL)
+     return(FALSE);
+
+  if(displayblock->display_sprite != NULL)
+     build_pixtranstable(displayblock->display_sprite, &(displayblock->pixtranstable),
+                         (char *)&(displayblock->pixtransbuffer));
+
+  if(displayblock->pointer != NULL){
+
+     if((displayblock->pointer)->base_sprite != NULL)
+        build_pixtranstable((displayblock->pointer)->base_sprite,
+                            &(displayblock->pointer_pixtranstable),
+                            (char *)&(displayblock->pointer_pixtransbuffer));
+
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+static void build_pixtranstable(spritelib_block *sprite,
+                                char **pixtranstable, char *pixtransbuffer)
+{
+  int requiredsize;
+  palette_entry palettebuff[300];
+  int grab;
+ /*
+  * calculates pixel translation table for current screen palette
+  * code taken from PRMs Vol. 1 Page 834
+  */
+  sprite_header *header;
+  palette_entry *sprpalette;
+  palette_entry *palette;
+  int q;
+  _kernel_swi_regs r;
+
+
+  header = (void *) ((char *)sprite->spritearea + (sprite->spritearea)->firstoffset);
+  sprpalette = (void *) ((char *)header + sizeof(sprite_header));
+
+  r.r[0] = (int) sprite->spritearea;
+  r.r[1] = (int) header;
+  r.r[2] = -1;
+  r.r[3] = -1;
+  r.r[4] = 0;
+  r.r[5] = 1;
+  Error_Check((os_error *)
+              _kernel_swi(SWI_XOS_Bit | SWI_ColourTrans_SelectTable, &r, &r));
+  requiredsize = r.r[4];
+
+ /*
+  * if required table size is 0 then table not needed
+  */
+  if(requiredsize == 0){
+     /* no table needed */
+     *pixtranstable = (char *)-1; 
+     return;
+  }
+
+ /*
+  * if 8bit image then get image palette
+  */
+  if(sprite->bpp == 8){
+     for(grab = 0; grab < 256; grab++){
+
+         palettebuff[grab].value = sprpalette->value;
+         sprpalette++;
+         sprpalette++;
+/*
+         fprintf(stderr, "grey %i  red %i green %i blue %i\n",
+                 grab,
+                 palettebuff[grab].data.red,
+                 palettebuff[grab].data.green,
+                 palettebuff[grab].data.blue);
+*/
+      }
+
+      palette = (palette_entry *)&palettebuff;
+
+  }
+
+ /*
+  * calculate pixel translation table
+  */
+  r.r[0] = (int) sprite->spritearea;
+  r.r[1] = (int) header;
+  r.r[2] = -1;
+  r.r[3] = -1;
+  r.r[4] = (int)pixtransbuffer;
+  r.r[5] = 1;
+  Error_Check((os_error *)
+              _kernel_swi(SWI_XOS_Bit | SWI_ColourTrans_SelectTable, &r, &r));
+  *pixtranstable = (char *)pixtransbuffer;
+
+ /*
+  * check if it is needed
+  */
+  if(sprite->bpp == 8) {
+     *pixtranstable = (char *)-1;
+     for(q = 0; q < 256; q++){
+     
+         if(pixtransbuffer[q] != q)
+            *pixtranstable = (char *)pixtransbuffer;
+     }
+  }     
+}
+
+/******************************************************************************
+ *                             caret handlers                                 *
+ ******************************************************************************/
+
+static BOOL LooseCaret(event_pollblock *event, void *reference)
+{
+  display_block *block = reference;
+
+  block->input_focus = FALSE;
+
+  Keyboard_LooseFocus();
+
+  Mouse_LooseFocus();
+ 
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL GainCaret(event_pollblock *event, void *reference)
+{
+  display_block *block = reference;
+
+  block->input_focus = TRUE;
+
+  Keyboard_GainFocus();
+
+  Mouse_GainFocus();
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                            pointer handlers                                *
+ ******************************************************************************/
+
+static BOOL PointerEnter(event_pollblock *event, void *reference)
+{
+  display_block *block = reference;
+
+  gain_inputfocus(block);
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL PointerLeave(event_pollblock *event, void *reference)
+{
+  display_block *block = reference;
+
+  loose_inputfocus(block);
+
+  return(TRUE);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void update_screenscale(display_block *block)
+{
+  Screen_CacheModeInfo();
+
+  switch(screen_eig.x)
+  {
+    case 0:
+      block->screenscale.multiply.x = 2;
+      block->screenscale.divide.x = 1;
+      break;
+
+    case 1:
+      block->screenscale.multiply.x = 1;
+      block->screenscale.divide.x = 1;
+      break;
+
+    case 2:
+      block->screenscale.multiply.x = 1;
+      block->screenscale.divide.x = 2;
+      break;
+
+    case 3:
+      block->screenscale.multiply.x = 1;
+      block->screenscale.divide.x = 4;
+      break;
+      
+  }
+
+  switch(screen_eig.y)
+  {
+    case 0:
+      block->screenscale.multiply.y = 2;
+      block->screenscale.divide.y = 1;
+      break;
+
+    case 1:
+      block->screenscale.multiply.y = 1;
+      block->screenscale.divide.y = 1;
+      break;
+
+    case 2:
+      block->screenscale.multiply.y = 1;
+      block->screenscale.divide.y = 2;
+      break;
+
+    case 3:
+      block->screenscale.multiply.y = 1;
+      block->screenscale.divide.y = 4;
+      break;
+  }
+
+}
+
+/******************************************************************************/
+
+static void redraw_display(int x, int y, int width, int height)
+{
+  redraw_rectangle_block new_rectangle;
+  unsigned int time;
+  int index;
+  BOOL merged;
+  BOOL added;
+  unsigned int oldest_number;
+  int oldest_index;
+  int inner_index;
+//fprintf(stderr, "Called redraw_display(x=%i, y=%i, width=%i, height=%i\n", x, y, width,height);
+  if(!displayblock->window_open)
+     return;
+
+  if(displayblock->singletask)
+     return;
+
+//  update_window(x, y, width, height);
+
+//return; /* * * * * * * * * * * * */
+
+  
+
+  new_rectangle.used = TRUE;
+  new_rectangle.number = ++redraw_rectangle_count;
+  new_rectangle.top_left.x = x;
+  new_rectangle.top_left.y = y;
+  new_rectangle.bottom_right.x = x + width;
+  new_rectangle.bottom_right.y = y + height;
+  new_rectangle.size.x = width;
+  new_rectangle.size.y = height;
+  new_rectangle.area = width * height;
+  while((time = Time_Monotonic()) == 0);
+  new_rectangle.time = time;
+
+ /*
+  * Merge new rectangle into existing rectangles
+  */
+  merged = FALSE;
+  for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++){
+
+     if(redraw_rectangle[index].used){
+
+        if(merge_rectangles(&redraw_rectangle[index], &new_rectangle)){
+
+           merged = TRUE;
+           break;
+
+        }
+     }
+  }
+
+ /*
+  * If did not merge, add to rectangle list if we can
+  */
+  if(!merged){
+
+     added = FALSE;
+     for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++){
+
+        if(!redraw_rectangle[index].used){
+
+           memcpy(&redraw_rectangle[index], &new_rectangle, sizeof(redraw_rectangle_block));
+
+           added = TRUE;
+           break;
+
+        }
+     }
+
+    /*
+     * If not added, flush oldest rectangle and replace with new rectangle
+     */
+     if(!added){
+
+        oldest_number = UINT_MAX;
+        oldest_index = -1;
+
+        for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++){
+
+           if(redraw_rectangle[index].used){
+
+              if(redraw_rectangle[index].number < oldest_number){
+
+                 oldest_number = redraw_rectangle[index].number;
+                 oldest_index = index;
+
+              }
+           }
+        }
+
+        if(oldest_index >= 0){
+
+           update_redraw_rectangle(&redraw_rectangle[oldest_index]);
+
+           memcpy(&redraw_rectangle[oldest_index],&new_rectangle,sizeof(redraw_rectangle_block));
+
+        }
+     }
+  }
+
+ /*
+  * Merge any existing rectangles with each other
+  */
+  for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++){
+
+     if(redraw_rectangle[index].used){
+
+        for(inner_index = 0; inner_index < REDRAW_RECTANGLE_TOTAL; inner_index++){
+
+           if(inner_index != index && redraw_rectangle[inner_index].used){
+
+              if(merge_rectangles(&redraw_rectangle[index], &redraw_rectangle[inner_index])){
+
+                 redraw_rectangle[inner_index].used = FALSE;
+
+              }
+           }
+        }
+     }
+  }
+
+ /*
+  * Redraw any rectangles which have expired
+  */
+  redraw_expired_rectangles();
+
+}
+
+/******************************************************************************/
+
+static BOOL merge_rectangles(redraw_rectangle_block *existing,
+                             redraw_rectangle_block *newrect)
+{
+ /*
+  * If the 'new' rectangle is close enough and the resultant rectangle
+  * is not too large, merge it into the 'existing' rectangle
+  */
+  BOOL merged = FALSE;
+  wimp_point merged_top_left;
+  wimp_point merged_bottom_right;
+  wimp_point merged_size;
+  int merged_area;
+
+  if( (existing->top_left.x - newrect->bottom_right.x < MERGE_RECTANGLE_CLOSENESS) &&
+      (existing->top_left.y - newrect->bottom_right.y < MERGE_RECTANGLE_CLOSENESS) &&
+      (newrect->top_left.x - existing->bottom_right.x < MERGE_RECTANGLE_CLOSENESS) &&
+      (newrect->top_left.y - existing->bottom_right.y < MERGE_RECTANGLE_CLOSENESS) ){
+
+     if(newrect->top_left.x < existing->top_left.x)
+        merged_top_left.x = newrect->top_left.x;
+     else
+        merged_top_left.x = existing->top_left.x;
+
+     if(newrect->top_left.y < existing->top_left.y)
+        merged_top_left.y = newrect->top_left.y;
+     else
+        merged_top_left.y = existing->top_left.y;
+
+     if(newrect->bottom_right.x > existing->bottom_right.x)
+        merged_bottom_right.x = newrect->bottom_right.x;
+     else
+        merged_bottom_right.x = existing->bottom_right.x;
+
+     if(newrect->bottom_right.y > existing->bottom_right.y)
+        merged_bottom_right.y = newrect->bottom_right.y;
+     else
+        merged_bottom_right.y = existing->bottom_right.y;
+
+
+     merged_size.x = merged_bottom_right.x - merged_top_left.x;
+     merged_size.y = merged_bottom_right.y - merged_top_left.y;
+      
+     merged_area = merged_size.x * merged_size.y;
+
+     if(merged_area - newrect->area - existing->area < MERGE_RECTANGLE_AREA_GROWTH)
+        merged = TRUE;
+     else if((merged_area * 100) / (newrect->area + existing->area) <
+             MERGE_RECTANGLE_GROWTH_PERCENTAGE)
+        merged = TRUE;
+
+  }
+
+  if(merged){
+
+     if(newrect->number < existing->number)
+        existing->number = newrect->number;
+
+     existing->top_left.x = merged_top_left.x;
+     existing->top_left.y = merged_top_left.y;
+
+     existing->bottom_right.x = merged_bottom_right.x;
+     existing->bottom_right.y = merged_bottom_right.y;
+
+     existing->size.x = merged_size.x;
+     existing->size.y = merged_size.y;
+     
+     existing->area = merged_area;
+
+     if(newrect->time < existing->time)
+        existing->time = newrect->time;
+  }
+
+  return(merged);
+}
+
+/******************************************************************************/
+
+static void update_redraw_rectangle(redraw_rectangle_block *rectangle)
+{
+ /*
+  * Update screen with redraw rectangle
+  */
+  update_window(rectangle->top_left.x, rectangle->top_left.y,
+                rectangle->size.x, rectangle->size.y);
+
+#ifdef DISPLAY_INFO
+  display_count_redraw_count++;
+#endif
+}
+
+/******************************************************************************/
+
+static void redraw_expired_rectangles(void)
+{
+  unsigned int time;
+  int index;
+  int count;
+  if(displayblock->singletask)
+     return;
+
+#ifdef DISPLAY_INFO
+  count = 0;
+#endif
+
+  while((time = Time_Monotonic()) == 0);
+
+  time = time - RECTANGLE_REDRAW_FLUSH_TIME;
+
+  for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++){
+
+     if(redraw_rectangle[index].used){
+
+#ifdef DISPLAY_INFO
+        count++;
+#endif
+        if(redraw_rectangle[index].time < time){
+
+           update_redraw_rectangle(&redraw_rectangle[index]);
+           redraw_rectangle[index].used = FALSE;
+
+        }
+     }
+  }
+
+#ifdef DISPLAY_INFO
+  if(count > display_count_redraw_queue_max)
+     display_count_redraw_queue_max = count;
+#endif     
+}
+
+/******************************************************************************/
+
+static void redraw_overlapping_rectangle(wimp_rect *area)
+{
+  int index;
+ /*
+  * redraw any rectangles in queue which overlap with 'area'
+  */
+  if(displayblock->singletask)
+     return;
+
+
+  for(index = 0; index < REDRAW_RECTANGLE_TOTAL; index++){
+
+     if(redraw_rectangle[index].used){
+
+        if( (redraw_rectangle[index].top_left.x - area->max.x < 0) &&
+            (redraw_rectangle[index].top_left.y - area->max.y < 0) &&
+            (area->min.x - redraw_rectangle[index].bottom_right.x < 0) &&
+            (area->min.y - redraw_rectangle[index].bottom_right.y < 0) ){
+
+           update_redraw_rectangle(&redraw_rectangle[index]);
+           redraw_rectangle[index].used = FALSE;
+        }
+     }
+  }  
+}
+
+/******************************************************************************/
+
+#ifdef DISPLAY_INFO
+extern void display_redraw_info(void)
+{
+
+  unsigned int time = 0;
+
+  while((time = Time_Monotonic()) == 0);
+
+  if(time >= redraw_info_next){
+
+     fprintf(stderr, "plotsprite=%i, plotdata=%i, plotspritebitmask=%i, plotrect=%i, copyrect=%i, update=%i, savecache=%i, restorecache=%i, maxredrawqueue=%i, redraw=%i, poll=%i\n", display_count_plotsprite, display_count_plotdata, display_count_plotspritebitmask, display_count_plotrectangle, display_count_copyrectangle, display_count_update, display_count_savetocache, display_count_restorefromcache, display_count_redraw_queue_max, display_count_redraw_count, display_count_poll);
+
+     display_count_plotsprite = 0;
+     display_count_plotdata = 0;
+     display_count_plotspritebitmask = 0;
+     display_count_plotrectangle = 0;
+     display_count_copyrectangle = 0;
+     display_count_update = 0;
+     display_count_savetocache = 0;
+     display_count_restorefromcache = 0;
+     display_count_redraw_queue_max = 0;
+     display_count_redraw_count = 0;
+     display_count_poll = 0;
+
+     redraw_info_next = time + 100;
+  }
+}
+#endif
+
+/******************************************************************************/
+
+//static void redraw_window(int x, int y, int width, int height)
+//{
+//  if(!displayblock->window_open)
+//     return;
+//
+////fprintf(stderr, "Called redraw_window(x=%i, y=%i, width=%i, height=%i\n", x, y, width, height);
+//
+//  window_redrawblock r;
+//
+//  r.window = displayblock->current_window;
+//
+//  r.rect.min.x = x << 1;
+//  r.rect.max.x = (x + width) << 1;
+//  r.rect.min.y = -((y + height) << 1);
+//  r.rect.max.y = -(y << 1);
+//
+//  Wimp_ForceRedraw(&r);
+//}
+
+/******************************************************************************/
+
+static void update_window(int x, int y, int width, int height)
+{
+  window_redrawblock redraw;
+  BOOL more;
+ /*
+  * redraw a region of the window directly (not through Wimp_Poll)
+  */
+  if(!displayblock->window_open)
+     return;
+
+  if(displayblock->singletask)
+     return;
+
+//fprintf(stderr, "Called update_window(x=%i, y=%i, width=%i, height=%i)\n", x, y, width, height);
+
+  redraw.window = displayblock->current_window;
+
+  redraw.rect.min.x = x << 1;
+  redraw.rect.max.x = (x + width) << 1;
+  redraw.rect.min.y = -((y + height) << 1);
+  redraw.rect.max.y = -(y << 1);
+
+  Wimp_UpdateWindow(&redraw, &more);
+
+  if(more)
+     redraw_loop(&redraw, displayblock);
+}
+
+/******************************************************************************/
+
+static void redraw_loop(window_redrawblock *redraw, display_block *block)
+{
+  wimp_point bottomleft;
+  spritelib_block *sprite;
+  wimp_point pointer_bottomleft;
+  BOOL plot_pointer;
+  spritelib_block *pointer_sprite;
+  sprite_header *pointer_header;
+  int pointer_plotaction;
+ /*
+  * redraw rectangles of the Display sprite and Pointer sprite in the Window
+  */
+  BOOL more;
+  sprite_header *header;
+  _kernel_swi_regs r;
+
+  plot_pointer = FALSE;
+
+  bottomleft.x = (block->plotcoord.x - redraw->scroll.x) + redraw->rect.min.x;
+  bottomleft.y = (block->plotcoord.y - redraw->scroll.y) + redraw->rect.max.y;
+
+  if(block->pointer != NULL){
+     pointer_sprite = (block->pointer)->base_sprite;
+
+     pointer_bottomleft.x = (block->pointer_coord.x - (block->pointer)->origin.x) << 1;
+     pointer_bottomleft.x = (pointer_bottomleft.x - redraw->scroll.x) + redraw->rect.min.x;
+
+     pointer_bottomleft.y = -(block->pointer_coord.y - (block->pointer)->origin.y +
+                              pointer_sprite->size.y) << 1;
+     pointer_bottomleft.y = (pointer_bottomleft.y - redraw->scroll.y) + redraw->rect.max.y;
+
+     if((block->pointer)->plot_mask)
+        pointer_plotaction = 8; /* overwrite using sprite mask */
+     else
+        pointer_plotaction = 3; /* xor without using the mask */
+        
+     plot_pointer = TRUE;
+  }
+
+  sprite = block->sprite;
+
+  SpriteLib_EnsurePalette(sprite);
+
+  header = (void *) ((char *)sprite->spritearea + (sprite->spritearea)->firstoffset);
+
+  if(plot_pointer){
+     pointer_header = (void *) ((char *)pointer_sprite->spritearea +
+                                (pointer_sprite->spritearea)->firstoffset);
+  }
+
+  more = TRUE;
+
+  while (more)
+  {
+    /*
+     * plot sprite
+     */
+     r.r[0] = 52 + 512;
+     r.r[1] = (int)sprite->spritearea;
+     r.r[2] = (int)header;
+     r.r[3] = bottomleft.x;
+     r.r[4] = bottomleft.y;
+     r.r[5] = 0;
+     r.r[6] = (int)&displayblock->screenscale;
+     r.r[7] = (int)displayblock->pixtranstable;
+
+     Error_Check((os_error *)
+                 _kernel_swi(SWI_XOS_Bit | SWI_OS_SpriteOp, &r, &r));
+
+    /*
+     * plot pointer
+     */
+     if(plot_pointer){
+        r.r[0] = 52 + 512;
+        r.r[1] = (int)pointer_sprite->spritearea;
+        r.r[2] = (int)pointer_header;
+        r.r[3] = pointer_bottomleft.x;
+        r.r[4] = pointer_bottomleft.y;
+        r.r[5] = pointer_plotaction;
+        r.r[6] = (int)&displayblock->screenscale;
+        r.r[7] = (int)displayblock->pointer_pixtranstable;
+
+        Error_Check((os_error *)
+                    _kernel_swi(SWI_XOS_Bit | SWI_OS_SpriteOp, &r, &r));
+
+     }
+
+     Wimp_GetRectangle(redraw, &more);
+
+  }
+
+}
+
+/******************************************************************************/
+
+static void gain_inputfocus(display_block *block)
+{
+  caret_block caret;
+  if(displayblock->singletask)
+     return;
+
+
+  caret.window = displayblock->current_window;
+  caret.icon = -1;
+  caret.offset.x = 0;
+  caret.offset.y = 0;
+  caret.height = (1 << 25); /* invisible */
+  caret.index = -1;
+
+  Wimp_SetCaretPosition(&caret);
+
+  block->input_focus = TRUE;
+  
+}
+
+/******************************************************************************/
+
+static void loose_inputfocus(display_block *block)
+{
+  caret_block caret;
+  if(displayblock->singletask)
+     return;
+
+
+  caret.window = -1; /* loose caret */
+  caret.icon = -1;
+  caret.offset.x = 0;
+  caret.offset.y = 0;
+  caret.height = (1 << 25); /* invisible */
+  caret.index = -1;
+
+  Wimp_SetCaretPosition(&caret);
+
+  block->input_focus = FALSE;
+
+}
+
+/******************************************************************************/
+
+static void window_open_below_log(void)
+{
+  window_handle open_behind;
+  window_state windowstate;
+
+  Wimp_GetWindowState(displayblock->current_window, &windowstate);
+
+  if(Log_OpenWindowBehind(TRUE, &open_behind)){
+  
+     windowstate.openblock.behind = open_behind;
+
+     Wimp_OpenWindow(&windowstate.openblock);
+
+  }
+}
+
+/******************************************************************************/
+
+static void set_current_window(void)
+{
+  switch(displayblock->display_mode)
+  {
+    case display_mode_WINDOW:
+      displayblock->current_window = displayblock->window;
+      break;
+
+    case display_mode_FULLSCREEN:
+      displayblock->current_window = displayblock->fullscreen;      
+      break;
+
+    default:
+      displayblock->current_window = displayblock->window;
+      break;
+  }
+
+}
+
+/******************************************************************************/
+
+static BOOL open_window(void)
+{
+  if(displayblock->current_window != NULL){
+
+     Mouse_SetMotionUpdateInterval(mouse_MOTION_INTERVAL_MULTITASK);
+
+     if(displayblock->window_opened_before){
+        Window_Show(displayblock->current_window, open_WHEREVER);
+        window_open_below_log();
+     }
+     else{
+        displayblock->window_opened_before = TRUE;
+        Window_Show(displayblock->current_window, open_CENTERED);
+        window_open_below_log();
+     }
+
+     RDPClient_PollNull();
+     gain_inputfocus(displayblock);
+     return(TRUE);
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+static void close_window(void)
+{
+  if(displayblock->current_window != NULL){
+
+     loose_inputfocus(displayblock);
+
+     displayblock->window_open = FALSE;
+     
+     Window_Hide(displayblock->current_window);
+
+  }
+}
+
+/******************************************************************************/
+
+static BOOL open_fullscreen(void)
+{
+  mode_select_block *wimpmode;
+  
+  if(displayblock->current_window != NULL){
+
+     if(!displayblock->window_open){
+
+        if(ScreenMode_ReadCurrent(&(displayblock->wimpmode))){
+
+           wimpmode = &(displayblock->wimpmode);
+
+           if(wimpmode->block.x_res == (displayblock->sprite)->size.x &&
+              wimpmode->block.y_res == (displayblock->sprite)->size.y &&
+              wimpmode->block.depth >= ScreenMode_BppToDepth((displayblock->sprite)->bpp)){
+
+             /*
+              * Don't need change mode as existing one is OK
+              */
+              displayblock->requested_modechange = FALSE;
+
+              open_window_fullscreen();
+           }
+           else{
+             /*
+              * Try and change mode to one that matches remote screen
+              * (Open window after mode change)
+              */
+              displayblock->requested_modechange = TRUE;
+
+              change_mode_to_display(TRUE);
+           }
+
+        }
+     }
+     else
+        open_window_fullscreen();
+
+     return(TRUE);
+  }
+
+  return(FALSE);
+}
+
+/******************************************************************************/
+
+static void open_window_fullscreen(void)
+{
+  int width;
+  int height;
+  window_state windowstate;
+
+  if(displayblock->current_window != NULL){
+
+     Mouse_SetMotionUpdateInterval(mouse_MOTION_INTERVAL_MULTITASK);
+     
+     Wimp_GetWindowState(displayblock->current_window, &windowstate);
+
+     windowstate.openblock.behind = -1;
+     
+     width = windowstate.openblock.screenrect.max.x - windowstate.openblock.screenrect.min.x;
+     height = windowstate.openblock.screenrect.max.y - windowstate.openblock.screenrect.min.y;
+
+     windowstate.openblock.screenrect.min.x = 0;
+     windowstate.openblock.screenrect.max.x = width;
+
+     windowstate.openblock.screenrect.min.y = 0;
+     windowstate.openblock.screenrect.max.y = height;
+
+     Wimp_OpenWindow(&(windowstate.openblock));
+
+     window_open_below_log();
+
+     RDPClient_PollNull();
+
+     gain_inputfocus(displayblock);
+
+  }
+
+}
+
+/******************************************************************************/
+
+static BOOL change_mode_to_display(BOOL wimpmode)
+{
+  mode_select_block mode;
+  BOOL success = FALSE;
+
+  mode.number = -1;
+
+  mode.block.flags = 1;
+
+  mode.block.x_res = (displayblock->sprite)->size.x;
+
+  mode.block.y_res = (displayblock->sprite)->size.y;
+
+  mode.block.depth = ScreenMode_BppToDepth((displayblock->sprite)->bpp);
+
+  /* request max frame rate */
+  mode.block.frame_rate = -1;
+
+  /* request programmable palette if 8bit and not wimp mode */
+  mode.block.mode_flags_number = 0;
+  mode.block.mode_flags = (!wimpmode && (displayblock->sprite)->bpp == 8) ? 0x80 : 0x00;
+
+  mode.block.colours_number = 3;
+  mode.block.colours = ScreenMode_BppToColours((!wimpmode && (displayblock->sprite)->bpp == 8),
+                                               (displayblock->sprite)->bpp);
+
+  mode.block.x_eig_factor_number = 4;
+  mode.block.x_eig_factor = 1;
+
+  mode.block.y_eig_factor_number = 5;
+  mode.block.y_eig_factor = 1;
+  
+  mode.block.terminator = -1;
+
+  success = ScreenMode_SetCurrent(wimpmode, &mode);
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static BOOL change_mode_to_display_verify(BOOL wimpmode, BOOL palette)
+{
+  mode_select_block requestedmode;
+  mode_select_block actualmode;
+  BOOL success = FALSE;
+  BOOL palette_256 = (palette && (displayblock->sprite)->bpp == 8);
+
+  requestedmode.number = -1;
+
+  requestedmode.block.flags = 1;
+
+  requestedmode.block.x_res = (displayblock->sprite)->size.x;
+
+  requestedmode.block.y_res = (displayblock->sprite)->size.y;
+
+  requestedmode.block.depth = ScreenMode_BppToDepth((displayblock->sprite)->bpp);
+
+  /* request max frame rate */
+  requestedmode.block.frame_rate = -1;
+
+  /* request programmable palette if 8bit */
+  requestedmode.block.mode_flags_number = 0;
+  if(palette_256)
+     requestedmode.block.mode_flags = 0x80;
+  else
+     requestedmode.block.mode_flags = 0x00;
+
+  requestedmode.block.colours_number = 3;
+  requestedmode.block.colours = ScreenMode_BppToColours(palette_256,
+                                                        (displayblock->sprite)->bpp);
+
+  requestedmode.block.x_eig_factor_number = 4;
+  requestedmode.block.x_eig_factor = 1;
+
+  requestedmode.block.y_eig_factor_number = 5;
+  requestedmode.block.y_eig_factor = 1;
+  
+  requestedmode.block.terminator = -1;
+
+  success = ScreenMode_SetCurrent(wimpmode, &requestedmode);
+
+  if(success){
+
+     success = FALSE;
+
+     if(ScreenMode_ReadCurrent(&actualmode)){
+
+        if(requestedmode.block.x_res == actualmode.block.x_res &&
+           requestedmode.block.y_res == actualmode.block.y_res &&
+           requestedmode.block.depth == actualmode.block.depth &&
+           (requestedmode.block.mode_flags & 0x80) == (actualmode.block.mode_flags & 0x80) &&
+           requestedmode.block.colours == actualmode.block.colours &&
+           requestedmode.block.x_eig_factor == actualmode.block.x_eig_factor &&
+           requestedmode.block.y_eig_factor == actualmode.block.y_eig_factor){
+
+           success = TRUE;
+        }
+     }
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void close_fullscreen(void)
+{
+  if(displayblock->current_window != NULL){
+
+     loose_inputfocus(displayblock);
+
+     displayblock->window_open = FALSE;
+
+     Window_Hide(displayblock->current_window);
+
+     if(displayblock->requested_modechange){
+
+        displayblock->requested_modechange = FALSE;
+
+       /*
+        * Need to poll as Wimp does not like doing a mode change when
+        * a window is being closed
+        */
+        RDPClient_PollNullLoop(3);
+
+        ScreenMode_SetCurrent(TRUE, &(displayblock->wimpmode));
+
+        RDPClient_PollNullLoop(3);
+
+     }
+  }
+}
+
+/******************************************************************************/
+
+static BOOL open_singletask(void)
+{
+  BOOL success = FALSE;
+  
+  if(displayblock->current_window != NULL){
+
+     if(!displayblock->window_open){
+
+        RDPClient_PollNullLoop(3);
+
+        if(ScreenMode_ReadCurrent(&(displayblock->wimpmode))){
+
+           displayblock->requested_modechange = FALSE;
+
+           if(change_mode_to_display_verify(TRUE, TRUE)){
+
+             /*
+              * Mode change was successfull
+              */
+              Die_SetReturnMode(&(displayblock->wimpmode));
+
+              success = switch_to_singletask();
+
+              if(success){
+                 displayblock->window_open = TRUE;
+                 displayblock->singletask = TRUE;
+              }
+              else
+                 Die_ClearReturnMode();
+           }
+           else{
+         
+             /*
+              * Mode change was not successfull, go back to original Wimp mode
+              */
+
+              ScreenMode_SetCurrent(TRUE, &(displayblock->wimpmode));
+
+              RDPClient_PollNullLoop(3);
+           }
+
+        }
+     }
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void close_singletask(void)
+{
+  if(displayblock->current_window != NULL){
+
+     if(displayblock->singletask)
+        switch_from_singletask();
+
+     displayblock->window_open = FALSE;
+     displayblock->singletask = FALSE;
+
+     Die_ClearReturnMode();
+     
+     ScreenMode_SetCurrent(TRUE, &(displayblock->wimpmode));
+
+     RDPClient_PollNullLoop(3);
+
+  }
+
+}
+
+/******************************************************************************/
+
+static BOOL switch_to_singletask(void)
+{
+  BOOL success = FALSE;
+  char *start_address;
+  int line_length;
+  int total_size;
+  spritelib_block *display_sprite;
+  spritelib_block *screen_sprite;
+  
+  if(ScreenMode_ReadScreenHardware(&start_address, &line_length, &total_size)){
+
+     display_sprite = displayblock->display_sprite;
+     screen_sprite = displayblock->screen_sprite;
+     
+     if(total_size >= display_sprite->size.y * display_sprite->linebytes){
+
+       /*
+        * set up screen parameters in sprite
+        */
+        screen_sprite->spritearea = (sprite_area)start_address;
+        screen_sprite->image = 0;
+
+        screen_sprite->linebytes = line_length;
+
+       /*
+        * copy whole display sprite to screen
+        */
+        SpriteLib_ResetClipArea(screen_sprite);
+
+        SpriteLib_PlotSpriteToSprite(SpriteLib_GXcopy,
+                                     screen_sprite, 0, 0,
+                                     TRUE,
+                                     display_sprite, 0, 0,
+                                     display_sprite->size.x, display_sprite->size.y);
+
+       /*
+        * set up current clip region
+        */
+        screen_sprite->clip_origin.x = display_sprite->clip_origin.x;
+        screen_sprite->clip_origin.y = display_sprite->clip_origin.y;
+
+        screen_sprite->clip_size.x = display_sprite->clip_size.x;
+        screen_sprite->clip_size.y = display_sprite->clip_size.y;
+
+       /*
+        * everything is OK so switch current output to screen
+        */
+        displayblock->sprite = displayblock->screen_sprite;
+
+       /*
+        * set up screen palette
+        */
+        if((displayblock->screen_sprite)->bpp == 8)
+           ScreenMode_SetPalette(SpriteLib_GetCustomPalette());
+
+       /*
+        * set up keyboard
+        */
+        Keyboard_SingleTask();
+
+       /*
+        * set up hardware pointer
+        */
+        Pointer_SingleTask();
+        Pointer_MoveHardwarePointer(displayblock->pointer_coord.x,
+                                    displayblock->pointer_coord.y);
+        Pointer_SetHardwarePointer(displayblock->pointer);
+
+        Mouse_SetMotionUpdateInterval(mouse_MOTION_INTERVAL_SINGLETASK);
+
+         
+        success = TRUE;
+     }
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void switch_from_singletask(void)
+{
+  spritelib_block *display_sprite;
+  spritelib_block *screen_sprite;
+
+  display_sprite = displayblock->display_sprite;
+  screen_sprite = displayblock->screen_sprite;
+
+ /*
+  * copy whole screen back to display sprite
+  */
+  SpriteLib_ResetClipArea(display_sprite);
+
+  SpriteLib_PlotSpriteToSprite(SpriteLib_GXcopy,
+                               display_sprite, 0, 0,
+                               TRUE,
+                               screen_sprite, 0, 0,
+                               screen_sprite->size.x, screen_sprite->size.y);
+
+ /*
+  * set up current clip region
+  */
+  display_sprite->clip_origin.x = screen_sprite->clip_origin.x;
+  display_sprite->clip_origin.y = screen_sprite->clip_origin.y;
+
+  display_sprite->clip_size.x = screen_sprite->clip_size.x;
+  display_sprite->clip_size.y = screen_sprite->clip_size.y;
+
+ /*
+  * everything is OK so switch current output back to display sprite
+  */
+  displayblock->sprite = displayblock->display_sprite;
+
+  Keyboard_MultiTask();
+}
+
+/******************************************************************************/
+
+static spritelib_block *create_dsa_sprite(int width, int height, int bpp)
+{
+  spritelib_block *sprite = NULL;
+
+  sprite = malloc(sizeof(spritelib_block));
+
+  if(sprite != NULL){
+
+     sprite->spritearea = NULL;
+     sprite->header = 0;
+     sprite->palette = 0;
+     sprite->image = 0;
+     sprite->linebytes = 0;
+     sprite->mask = 0;
+     sprite->masklinebytes = 0;
+     sprite->size.x = width;
+     sprite->size.y = height;
+     sprite->bpp = bpp;
+     sprite->has_palette = FALSE;
+     sprite->has_mask = FALSE;
+     sprite->custom_palette_version = 0;
+
+     SpriteLib_ResetClipArea(sprite);
+
+  }
+  
+  return(sprite);
+}
+

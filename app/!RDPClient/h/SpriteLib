@@ -1,0 +1,376 @@
+/************************************************************************
+ *                                                                      *
+ *        File: SpriteLib.h                                             *
+ *                                                                      *
+ *     Purpose: Sprite library.                                         *
+ *                                                                      *
+ ************************************************************************/
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+#ifndef __dl_sprite_h
+#include "DeskLib:Sprite.h"
+#endif
+
+ /*
+  * Graphics operations
+  */
+#define SpriteLib_GXclear          0x0       /* 0 */
+#define SpriteLib_GXnor            0x1       /* NOT src AND NOT dst */
+#define SpriteLib_GXandInverted    0x2       /* NOT src AND dst */
+#define SpriteLib_GXcopyInverted   0x3       /* NOT src */
+#define SpriteLib_GXandReverse     0x4       /* src AND NOT dst */
+#define SpriteLib_GXinvert         0x5       /* NOT dst */
+#define SpriteLib_GXxor            0x6       /* src XOR dst */
+#define SpriteLib_GXnand           0x7       /* NOT src OR NOT dst */
+#define SpriteLib_GXand            0x8       /* src AND dst */
+#define SpriteLib_GXequiv          0x9       /* NOT src XOR dst */
+#define SpriteLib_GXnoop           0xA       /* dst */
+#define SpriteLib_GXorInverted     0xB       /* NOT src OR dst */
+#define SpriteLib_GXcopy           0xC       /* src */
+#define SpriteLib_GXorReverse      0xD       /* src OR NOT dst */
+#define SpriteLib_GXor             0xE       /* src OR dst */
+#define SpriteLib_GXset            0xF       /* 1 */
+ 
+
+
+ /*
+  * spritelib information
+  */
+typedef struct {
+    sprite_area       spritearea;
+    int               header;                 /* offset from start of spritearea to header */
+    int               palette;                /* offset from start of spritearea to palette */
+    int               image;                  /* offset from start of spritearea to image */
+    int               linebytes;              /* number of bytes in an image line */
+    int               mask;                   /* offset from start of spritearea to mask */
+    int               masklinebytes;          /* number of bytes in the mask line */
+    wimp_point        size;                   /* size of image in pixels */
+    wimp_point        clip_origin;            /* top left origin of clip area */
+    wimp_point        clip_size;              /* size of clip area */
+    int               bpp;                    /* image bits per pixel */
+    BOOL              has_palette;            /* does this image have a palette? */
+    BOOL              has_mask;               /* does this image have a mask? */
+    unsigned long     custom_palette_version; /* version of custom palette */
+} spritelib_block;
+
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void SpriteLib_Init(void);
+
+
+ /*
+  * Returns the total number of allocated Sprites
+  */
+extern int SpriteLib_TotalSprites(void);
+
+
+ /*
+  * Returns the total number of allocated 1bpp Sprites
+  */
+extern int SpriteLib_TotalSprites1bpp(void);
+
+
+ /*
+  * Returns the total number of allocated 2bpp Sprites
+  */
+extern int SpriteLib_TotalSprites2bpp(void);
+
+
+ /*
+  * Returns the total number of allocated 8bpp Sprites
+  */
+extern int SpriteLib_TotalSprites8bpp(void);
+
+
+ /*
+  * Returns the total number of allocated 15/16bpp Sprites
+  */
+extern int SpriteLib_TotalSprites1516bpp(void);
+
+
+ /*
+  * Returns the total number of allocated 24bpp Sprites
+  */
+extern int SpriteLib_TotalSprites24bpp(void);
+
+
+ /*
+  * Sets whether the colours are swapped when plotting directly to the screen
+  * in 15bpp mode
+  */
+extern void SpriteLib_SetIyonix15bppColourSwap(BOOL swap);
+
+
+ /*
+  * Create a sprite at the requested width and height and bpp.
+  */
+extern spritelib_block *SpriteLib_Create(int width, int height, int bpp, BOOL palette,
+                                         BOOL mask);
+
+
+ /*
+  * Deallocate image.
+  */
+extern void SpriteLib_Destroy(spritelib_block *block);
+
+
+ /*
+  * allocates memory for sprite area and puts sprite of res into it
+  */
+extern BOOL SpriteLib_CreateImageMemory(spritelib_block *block);
+
+
+ /*
+  * returns memory in bytes of whole sprite (size) and image data (imagesize)
+  */
+extern void SpriteLib_ImageMemory(wimp_point *res, int bpp, BOOL palette, BOOL mask,
+                                  int *size, int *imagesize, int *masksize);
+
+
+ /*
+  * sets up the spritelib_block for the image
+  */
+extern void SpriteLib_CreateImageBlock(spritelib_block *block);
+
+
+ /*
+  * Set custom 8bit image palette colours
+  */
+extern void SpriteLib_SetCustomPalette(palette_entry *palette);
+
+
+ /*
+  * Return custom 8bit image palette colours
+  */
+extern palette_entry *SpriteLib_GetCustomPalette(void);
+
+
+ /*
+  * Ensure that 8bit image has correct palette.
+  */
+extern void SpriteLib_EnsurePalette(spritelib_block *block);
+
+
+ /*
+  * Set clip area of a sprite - this sets a limiting rectangle where output
+  * can only be drawn to
+  */
+extern void SpriteLib_SetClipArea(spritelib_block *block,
+                                  int clip_origin_x, int clip_origin_y,
+                                  int clip_size_x, int clip_size_y);
+
+
+ /*
+  * Reset clip area to whole of sprite
+  */
+extern void SpriteLib_ResetClipArea(spritelib_block *block);
+
+
+ /*
+  * Fill sprite with image data
+  */
+extern void SpriteLib_SetImageData(spritelib_block *block, unsigned char *imagedata,
+                                   BOOL flip_vertical);
+
+
+ /*
+  * Fill sprite with image data of variable bpp (which may not equal the target bpp)
+  */
+extern void SpriteLib_SetImageDataTrans(spritelib_block *block,
+                                        int imagedatabpp, unsigned char *imagedata,
+                                        palette_entry *imagedatapalette,
+                                        BOOL flip_vertical);
+
+
+ /*
+  * Fill sprite with mask data
+  */
+extern void SpriteLib_SetMaskData(spritelib_block *block, unsigned char *maskdata,
+                                  BOOL flip_vertical);
+
+
+ /*
+  * Plot area of source_sprite from top left to source_width, source_height
+  * into dest_sprite at coordinate dest_x, dest_y (top left)
+  */
+extern void SpriteLib_PlotSpriteToSprite(int gfx_op,
+                                         spritelib_block *dest_sprite,
+                                         int dest_x, int dest_y,
+                                         BOOL dest_is_screen,
+                                         spritelib_block *source_sprite,
+                                         int source_x, int source_y,
+                                         int source_width, int source_height);
+
+
+ /*
+  * Plot area of source_data from top left to source_width, source_height
+  * into dest_sprite at coordinate dest_x, dest_y (top left)
+  */
+extern void SpriteLib_PlotDataToSprite(int gfx_op,
+                                       spritelib_block *dest_sprite,
+                                       int dest_x, int dest_y,
+                                       BOOL dest_is_screen,
+                                       unsigned char *source_data,
+                                       int source_x, int source_y,
+                                       int source_width, int source_height,
+                                       int source_image_width, int source_image_height);
+
+
+ /*
+  * Plot area of source_sprite from source_x, source_y to source_width, source_height
+  * into dest_data at coordinate dest_x, dest_y (top left)
+  */
+extern void SpriteLib_PlotSpriteToData(int gfx_op,
+                                       unsigned char *dest_data,
+                                       int dest_x, int dest_y,
+                                       int dest_image_width, int dest_image_height,
+                                       spritelib_block *source_sprite,
+                                       int source_x, int source_y,
+                                       int source_width, int source_height);
+
+
+ /*
+  * Plot area of source_data from top left to source_width, source_height
+  * into dest_sprite at coordinate dest_x, dest_y (top left)
+  */
+extern void SpriteLib_PlotFlexDataToSprite(int gfx_op,
+                                           spritelib_block *dest_sprite,
+                                           int dest_x, int dest_y,
+                                           BOOL dest_is_screen,
+                                           unsigned char **source_data,
+                                           int source_data_offset,
+                                           int source_x, int source_y,
+                                           int source_width, int source_height,
+                                           int source_image_width, int source_image_height);
+
+
+ /*
+  * Plot area of source_sprite from source_x, source_y to source_width, source_height
+  * into dest_data at coordinate dest_x, dest_y (top left)
+  */
+extern void SpriteLib_PlotSpriteToFlexData(int gfx_op,
+                                           unsigned char **dest_data,
+                                           int dest_data_offset,
+                                           int dest_x, int dest_y,
+                                           int dest_image_width, int dest_image_height,
+                                           spritelib_block *source_sprite,
+                                           int source_x, int source_y,
+                                           int source_width, int source_height,
+                                           BOOL source_is_screen);
+
+ /*
+  * Plot 1 bit per pixel source_sprite onto dest_sprite.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  * Where the source_sprite is 1, the dest_sprite is set to foreground_colour.
+  * If set_background is TRUE, where the source_sprite is 0, the dest_sprite is set
+  * to background_colour.
+  */
+extern void SpriteLib_PlotSpriteBitMaskToSprite(int gfx_op,
+                                                spritelib_block *dest_sprite,
+                                                int dest_x, int dest_y,
+                                                BOOL dest_is_screen,
+                                                spritelib_block *source_sprite,
+                                                int source_x, int source_y,
+                                                int plot_origin_x, int plot_origin_y,
+                                                int plot_width, int plot_height,
+                                                int foreground_colour,
+                                                int background_colour, BOOL set_background);
+
+ /*
+  * Plot source_sprite onto dest_sprite.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  */
+extern void SpriteLib_PlotSpriteTiledToSprite(int gfx_op,
+                                              spritelib_block *dest_sprite,
+                                              int dest_x, int dest_y,
+                                              BOOL dest_is_screen,
+                                              spritelib_block *source_sprite,
+                                              int source_x, int source_y,
+                                              int plot_origin_x, int plot_origin_y,
+                                              int plot_width, int plot_height);
+
+
+ /*
+  * Plot rectangle of colour 'colour'
+  */
+extern void SpriteLib_PlotRectangleToSprite(int gfx_op,
+                                            spritelib_block *sprite,
+                                            BOOL sprite_is_screen,
+                                            int x, int y,
+                                            int width, int height,
+                                            int colour);
+
+
+ /*
+  * Plot single pixel horizontal line in positive x directory of colour 'colour'
+  */
+extern void SpriteLib_PlotHorizontalLineToSprite(int gfx_op,
+                                                 spritelib_block *sprite,
+                                                 BOOL sprite_is_screen,
+                                                 int x, int y,
+                                                 int length,
+                                                 int colour);
+
+
+ /*
+  * Plot single pixel vertical line in positive y directory of colour 'colour'
+  */
+extern void SpriteLib_PlotVerticalLineToSprite(int gfx_op,
+                                               spritelib_block *sprite,
+                                               BOOL sprite_is_screen,
+                                               int x, int y,
+                                               int length,
+                                               int colour);
+                                               
+
+ /*
+  * Plot single pixel line of colour 'colour'
+  * If sprite = NULL then output is to the screen
+  */
+extern void SpriteLib_PlotLineToSprite(int gfx_op,
+                                       spritelib_block *sprite,
+                                       BOOL sprite_is_screen,
+                                       int start_x, int start_y,
+                                       int finish_x, int finish_y,
+                                       int colour);
+
+  
+ /*
+  * Copy rectangle area of sprite source_x, source_y, source_width, source_height to
+  * coordinate dest_x, dest_y
+  */
+extern void SpriteLib_CopyRectangleSprite(int gfx_op,
+                                         spritelib_block *sprite,
+                                         int dest_x, int dest_y,
+                                         int source_x, int source_y,
+                                         int source_width, int source_height);
+
+
+ /*
+  * Returns pixel size in bytes for sprite
+  */
+extern int SpriteLib_PixelSize(spritelib_block *block);
+
+
+ /*
+  * Returns pixel size in bytes for raw data with same bpp as sprite 
+  */
+extern int SpriteLib_DataPixelSize(spritelib_block *block);
+
+
+ /*
+  * Returns pixel size in bytes for raw data 
+  */
+extern int SpriteLib_RawDataPixelSize(int bpp);
+
+

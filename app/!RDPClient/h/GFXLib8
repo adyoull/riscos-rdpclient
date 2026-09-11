@@ -1,0 +1,327 @@
+/************************************************************************
+ *                                                                      *
+ *        File: GFXLib8.h                                               *
+ *                                                                      *
+ *     Purpose: Low level graphics operations for 8bit images.          *
+ *                                                                      *
+ ************************************************************************/
+
+extern void GFXLib_PlotSpriteToSprite_8_AndInverted(int source_linebytes,
+                                                    int dest_linebytes,
+                                                    int plot_length,
+                                                    int plot_lines,
+                                                    unsigned char **source_area,
+                                                    int source_start,
+                                                    unsigned char **dest_area,
+                                                    int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_8_Xor(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_8_Nand(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_8_And(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_8_Equiv(int source_linebytes,
+                                              int dest_linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **source_area,
+                                              int source_start,
+                                              unsigned char **dest_area,
+                                              int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_8_OrInverted(int source_linebytes,
+                                                   int dest_linebytes,
+                                                   int plot_length,
+                                                   int plot_lines,
+                                                   unsigned char **source_area,
+                                                   int source_start,
+                                                   unsigned char **dest_area,
+                                                   int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_8_Copy(int source_linebytes,
+                                             int dest_linebytes,
+                                             int plot_length,
+                                             int plot_lines,
+                                             unsigned char **source_area,
+                                             int source_start,
+                                             unsigned char **dest_area,
+                                             int dest_start);
+
+extern void GFXLib_PlotRectangleToSprite_8_Clear(int linebytes,
+                                                 int plot_length,
+                                                 int plot_lines,
+                                                 unsigned char **sprite_area,
+                                                 int start);
+
+extern void GFXLib_PlotRectangleToSprite_8_Copy(int linebytes,
+                                                int plot_length,
+                                                int plot_lines,
+                                                unsigned char colour,
+                                                unsigned char **sprite_area,
+                                                int start);
+
+extern void GFXLib_PlotSpriteToSprite_8_Or(int source_linebytes,
+                                           int dest_linebytes,
+                                           int plot_length,
+                                           int plot_lines,
+                                           unsigned char **source_area,
+                                           int source_start,
+                                           unsigned char **dest_area,
+                                           int dest_start);
+
+extern void GFXLib_PlotSpriteToSprite_FlipVertical_8_Copy(int source_linebytes,
+                                                          int dest_linebytes,
+                                                          int plot_length,
+                                                          int plot_lines,
+                                                          unsigned char **source_area,
+                                                          int source_start,
+                                                          unsigned char **dest_area,
+                                                          int dest_start);
+
+extern void GFXLib_PlotDataToSprite_24_Copy(int source_linebytes,
+                                            int dest_linebytes,
+                                            int plot_length,
+                                            int plot_lines,
+                                            unsigned char **source_area,
+                                            int source_start,
+                                            unsigned char **dest_area,
+                                            int dest_start);
+
+extern void GFXLib_PlotDataToSprite_FlipVertical_24_Copy(int source_linebytes,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start);
+
+extern void GFXLib_PlotRectangleToSprite_8_Xor(int linebytes,
+                                               int plot_length,
+                                               int plot_lines,
+                                               unsigned char colour,
+                                               unsigned char **sprite_area,
+                                               int start);
+
+extern void GFXLib_CopyRectangleSprite_8_Copy(int linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **area,
+                                              int source_start,
+                                              int dest_start);
+
+extern void GFXLib_PlotRectangleToSprite_8_Invert(int linebytes,
+                                                  int plot_length,
+                                                  int plot_lines,
+                                                  unsigned char **sprite_area,
+                                                  int start);
+
+extern void GFXLib_PlotRectangleToSprite_8_Set(int linebytes,
+                                              int plot_length,
+                                              int plot_lines,
+                                              unsigned char **sprite_area,
+                                              int start);
+
+extern void GFXLib_PlotHorizontalLineToSprite_8_Copy(int plot_length,
+                                                     unsigned char colour,
+                                                     unsigned char **sprite_area,
+                                                     int start);
+
+extern void GFXLib_PlotHorizontalLineToSprite_8_Invert(int plot_length,
+                                                       unsigned char **sprite_area,
+                                                       int start);
+
+extern void GFXLib_PlotHorizontalLineToSprite_8_Xor(int plot_length,
+                                                    unsigned char colour,
+                                                    unsigned char **sprite_area,
+                                                    int start);
+
+extern void GFXLib_PlotVerticalLineToSprite_8_Copy(int linebytes,
+                                                   int plot_lines,
+                                                   unsigned char colour,
+                                                   unsigned char **sprite_area,
+                                                   int start);
+
+extern void GFXLib_PlotVerticalLineToSprite_8_Invert(int linebytes,
+                                                     int plot_lines,
+                                                     unsigned char **sprite_area,
+                                                     int start);
+
+extern void GFXLib_PlotVerticalLineToSprite_8_Xor(int linebytes,
+                                                  int plot_lines,
+                                                  unsigned char colour,
+                                                  unsigned char **sprite_area,
+                                                  int start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Copy(int source_linebytes,
+                                                       int source_initial_x,
+                                                       int source_initial_y,
+                                                       int dest_linebytes,
+                                                       int plot_length,
+                                                       int plot_lines,
+                                                       unsigned char foreground_colour,
+                                                       int source_width,
+                                                       int source_height,
+                                                       unsigned char **source_area,
+                                                       int source_start,
+                                                       unsigned char **dest_area,
+                                                       int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy(int source_linebytes,
+                                                          int source_initial_x,
+                                                          int source_initial_y,
+                                                          int dest_linebytes,
+                                                          int plot_length,
+                                                          int plot_lines,
+                                                          unsigned char foreground_colour,
+                                                          unsigned char background_colour,
+                                                          int source_width,
+                                                          int source_height,
+                                                          unsigned char **source_area,
+                                                          int source_start,
+                                                          unsigned char **dest_area,
+                                                          int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Copy_Byte(int source_linebytes,
+                                                            int dest_linebytes,
+                                                            int plot_length,
+                                                            int plot_lines,
+                                                            unsigned char foreground_colour,
+                                                            unsigned char **source_area,
+                                                            int source_start,
+                                                            unsigned char **dest_area,
+                                                            int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_Byte(int source_linebytes,
+                                                               int dest_linebytes,
+                                                               int plot_length,
+                                                               int plot_lines,
+                                                               unsigned char foreground_colour,
+                                                               unsigned char background_colour,
+                                                               unsigned char **source_area,
+                                                               int source_start,
+                                                               unsigned char **dest_area,
+                                                               int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Xor(int source_linebytes,
+                                                      int source_initial_x,
+                                                      int source_initial_y,
+                                                      int dest_linebytes,
+                                                      int plot_length,
+                                                      int plot_lines,
+                                                      unsigned char foreground_colour,
+                                                      int source_width,
+                                                      int source_height,
+                                                      unsigned char **source_area,
+                                                      int source_start,
+                                                      unsigned char **dest_area,
+                                                      int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor(int source_linebytes,
+                                                         int source_initial_x,
+                                                         int source_initial_y,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char foreground_colour,
+                                                         unsigned char background_colour,
+                                                         int source_width,
+                                                         int source_height,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start);
+                                                  
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_And(int source_linebytes,
+                                                      int source_initial_x,
+                                                      int source_initial_y,
+                                                      int dest_linebytes,
+                                                      int plot_length,
+                                                      int plot_lines,
+                                                      unsigned char foreground_colour,
+                                                      int source_width,
+                                                      int source_height,
+                                                      unsigned char **source_area,
+                                                      int source_start,
+                                                      unsigned char **dest_area,
+                                                      int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_And(int source_linebytes,
+                                                         int source_initial_x,
+                                                         int source_initial_y,
+                                                         int dest_linebytes,
+                                                         int plot_length,
+                                                         int plot_lines,
+                                                         unsigned char foreground_colour,
+                                                         unsigned char background_colour,
+                                                         int source_width,
+                                                         int source_height,
+                                                         unsigned char **source_area,
+                                                         int source_start,
+                                                         unsigned char **dest_area,
+                                                         int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Or(int source_linebytes,
+                                                     int source_initial_x,
+                                                     int source_initial_y,
+                                                     int dest_linebytes,
+                                                     int plot_length,
+                                                     int plot_lines,
+                                                     unsigned char foreground_colour,
+                                                     int source_width,
+                                                     int source_height,
+                                                     unsigned char **source_area,
+                                                     int source_start,
+                                                     unsigned char **dest_area,
+                                                     int dest_start);
+
+extern void GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Or(int source_linebytes,
+                                                        int source_initial_x,
+                                                        int source_initial_y,
+                                                        int dest_linebytes,
+                                                        int plot_length,
+                                                        int plot_lines,
+                                                        unsigned char foreground_colour,
+                                                        unsigned char background_colour,
+                                                        int source_width,
+                                                        int source_height,
+                                                        unsigned char **source_area,
+                                                        int source_start,
+                                                        unsigned char **dest_area,
+                                                        int dest_start);
+                                                  
+extern void GFXLib_PlotSpriteTiledToSprite_8_Copy(int source_linebytes,
+                                                  int source_initial_x,
+                                                  int source_initial_y,
+                                                  int dest_linebytes,
+                                                  int plot_length,
+                                                  int plot_lines,
+                                                  int source_width,
+                                                  int source_height,
+                                                  unsigned char **source_area,
+                                                  int source_start,
+                                                  unsigned char **dest_area,
+                                                  int dest_start);
+                                                

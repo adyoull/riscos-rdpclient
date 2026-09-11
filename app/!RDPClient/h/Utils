@@ -1,0 +1,150 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Utils.h                                                 *
+ *                                                                      *
+ *     Purpose: General purpose routines.                               *
+ *                                                                      *
+ ************************************************************************/
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+typedef struct {
+  task_handle taskhandle;
+  char *taskname;
+  int slotsize;
+  int flags;
+} taskmanager_taskinfo;
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Utils_Init(void);
+
+
+
+ /*
+  * Return next argument from parameter list
+  */
+extern int Utils_GetOptions(int argc, char **argv, char *pszValidOpts, char **ppszParam,
+                            int *argind);
+
+
+ /*
+  * Return a good double value random number between 0 and 1
+  */
+extern double Utils_RandomNumberDbl(void);
+
+
+ /*
+  * Return a good unsigned long random number
+  */
+extern unsigned long Utils_RandomNumberULng(void);
+
+
+ /*
+  * Place a sprite from a USER sprite area on the icon bar with text underneath
+  * Returns icon handle.
+  */
+extern icon_handle Utils_BarIconText(char *validation_ptr, char *text_ptr,
+                                     unsigned int text_maxlen, window_handle pos);
+
+
+ /*
+  * Returns length of text in OS units when plotted using the Desktop Font
+  */
+extern int Utils_WimpTextLength(char *text);
+
+
+ /*
+  * Returns vf_enabled = TRUE if ViewFinder is present and enabled, otherwise FALSE
+  * Returns vf_output_mode = TRUE if ViewFinder is active, or FALSE if VIDC is active
+  */
+extern void Utils_ViewFinderFlags(BOOL *vf_enabled, BOOL *vf_output_mode);
+
+
+ /*
+  * Returns TRUE if module is loaded otherwise FALSE
+  */
+extern BOOL Utils_IsModuleLoaded(char *module_name);
+
+
+ /*
+  * Returns TRUE if ViewFinder Mode Patch is loaded otherwise FALSE
+  */
+extern BOOL Utils_ViewFinderModePatchLoaded(void);
+
+
+ /*
+  * Lookup SWI number for swi_name.
+  * Return 0 if name not found.
+  */
+extern int Utils_SWINumberFromString(char *swi_name);
+
+
+ /*
+  * Version of memmove() which does not use a temporary area
+  */
+extern void *Utils_MemMove(void *dest, void *src, unsigned int size);
+
+
+ /*
+  * Version of memmove() which does not use a temporary area and works with
+  * flex anchors.
+  */
+extern void Utils_MemMove_Flex(unsigned int dest_offset, unsigned int source_offset,
+                               void **dest, void **src, unsigned int size);
+                                
+
+ /*
+  * Copy NULL or newline terminated string into another NULL terminated string
+  */
+extern void Utils_CopyStringNL(char *dest, char *source, int max_length);
+
+
+ /*
+  * Returns name of task corresponding to supplied taskhandle
+  */
+extern void Utils_TaskNameFromHandle(char *taskname, int length, int taskhandle);
+
+
+ /*
+  * Enumerates running tasks.
+  * state must be 0 for first call and passed in for subsequent calls
+  * Number of task blocks obtained is returned.
+  */
+extern int Utils_EnumerateTasks(int *state, taskmanager_taskinfo *info_buffer, int buffer_size);
+
+
+ /*
+  * Returns TRUE if taskname is running
+  */
+extern BOOL Utils_IsTaskRunning(char *taskname, task_handle ignore_taskhandle);
+
+
+ /*
+  * Returns task handle from first task matching taskname
+  */
+extern task_handle Utils_TaskHandleFromName(char *taskname, task_handle ignore_taskhandle);
+
+
+ /*
+  * Remove CRs in place and update length
+  */
+extern void Utils_CRLF2LF(char *data, unsigned int *length);
+
+
+ /*
+  * Replace LFs with CRLF inplace and update length.
+  * Memory must already be allocated to account for string increasing in length
+  */
+extern void Utils_LF2CRLF(char *data, unsigned int *length);
+
+
+ /*
+  * Copy 'source' string to 'dest' changing all upper case letters
+  * to lower case
+  */
+extern void Utils_CopyToLower(char *dest, char *source);

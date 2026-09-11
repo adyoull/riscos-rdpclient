@@ -1,0 +1,4147 @@
+/************************************************************************
+ *                                                                      *
+ *        File: SpriteLib.c                                             *
+ *                                                                      *
+ *     Purpose: Sprite library.                                         *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+#include "DeskLib:Time.h"
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "SpriteLib.h"
+#include "GFXLib8.h"
+#include "GFXLib15.h"
+#include "GFXLib15S.h"
+#include "GFXLib16.h"
+#include "GFXLib16S.h"
+#include "GFXLib24.h"
+#include "GFXLib32.h"
+#include "MemMan.h"
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include "rdesktop/rdesktop.h"
+
+/* __compound_literals_c89__ */
+static const screen_modeval __cl_screen_modeval_1 = { 21 };
+static const screen_modeval __cl_screen_modeval_2 = { 19 };
+static const screen_modeval __cl_screen_modeval_3 = { 18 };
+
+/* size of 256 entry palette in sprite */
+#define sizeof_256PALETTE 2048
+
+/* size of 4 entry palette in sprite */
+#define sizeof_4PALETTE 32
+
+#define SpriteName "rdpclient"
+
+static BOOL allow_15bpp_plus = FALSE;
+
+static BOOL custom_palette = FALSE;
+static unsigned long custom_palette_version = 0;
+
+static BOOL iyonix_15bpp_colour_swap = FALSE;
+
+/* array to hold 256 grey level palette */
+static palette_entry GreyscalePalette[256] = {0};
+/* array to hold 256 colour Acorn palette */
+static palette_entry ColourPalette[256] = {0};
+/* array to hold 256 colour Custom palette */
+static palette_entry CustomPalette[256] = {0};
+
+/* counter for number of allocated sprites */
+static int total_sprites = 0;
+static int total_sprites_1 = 0;
+static int total_sprites_2 = 0;
+static int total_sprites_8 = 0;
+static int total_sprites_15_16 = 0;
+static int total_sprites_24 = 0;
+
+#define SPRITE_IMAGE(x) ((void *) ((char *)x->spritearea + x->image))
+
+static void set_palette(spritelib_block *block, BOOL initialise);
+static BOOL clip_dest(spritelib_block *block,
+                      int *clip_origin_x, int *clip_origin_y,
+                      int *clip_size_x, int *clip_size_y);
+static BOOL clip_source_dest(spritelib_block *block,
+                             int *clip_dest_origin_x, int *clip_dest_origin_y,
+                             int *clip_dest_size_x, int *clip_dest_size_y,
+                             int *clip_source_origin_x, int *clip_source_origin_y);
+/*
+static int palete_entry_to_colour_number(int red, int green, int blue);
+*/
+/*
+static BOOL set_colour(int gfx_op, int colour_number);
+*/
+/*
+static void set_origin(int x, int y);
+*/
+static void set_tile_offset(int *offset, int size);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void SpriteLib_Init(void)
+{
+  int colour;
+ /*
+  * initialisation to be done on startup
+  */
+  int osver, r2;
+  _kernel_swi_regs r;
+
+ /*
+  * check for RISC OS 3.5 or later and enable greater than 8bit sprites
+  */
+  allow_15bpp_plus = FALSE;
+
+  OS_Byte(osbyte_READOSIDENTIFIER, 0, 0xFF, &osver, &r2);
+  if(osver >= 0xA5){
+    /* RISC OS 3.5 and above */
+    allow_15bpp_plus = TRUE;
+
+    if(!allow_15bpp_plus){
+     /*
+      * check if Deeper module is loaded
+      */
+      r.r[0] = 18;
+      r.r[1] = (int) "Deeper";
+      if(_kernel_swi(SWI_XOS_Bit | SWI_OS_Module, &r, &r) == NULL)
+        allow_15bpp_plus = TRUE;
+    }
+  }
+
+  custom_palette = FALSE;
+  custom_palette_version = 0;
+
+  total_sprites = 0;
+  total_sprites_1 = 0;
+  total_sprites_2 = 0;
+  total_sprites_8 = 0;
+  total_sprites_15_16 = 0;
+  total_sprites_24 = 0;
+
+ /*
+  * initialise 256 level greyscale sprite palette
+  */
+  for(colour = 0; colour < 256; colour++){
+
+      GreyscalePalette[colour].data.gcol = 0;
+      GreyscalePalette[colour].data.red = colour;
+      GreyscalePalette[colour].data.green = colour;
+      GreyscalePalette[colour].data.blue = colour;
+
+  }
+
+ /*
+  * read 256 colour palette
+  */
+  r.r[0] = 21; /* read palette of mode 21 */
+  r.r[1] = 0; /* default palette */
+  r.r[2] = (int) &ColourPalette;
+  r.r[3] = 256 * sizeof(palette_entry); /* size of buffer */
+  r.r[4] = 0; /* flags */
+  Error_Check((os_error *)
+              _kernel_swi(SWI_XOS_Bit | SWI_ColourTrans_ReadPalette, &r, &r ));
+
+ /*
+  * Initialise custom palette to be the same as the Acorn palette
+  */
+  memcpy(CustomPalette, ColourPalette, 256 * sizeof(palette_entry));
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_TotalSprites(void)
+{
+ /*
+  * Returns the total number of allocated Sprites
+  */
+  return(total_sprites);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_TotalSprites1bpp(void)
+{
+ /*
+  * Returns the total number of allocated 1bpp Sprites
+  */
+  return(total_sprites_1);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_TotalSprites2bpp(void)
+{
+ /*
+  * Returns the total number of allocated 2bpp Sprites
+  */
+  return(total_sprites_2);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_TotalSprites8bpp(void)
+{
+ /*
+  * Returns the total number of allocated 8bpp Sprites
+  */
+  return(total_sprites_8);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_TotalSprites1516bpp(void)
+{
+ /*
+  * Returns the total number of allocated 15/16bpp Sprites
+  */
+  return(total_sprites_15_16);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_TotalSprites24bpp(void)
+{
+ /*
+  * Returns the total number of allocated 24bpp Sprites
+  */
+  return(total_sprites_24);
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_SetIyonix15bppColourSwap(BOOL swap)
+{
+ /*
+  * Sets whether the colours are swapped when plotting directly to the screen
+  * in 15bpp mode
+  */
+  iyonix_15bpp_colour_swap = swap;
+}
+
+/******************************************************************************/
+
+extern spritelib_block *SpriteLib_Create(int width, int height, int bpp, BOOL palette, BOOL mask)
+{
+ /*
+  * Create a sprite at the requested width and height and bpp.
+  */
+  spritelib_block *block;
+//unsigned int start, end;
+//while((start = Time_Monotonic()) == 0);
+
+ /*
+  * check for colour depth support
+  */
+  if(bpp > 8 && !allow_15bpp_plus)
+     return(NULL);
+
+ /*
+  * allocate memory for spritelib block
+  * return NULL if fails
+  */
+  block = malloc(sizeof(spritelib_block));
+  if(block == NULL){
+     return(NULL);
+  }
+
+  block->spritearea = NULL;
+  block->size.x = width;
+  block->size.y = height;
+  block->bpp = bpp;
+  if(bpp == 8){
+     block->has_palette = palette;
+     block->custom_palette_version = custom_palette_version;
+  }
+  else if(bpp == 2){
+     block->has_palette = palette;
+     block->custom_palette_version = 0;
+  }
+  else{
+     block->has_palette = FALSE;
+     block->custom_palette_version = 0;
+  }
+  if(bpp == 24 || bpp == 32)
+     block->has_mask = mask;
+  else
+     block->has_mask = FALSE;
+
+  if(!SpriteLib_CreateImageMemory(block)){
+     free(block);
+     return(NULL);
+  }
+
+  SpriteLib_CreateImageBlock(block);
+
+  SpriteLib_ResetClipArea(block);
+
+  total_sprites++;
+
+  switch(bpp)
+  {
+    case 1:
+      total_sprites_1++;
+      break;
+
+    case 2:
+      total_sprites_2++;
+      break;
+      
+    case 8:
+      total_sprites_8++;
+      break;
+
+    case 15: case 16:
+      total_sprites_15_16++;
+      break;
+
+    case 24: case 32:
+      total_sprites_24++;
+      break;
+  }
+
+//while((end = Time_Monotonic()) == 0);
+//if(end - start > 0)
+//   fprintf(stderr, "create %i\n", end - start);
+  return(block);
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_Destroy(spritelib_block *block)
+{
+ /*
+  * Deallocate image.
+  */
+  if(block == NULL)
+     return;
+//unsigned int start, end;
+//while((start = Time_Monotonic()) == 0);
+
+  if(block->spritearea != NULL)
+     MemMan_Free((memman_ptr)&(block->spritearea));
+  block->spritearea = NULL;
+
+  total_sprites--;
+
+  switch(block->bpp)
+  {
+    case 1:
+      total_sprites_1--;
+      break;
+
+    case 2:
+      total_sprites_2--;
+      break;
+      
+    case 8:
+      total_sprites_8--;
+      break;
+
+    case 15: case 16:
+      total_sprites_15_16--;
+      break;
+
+    case 24: case 32:
+      total_sprites_24--;
+      break;
+  }
+
+  free(block);
+
+//while((end = Time_Monotonic()) == 0);
+//if(end - start > 0)
+//   fprintf(stderr, "destroy %i\n", end - start);
+
+}
+
+/******************************************************************************/
+
+extern BOOL SpriteLib_CreateImageMemory(spritelib_block *block)
+{
+ /*
+  * allocates memory for sprite area and puts sprite of res into it
+  */
+  int size;
+  sprite_header *header;
+  palette_entry *palette;
+  char *image;
+  int imagesize;
+  int masksize;
+  os_error *err = NULL;
+  /* screen_modeval spritemode; */
+
+ /*
+  * return if image already used
+  */
+  if(block->spritearea != NULL)
+     return(FALSE);
+
+ /*
+  * work out the memory required for the sprite area
+  * total memory is 'size' bytes for sprite area
+  * 'imagesize' is size of image pixel data in bytes
+  */
+  SpriteLib_ImageMemory(&(block->size), block->bpp, block->has_palette, block->has_mask,
+                        &size, &imagesize, &masksize);
+
+ /*
+  * allocate memory for sprite area
+  */
+  MemMan_Alloc((memman_ptr)&(block->spritearea), size + 64);
+  if(block->spritearea == NULL){
+     return(FALSE);
+  }
+
+ /*
+  * initialise sprite area header for no sprites
+  */
+  (block->spritearea)->areasize = size;
+  (block->spritearea)->numsprites = 0;
+  (block->spritearea)->firstoffset = 16;
+  (block->spritearea)->freeoffset = 16;
+
+ /*
+  * 'header' points to start of sprite header
+  * 'palette' points to start of sprite palette
+  * 'image' points to start of image pixel data
+  * 'mask' points to start of mask pixel data
+  */
+  header = (void *) ((char *)block->spritearea + (block->spritearea)->firstoffset);
+  palette = (void *) ((char *)header + sizeof(sprite_header));
+  if((block->bpp == 32) || (block->bpp == 24) || (block->bpp == 15) || (block->bpp == 16) ||
+     (block->bpp == 1)){
+     /* 1bit, 16bit and 24bit images do not have a palette */
+     image = (void *) (char *)palette;
+  }
+  else if(block->bpp == 8){
+     if(block->has_palette)
+        image = (void *) ((char *)palette + sizeof_256PALETTE);
+     else
+        image = (void *) (char *)palette;
+  }
+  else if(block->bpp == 2){
+     if(block->has_palette)
+        image = (void *) ((char *)palette + sizeof_4PALETTE);
+     else
+        image = (void *) (char *)palette;
+  }
+  else{
+    /* unsupported bpp */
+    error("SpriteLib_CreateImageMemory() unsupported bpp %i", block->bpp);
+    MemMan_Free((memman_ptr)&(block->spritearea));
+    return(FALSE);
+  }
+
+ /*
+  * create blank sprite with no palette in sprite area
+  */
+  if(block->bpp == 24 || block->bpp == 32){
+     header->offset_next = size - sizeof(sprite_areainfo);
+     (block->spritearea)->numsprites = 1;
+     (block->spritearea)->freeoffset = (block->spritearea)->areasize;
+     strncpy(header->name, SpriteName, sprite_MAXNAME);
+     header->width = block->size.x - 1;
+     header->height = block->size.y - 1;
+     header->leftbit = 0;
+     header->rightbit = 31;
+     header->imageoffset = sizeof(sprite_header);
+     header->maskoffset = header->imageoffset + (block->has_mask ? imagesize : 0);
+     /*                 type = 24bit     y dpi       x dpi     */
+     /* header->screenmode = (6 << 27) | (90 << 14) | (90 << 1) | 1; */
+     header->screenmode.sprite_mode.istype = 1;
+     header->screenmode.sprite_mode.horz_dpi = 90;
+     header->screenmode.sprite_mode.vert_dpi = 90;
+     header->screenmode.sprite_mode.type = 6;
+
+     memset(image, 0, imagesize);
+
+     if(block->has_mask)
+        memset(((char *)image) + imagesize, 0xFF, masksize);
+  }
+  else if(block->bpp == 15 || block->bpp == 16){
+     /*
+      * 16bit image is created by creating an 8bit image with double the width
+      */
+     /* spritemode.screen_mode = 21; */
+     err = Sprite_Create(block->spritearea, SpriteName, sprite_HASNOMASKPAL,
+                         block->size.x * 2, block->size.y, __cl_screen_modeval_1);
+     /*
+      * set new format mode parameter to 16bit
+      */
+     /*                 type = 16bit     y dpi       x dpi     */
+     /* header->screenmode = (5 << 27) | (90 << 14) | (90 << 1) | 1; */
+     header->screenmode.sprite_mode.istype = 1;
+     header->screenmode.sprite_mode.horz_dpi = 90;
+     header->screenmode.sprite_mode.vert_dpi = 90;
+     header->screenmode.sprite_mode.type = 5;
+  }
+  else if(block->bpp == 8){
+     /* spritemode.screen_mode = 21; */
+     Sprite_Create(block->spritearea, SpriteName, sprite_HASNOMASKPAL,
+                   block->size.x, block->size.y, __cl_screen_modeval_1);
+  }
+  else if(block->bpp == 2){
+     /* spritemode.screen_mode = 19; */
+     if(block->has_palette)
+        err = Sprite_Create(block->spritearea, SpriteName, sprite_HASPAL,
+                            block->size.x, block->size.y, __cl_screen_modeval_2);
+     else
+        err = Sprite_Create(block->spritearea, SpriteName, sprite_HASNOMASKPAL,
+                            block->size.x, block->size.y, __cl_screen_modeval_2);
+  }
+  else if(block->bpp == 1){
+     /* spritemode.screen_mode = 18; */
+     err = Sprite_Create(block->spritearea, SpriteName, sprite_HASNOMASKPAL,
+                         block->size.x, block->size.y, __cl_screen_modeval_3);
+  }
+
+  if(block->bpp == 8){
+    /*
+     * insert 256 entry palette
+     */
+     if(block->has_palette){
+
+        if(imagesize < sizeof_256PALETTE)
+           memmove(image, image - sizeof_256PALETTE, imagesize);
+        else
+           memmove(image + imagesize - sizeof_256PALETTE,
+                   image + imagesize - (2 * sizeof_256PALETTE),
+                   sizeof_256PALETTE);
+
+        header->imageoffset += sizeof_256PALETTE;
+        header->maskoffset += sizeof_256PALETTE;
+        header->offset_next += sizeof_256PALETTE;
+        block->spritearea->freeoffset += sizeof_256PALETTE;
+
+        set_palette(block, TRUE);
+
+     }
+  }
+
+  if(err != NULL){
+     error(" - %i:%s", err->errnum, err->errmess);
+     error("SpriteLib_CreateImageMemory() %ix%i:%i pal %i mask %i size %i image %i mask %i",
+           block->size.x, block->size.y, block->bpp, block->has_palette, block->has_mask,
+           size, imagesize, masksize);
+     return(FALSE);
+  }
+  else
+     return(TRUE);
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_ImageMemory(wimp_point *res, int bpp, BOOL palette, BOOL mask,
+                                  int *size, int *imagesize, int *masksize)
+{
+ /*
+  * returns memory in bytes of whole sprite (size) and image data (imagesize)
+  */
+  /* screen_modeval spritemode; */
+
+  *masksize = 0;
+
+  if(bpp == 24 || bpp == 32){
+
+     *imagesize = (res->x * 4) * res->y; /* 1 pixel is 1 word */
+
+     *size = *imagesize + sizeof(sprite_header);
+     *size += sizeof(sprite_areainfo); /* add sprite area header size */
+
+     /* new format 24bit sprite has 1bpp mask - same format as image data of 1bb sprite */
+     if(mask){
+        /* spritemode.screen_mode = 18; */
+        *masksize = Sprite_MemorySize(res->x, res->y, __cl_screen_modeval_3,
+                    sprite_HASNOMASKPAL) - sizeof(sprite_header);
+        *size += *masksize;
+     }
+  }
+  else{
+
+     if(bpp == 15 || bpp == 16){
+        /* simulate 16bit pixels by doubling x res of 8bit image */
+        /* spritemode.screen_mode = 21; */
+        *size = Sprite_MemorySize(res->x*2, res->y, __cl_screen_modeval_1, sprite_HASNOMASKPAL);
+     }
+     else if(bpp == 8){
+        /* spritemode.screen_mode = 21; */
+        *size = Sprite_MemorySize(res->x, res->y, __cl_screen_modeval_1, sprite_HASNOMASKPAL);
+     }
+     else if(bpp == 2){
+        /* spritemode.screen_mode = 19; */
+        *size = Sprite_MemorySize(res->x, res->y, __cl_screen_modeval_2, sprite_HASNOMASKPAL);
+     }
+     else if(bpp == 1){
+        /* spritemode.screen_mode = 18; */
+        *size = Sprite_MemorySize(res->x, res->y, __cl_screen_modeval_3, sprite_HASNOMASKPAL);
+     }
+     else{
+       *size = 0;
+     }
+
+     *imagesize = *size - sizeof(sprite_header);
+     *size += sizeof(sprite_areainfo); /* add sprite area header size */
+
+     if(bpp == 8 && palette){
+        /* 8bit image has a palette */
+        *size += sizeof_256PALETTE; /* add 256 colour palette size */
+     }
+     else if(bpp == 2 && palette){
+        *size += sizeof_4PALETTE; /* add 4 colour palette size */
+     }
+  }
+}
+
+
+/******************************************************************************/
+
+extern void SpriteLib_CreateImageBlock(spritelib_block *block)
+{
+ /*
+  * sets up the spritelib_block for the image
+  */
+  sprite_header *header;
+  palette_entry *palette;
+  char *image;
+  int masklinebytes;
+  /* screen_modeval spritemode; */
+
+ /*
+  * 'header' points to start of sprite header
+  * 'image' points to start of image pixel data
+  */
+  header = (void *) ((char *)block->spritearea + (block->spritearea)->firstoffset);
+  palette = (void *) ((char *)header + sizeof(sprite_header));
+  image = (void *) ((char *)header + header->imageoffset);
+
+  /* spritemode.screen_mode = 18; */
+  masklinebytes = (block->has_mask ?
+                          Sprite_MemorySize(block->size.x, 1, __cl_screen_modeval_3,
+                          sprite_HASNOMASKPAL) - sizeof(sprite_header) : 0);
+ /*
+  * initialise rest of image bank info block
+  */
+  block->header = (char *) header - (char *) block->spritearea;
+  block->palette = (char *) palette - (char *) block->spritearea;
+  block->image = (char *) image - (char *) block->spritearea;
+  block->linebytes = (header->width + 1) * 4;
+  block->mask = (block->has_mask ?
+                 block->image + (header->maskoffset - header->imageoffset) : 0);
+  block->masklinebytes = masklinebytes;
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_SetCustomPalette(palette_entry *palette)
+{
+ /*
+  * Set custom 8bit image palette colours
+  */
+  custom_palette = TRUE;
+  custom_palette_version++;
+
+  memcpy(CustomPalette, palette, 256 * sizeof(palette_entry));
+}
+
+/******************************************************************************/
+
+extern palette_entry *SpriteLib_GetCustomPalette(void)
+{
+ /*
+  * Return custom 8bit image palette colours
+  */
+  return(CustomPalette);
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_EnsurePalette(spritelib_block *block)
+{
+ /*
+  * Ensure that 8bit image has correct palette.
+  */
+  set_palette(block, FALSE);
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_SetClipArea(spritelib_block *block,
+                                  int clip_origin_x, int clip_origin_y,
+                                  int clip_size_x, int clip_size_y)
+{
+ /*
+  * Set clip area of a sprite - this sets a limiting rectangle where output
+  * can only be drawn to
+  */
+  int origin_x;
+  int origin_y;
+  int size_x;
+  int size_y;
+
+  origin_x = clip_origin_x;
+  origin_y = clip_origin_y;
+  size_x = clip_size_x;
+  size_y = clip_size_y;
+
+ /*
+  * Clip origin to image
+  */
+  if(origin_x < 0)
+     origin_x = 0;
+
+  if(origin_y < 0)
+     origin_y = 0;
+
+  if(origin_x >= block->size.x)
+     origin_x = block->size.x - 1;
+
+  if(origin_y >= block->size.y)
+     origin_y = block->size.y - 1;
+
+ /*
+  * Resize clip size to match origin changes
+  */
+  size_x -= (origin_x - clip_origin_x);
+  size_y -= (origin_y - clip_origin_y);
+
+  if(size_x <= 0)
+     size_x = 1;
+
+  if(size_y <= 0)
+     size_y = 1;
+
+ /*
+  * Resize clip size to fit in image
+  */
+  if((origin_x + size_x) > block->size.x)
+     size_x = block->size.x - origin_x;
+
+  if((origin_y + size_y) > block->size.y)
+     size_y = block->size.y - origin_y;
+
+  block->clip_origin.x = origin_x;
+  block->clip_origin.y = origin_y;
+  block->clip_size.x = size_x;
+  block->clip_size.y = size_y;
+}                                  
+
+/******************************************************************************/
+
+extern void SpriteLib_ResetClipArea(spritelib_block *block)
+{
+ /*
+  * Reset clip area to whole of sprite
+  */
+  SpriteLib_SetClipArea(block, 0, 0, block->size.x, block->size.y);
+
+}                                  
+ 
+/******************************************************************************/
+
+extern void SpriteLib_SetImageData(spritelib_block *block, unsigned char *imagedata,
+                                   BOOL flip_vertical)
+{
+ /*
+  * Fill sprite with image data
+  */
+  int pixel_size = SpriteLib_DataPixelSize(block);
+  int source_linebytes = ((block->bpp == 1) ? ((block->size.x + 7) / 8) :
+                                              (block->size.x * pixel_size));
+  int dest_linebytes = block->linebytes;
+  int source_start = 0;
+  int dest_start = block->image;
+  int plot_bytes = source_linebytes;
+//unsigned int start, end;
+//while((start = Time_Monotonic()) == 0);
+
+  if(flip_vertical){
+
+     switch(block->bpp)
+     {
+       case 1: /* 1 bpp image is copied as a whole number of bytes */
+       case 8:
+         GFXLib_PlotSpriteToSprite_FlipVertical_8_Copy(source_linebytes,
+                                                       dest_linebytes,
+                                                       plot_bytes,
+                                                       block->size.y,
+                                                       (unsigned char **)&imagedata,
+                                                       source_start,
+                                                       (unsigned char **)&(block->spritearea),
+                                                       dest_start);
+         break;
+
+       case 15:
+         GFXLib_PlotSpriteToSprite_FlipVertical_8_Copy(source_linebytes,
+                                                       dest_linebytes,
+                                                       plot_bytes,
+                                                       block->size.y,
+                                                       (unsigned char **)&imagedata,
+                                                       source_start,
+                                                       (unsigned char **)&(block->spritearea),
+                                                       dest_start);
+         break;
+
+       case 16:
+         GFXLib_PlotSpriteToSprite_FlipVertical_8_Copy(source_linebytes,
+                                                       dest_linebytes,
+                                                       plot_bytes,
+                                                       block->size.y,
+                                                       (unsigned char **)&imagedata,
+                                                       source_start,
+                                                       (unsigned char **)&(block->spritearea),
+                                                       dest_start);
+         break;
+
+       case 24:
+         GFXLib_PlotDataToSprite_FlipVertical_24_Copy(source_linebytes,
+                                                      dest_linebytes,
+                                                      block->size.x,
+                                                      block->size.y,
+                                                      (unsigned char **)&imagedata,
+                                                      source_start,
+                                                      (unsigned char **)&(block->spritearea),
+                                                      dest_start);
+         break;
+
+       case 32:
+         GFXLib_PlotDataToSprite_FlipVertical_32_Copy(source_linebytes,
+                                                      dest_linebytes,
+                                                      block->size.x,
+                                                      block->size.y,
+                                                      (unsigned char **)&imagedata,
+                                                      source_start,
+                                                      (unsigned char **)&(block->spritearea),
+                                                      dest_start);
+         break;
+
+       default:
+         unimpl("SpriteLib_SetImageData(bpp=%i)\n", block->bpp);
+         break;
+
+     }
+
+  }
+  else{
+
+     switch(block->bpp)
+     {
+       case 1: /* 1 bpp image is copied as a whole number of bytes */
+       case 8:
+         GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                          dest_linebytes,
+                                          plot_bytes,
+                                          block->size.y,
+                                          (unsigned char **)&imagedata,
+                                          source_start,
+                                          (unsigned char **)&(block->spritearea),
+                                          dest_start);
+         break;
+
+       case 15:
+         GFXLib_PlotDataToSprite_15_Copy(source_linebytes,
+                                         dest_linebytes,
+                                         block->size.x,
+                                         block->size.y,
+                                         (unsigned char **)&imagedata,
+                                         source_start,
+                                         (unsigned char **)&(block->spritearea),
+                                         dest_start);
+         break;
+
+       case 16:
+         GFXLib_PlotDataToSprite_16_Copy(source_linebytes,
+                                         dest_linebytes,
+                                         block->size.x,
+                                         block->size.y,
+                                         (unsigned char **)&imagedata,
+                                         source_start,
+                                         (unsigned char **)&(block->spritearea),
+                                         dest_start);
+         break;
+
+       case 24:
+         GFXLib_PlotDataToSprite_24_Copy(source_linebytes,
+                                         dest_linebytes,
+                                         block->size.x,
+                                         block->size.y,
+                                         (unsigned char **)&imagedata,
+                                         source_start,
+                                         (unsigned char **)&(block->spritearea),
+                                         dest_start);
+         break;
+
+       case 32:
+         GFXLib_PlotDataToSprite_32_Copy(source_linebytes,
+                                         dest_linebytes,
+                                         block->size.x,
+                                         block->size.y,
+                                         (unsigned char **)&imagedata,
+                                         source_start,
+                                         (unsigned char **)&(block->spritearea),
+                                         dest_start);
+         break;
+
+       default:
+         unimpl("SpriteLib_SetImageData(bpp=%i)\n", block->bpp);
+         break;
+
+     }
+
+  }
+//while((end = Time_Monotonic()) == 0);
+//if(end - start > 0)
+//   fprintf(stderr, "data %i\n", end - start);
+
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_SetImageDataTrans(spritelib_block *block,
+                                        int imagedatabpp, unsigned char *imagedata,
+                                        palette_entry *imagedatapalette,
+                                        BOOL flip_vertical)
+{
+ /*
+  * Fill sprite with image data of variable bpp (which may not equal the target bpp)
+  */
+  int pixel_size = SpriteLib_RawDataPixelSize(imagedatabpp);
+  int source_linebytes = ((imagedatabpp == 1) ? ((block->size.x + 7) / 8) :
+                                                (block->size.x * pixel_size));
+  int dest_linebytes = block->linebytes;
+  int source_start = 0;
+  int dest_start = block->image;
+//unsigned int start, end;
+//while((start = Time_Monotonic()) == 0);
+
+  if(flip_vertical){
+
+     switch(block->bpp)
+     {
+       case 24: case 32:
+         GFXLib_PlotDataToSpriteTrans_FlipVertical_24_Copy(source_linebytes,
+                                                           dest_linebytes,
+                                                           block->size.x,
+                                                           block->size.y,
+                                                           (unsigned char **)&imagedata,
+                                                           source_start,
+                                                           imagedatabpp,
+                                                           imagedatapalette,
+                                                          (unsigned char **)&(block->spritearea),
+                                                           dest_start);
+         break;
+
+       default:
+         unimpl("SpriteLib_SetImageDataTrans(bpp=%i)\n", block->bpp);
+         break;
+
+     }
+
+  }
+  else{
+
+     switch(block->bpp)
+     {
+       case 24: case 32:
+         GFXLib_PlotDataToSpriteTrans_24_Copy(source_linebytes,
+                                              dest_linebytes,
+                                              block->size.x,
+                                              block->size.y,
+                                              (unsigned char **)&imagedata,
+                                              source_start,
+                                              imagedatabpp,
+                                              imagedatapalette,
+                                              (unsigned char **)&(block->spritearea),
+                                              dest_start);
+         break;
+
+       default:
+         unimpl("SpriteLib_SetImageDataTrans(bpp=%i)\n", block->bpp);
+         break;
+
+     }
+
+  }
+//while((end = Time_Monotonic()) == 0);
+//if(end - start > 0)
+//   fprintf(stderr, "data %i\n", end - start);
+
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_SetMaskData(spritelib_block *block, unsigned char *maskdata,
+                                  BOOL flip_vertical)
+{
+  int source_linebytes;
+  int dest_linebytes;
+  int source_start;
+  int dest_start;
+  int plot_bytes;
+ /*
+  * Fill sprite with mask data
+  */
+  if(!block->has_mask)
+     return;
+
+  source_linebytes = ((block->size.x + 7) / 8);
+  dest_linebytes = block->masklinebytes;
+  source_start = 0;
+  dest_start = block->mask;
+  plot_bytes = source_linebytes;
+
+  if(flip_vertical){
+
+     switch(block->bpp)
+     {
+       case 24: case 32: /* 24bit image has 1 bpp mask */
+         GFXLib_PlotSpriteToSprite_FlipVertical_8_Copy(source_linebytes,
+                                                       dest_linebytes,
+                                                       plot_bytes,
+                                                       block->size.y,
+                                                       (unsigned char **)&maskdata,
+                                                       source_start,
+                                                       (unsigned char **)&(block->spritearea),
+                                                       dest_start);
+         break;
+
+       default:
+         unimpl("SpriteLib_SetMaskData(bpp=%i)\n", block->bpp);
+         break;
+
+     }
+
+  }
+  else{
+
+     switch(block->bpp)
+     {
+       case 24: case 32: /* 24bit image has 1 bpp mask */
+         GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                          dest_linebytes,
+                                          plot_bytes,
+                                          block->size.y,
+                                          (unsigned char **)&maskdata,
+                                          source_start,
+                                          (unsigned char **)&(block->spritearea),
+                                          dest_start);
+         break;
+
+       default:
+         unimpl("SpriteLib_SetMaskData(bpp=%i)\n", block->bpp);
+         break;
+
+     }
+
+  }
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotSpriteToSprite(int gfx_op,
+                                         spritelib_block *dest_sprite,
+                                         int dest_x, int dest_y,
+                                         BOOL dest_is_screen,
+                                         spritelib_block *source_sprite,
+                                         int source_x, int source_y,
+                                         int source_width, int source_height)
+{
+  int pixel_size;
+  int source_linebytes;
+  int dest_linebytes;
+  int source_start;
+  int dest_start;
+  int plot_bytes;
+ /*
+  * Plot area of source_sprite from source_x, source_y to source_width, source_height
+  * into dest_sprite at coordinate dest_x, dest_y (top left)
+  */
+  if(!clip_source_dest(dest_sprite,
+                       &dest_x, &dest_y, &source_width, &source_height,
+                       &source_x, &source_y))
+     return;
+
+  pixel_size = SpriteLib_PixelSize(source_sprite);
+  source_linebytes = source_sprite->linebytes;
+  dest_linebytes = dest_sprite->linebytes;
+  source_start = source_sprite->image + (source_x * pixel_size) + (source_y * source_linebytes);
+  dest_start = dest_sprite->image + (dest_x * pixel_size) + (dest_y * dest_linebytes);
+  plot_bytes = source_width * pixel_size;
+//unsigned int start, end;
+//while((start = Time_Monotonic()) == 0);
+
+  switch(dest_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXandInverted:
+          GFXLib_PlotSpriteToSprite_8_AndInverted(source_linebytes,
+                                                  dest_linebytes,
+                                                  plot_bytes,
+                                                  source_height,
+                                                  (unsigned char **)&(source_sprite->spritearea),
+                                                  source_start,
+                                                  (unsigned char **)&(dest_sprite->spritearea),
+                                                  dest_start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotSpriteToSprite_8_Xor(source_linebytes,
+                                          dest_linebytes,
+                                          plot_bytes,
+                                          source_height,
+                                          (unsigned char **)&(source_sprite->spritearea),
+                                          source_start,
+                                          (unsigned char **)&(dest_sprite->spritearea),
+                                          dest_start);
+          break;
+
+        case SpriteLib_GXnand:
+          GFXLib_PlotSpriteToSprite_8_Nand(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        case SpriteLib_GXand:
+          GFXLib_PlotSpriteToSprite_8_And(source_linebytes,
+                                          dest_linebytes,
+                                          plot_bytes,
+                                          source_height,
+                                          (unsigned char **)&(source_sprite->spritearea),
+                                          source_start,
+                                          (unsigned char **)&(dest_sprite->spritearea),
+                                          dest_start);
+          break;
+
+        case SpriteLib_GXequiv:
+          GFXLib_PlotSpriteToSprite_8_Equiv(source_linebytes,
+                                            dest_linebytes,
+                                            plot_bytes,
+                                            source_height,
+                                            (unsigned char **)&(source_sprite->spritearea),
+                                            source_start,
+                                            (unsigned char **)&(dest_sprite->spritearea),
+                                            dest_start);
+          break;
+          
+        case SpriteLib_GXorInverted:
+          GFXLib_PlotSpriteToSprite_8_OrInverted(source_linebytes,
+                                                 dest_linebytes,
+                                                 plot_bytes,
+                                                 source_height,
+                                                 (unsigned char **)&(source_sprite->spritearea),
+                                                 source_start,
+                                                 (unsigned char **)&(dest_sprite->spritearea),
+                                                 dest_start);
+          break;
+
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        case SpriteLib_GXor:
+          GFXLib_PlotSpriteToSprite_8_Or(source_linebytes,
+                                         dest_linebytes,
+                                         plot_bytes,
+                                         source_height,
+                                         (unsigned char **)&(source_sprite->spritearea),
+                                         source_start,
+                                         (unsigned char **)&(dest_sprite->spritearea),
+                                         dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXandInverted:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_AndInverted(source_linebytes,
+                                                       dest_linebytes,
+                                                       source_width,
+                                                       source_height,
+                                                   (unsigned char**)&(source_sprite->spritearea),
+                                                       source_start,
+                                                   (unsigned char **)&(dest_sprite->spritearea),
+                                                       dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_15_AndInverted(source_linebytes,
+                                                      dest_linebytes,
+                                                      source_width,
+                                                      source_height,
+                                                   (unsigned char**)&(source_sprite->spritearea),
+                                                      source_start,
+                                                   (unsigned char **)&(dest_sprite->spritearea),
+                                                      dest_start);
+          break;
+
+        case SpriteLib_GXxor:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_Xor(source_linebytes,
+                                               dest_linebytes,
+                                               source_width,
+                                               source_height,
+                                               (unsigned char **)&(source_sprite->spritearea),
+                                               source_start,
+                                               (unsigned char **)&(dest_sprite->spritearea),
+                                               dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_15_Xor(source_linebytes,
+                                              dest_linebytes,
+                                              source_width,
+                                              source_height,
+                                              (unsigned char **)&(source_sprite->spritearea),
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          break;
+
+        case SpriteLib_GXnand:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_Nand(source_linebytes,
+                                                dest_linebytes,
+                                                source_width,
+                                                source_height,
+                                                (unsigned char **)&(source_sprite->spritearea),
+                                                source_start,
+                                                (unsigned char **)&(dest_sprite->spritearea),
+                                                dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_15_Nand(source_linebytes,
+                                               dest_linebytes,
+                                               source_width,
+                                               source_height,
+                                               (unsigned char **)&(source_sprite->spritearea),
+                                               source_start,
+                                               (unsigned char **)&(dest_sprite->spritearea),
+                                               dest_start);
+          break;
+
+        case SpriteLib_GXand:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_And(source_linebytes,
+                                               dest_linebytes,
+                                               source_width,
+                                               source_height,
+                                               (unsigned char **)&(source_sprite->spritearea),
+                                               source_start,
+                                               (unsigned char **)&(dest_sprite->spritearea),
+                                               dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_15_And(source_linebytes,
+                                              dest_linebytes,
+                                              source_width,
+                                              source_height,
+                                              (unsigned char **)&(source_sprite->spritearea),
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          break;
+
+        case SpriteLib_GXequiv:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_Equiv(source_linebytes,
+                                                 dest_linebytes,
+                                                 source_width,
+                                                 source_height,
+                                                 (unsigned char **)&(source_sprite->spritearea),
+                                                 source_start,
+                                                 (unsigned char **)&(dest_sprite->spritearea),
+                                                 dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_15_Equiv(source_linebytes,
+                                                dest_linebytes,
+                                                source_width,
+                                                source_height,
+                                                (unsigned char **)&(source_sprite->spritearea),
+                                                source_start,
+                                                (unsigned char **)&(dest_sprite->spritearea),
+                                                dest_start);
+          break;
+
+        case SpriteLib_GXorInverted:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_OrInverted(source_linebytes,
+                                                      dest_linebytes,
+                                                      source_width,
+                                                      source_height,
+                                                  (unsigned char **)&(source_sprite->spritearea),
+                                                      source_start,
+                                                    (unsigned char **)&(dest_sprite->spritearea),
+                                                      dest_start);        
+          else
+             GFXLib_PlotSpriteToSprite_15_OrInverted(source_linebytes,
+                                                     dest_linebytes,
+                                                     source_width,
+                                                     source_height,
+                                                  (unsigned char **)&(source_sprite->spritearea),
+                                                     source_start,
+                                                    (unsigned char **)&(dest_sprite->spritearea),
+                                                     dest_start);
+          break;
+
+        case SpriteLib_GXcopy:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_Copy(source_linebytes,
+                                                dest_linebytes,
+                                                source_width,
+                                                source_height,
+                                                (unsigned char **)&(source_sprite->spritearea),
+                                                source_start,
+                                                (unsigned char **)&(dest_sprite->spritearea),
+                                                dest_start);
+          else                                    
+             GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                              dest_linebytes,
+                                              plot_bytes,
+                                              source_height,
+                                              (unsigned char **)&(source_sprite->spritearea),
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          break;
+
+        case SpriteLib_GXor:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotSpriteToSprite_15S_Or(source_linebytes,
+                                              dest_linebytes,
+                                              source_width,
+                                              source_height,
+                                              (unsigned char **)&(source_sprite->spritearea),
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_15_Or(source_linebytes,
+                                             dest_linebytes,
+                                             source_width,
+                                             source_height,
+                                             (unsigned char **)&(source_sprite->spritearea),
+                                             source_start,
+                                             (unsigned char **)&(dest_sprite->spritearea),
+                                             dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXandInverted:
+          GFXLib_PlotSpriteToSprite_24_AndInverted(source_linebytes,
+                                                   dest_linebytes,
+                                                   source_width,
+                                                   source_height,
+                                                   (unsigned char**)&(source_sprite->spritearea),
+                                                   source_start,
+                                                   (unsigned char **)&(dest_sprite->spritearea),
+                                                   dest_start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotSpriteToSprite_24_Xor(source_linebytes,
+                                           dest_linebytes,
+                                           source_width,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        case SpriteLib_GXnand:
+          GFXLib_PlotSpriteToSprite_24_Nand(source_linebytes,
+                                            dest_linebytes,
+                                            source_width,
+                                            source_height,
+                                            (unsigned char **)&(source_sprite->spritearea),
+                                            source_start,
+                                            (unsigned char **)&(dest_sprite->spritearea),
+                                            dest_start);
+          break;
+
+        case SpriteLib_GXand:
+          GFXLib_PlotSpriteToSprite_24_And(source_linebytes,
+                                           dest_linebytes,
+                                           source_width,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        case SpriteLib_GXequiv:
+          GFXLib_PlotSpriteToSprite_24_Equiv(source_linebytes,
+                                             dest_linebytes,
+                                             source_width,
+                                             source_height,
+                                             (unsigned char **)&(source_sprite->spritearea),
+                                             source_start,
+                                             (unsigned char **)&(dest_sprite->spritearea),
+                                             dest_start);
+          break;
+
+        case SpriteLib_GXorInverted:
+          GFXLib_PlotSpriteToSprite_24_OrInverted(source_linebytes,
+                                                  dest_linebytes,
+                                                  source_width,
+                                                  source_height,
+                                                  (unsigned char **)&(source_sprite->spritearea),
+                                                  source_start,
+                                                  (unsigned char **)&(dest_sprite->spritearea),
+                                                  dest_start);
+          break;
+
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        case SpriteLib_GXor:
+          GFXLib_PlotSpriteToSprite_24_Or(source_linebytes,
+                                          dest_linebytes,
+                                          source_width,
+                                          source_height,
+                                          (unsigned char **)&(source_sprite->spritearea),
+                                          source_start,
+                                          (unsigned char **)&(dest_sprite->spritearea),
+                                          dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotSpriteToSprite(bpp=%i)\n", dest_sprite->bpp);
+      break;
+  }
+//while((end = Time_Monotonic()) == 0);
+//if(end - start > 0)
+//   fprintf(stderr, "plot %i\n", end - start);
+
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotDataToSprite(int gfx_op,
+                                       spritelib_block *dest_sprite,
+                                       int dest_x, int dest_y,
+                                       BOOL dest_is_screen,
+                                       unsigned char *source_data,
+                                       int source_x, int source_y,
+                                       int source_width, int source_height,
+                                       int source_image_width, int source_image_height)
+{
+  int source_pixel_size;
+  int dest_pixel_size;
+  int source_linebytes;
+  int dest_linebytes;
+  int source_start;
+  int dest_start;
+  int plot_bytes;
+ /*
+  * Plot area of source_data from source_x, source_y to source_width, source_height
+  * into dest_sprite at coordinate dest_x, dest_y (top left)
+  */
+  if(!clip_source_dest(dest_sprite,
+                       &dest_x, &dest_y, &source_width, &source_height,
+                       &source_x, &source_y))
+     return;
+
+  source_pixel_size = SpriteLib_DataPixelSize(dest_sprite);
+  dest_pixel_size = SpriteLib_PixelSize(dest_sprite);
+  source_linebytes = source_image_width * source_pixel_size;
+  dest_linebytes = dest_sprite->linebytes;
+  source_start = (source_x * source_pixel_size) + (source_y * source_linebytes);
+  dest_start = dest_sprite->image + (dest_x * dest_pixel_size) + (dest_y * dest_linebytes);
+  plot_bytes = source_width * source_pixel_size;
+
+  switch(dest_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&source_data,
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotDataToSprite_15S_Copy(source_linebytes,
+                                              dest_linebytes,
+                                              source_width,
+                                              source_height,
+                                              (unsigned char **)&source_data,
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          else
+             GFXLib_PlotDataToSprite_15_Copy(source_linebytes,
+                                             dest_linebytes,
+                                             source_width,
+                                             source_height,
+                                             (unsigned char **)&source_data,
+                                             source_start,
+                                             (unsigned char **)&(dest_sprite->spritearea),
+                                             dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 16:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotDataToSprite_16S_Copy(source_linebytes,
+                                              dest_linebytes,
+                                              source_width,
+                                              source_height,
+                                              (unsigned char **)&source_data,
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          else
+             GFXLib_PlotDataToSprite_16_Copy(source_linebytes,
+                                             dest_linebytes,
+                                             source_width,
+                                             source_height,
+                                             (unsigned char **)&source_data,
+                                             source_start,
+                                             (unsigned char **)&(dest_sprite->spritearea),
+                                             dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotDataToSprite_24_Copy(source_linebytes,
+                                          dest_linebytes,
+                                          source_width,
+                                          source_height,
+                                          (unsigned char **)&source_data,
+                                          source_start,
+                                          (unsigned char **)&(dest_sprite->spritearea),
+                                          dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 32:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotDataToSprite_32_Copy(source_linebytes,
+                                          dest_linebytes,
+                                          source_width,
+                                          source_height,
+                                          (unsigned char **)&source_data,
+                                          source_start,
+                                          (unsigned char **)&(dest_sprite->spritearea),
+                                          dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotDataToSprite(bpp=%i)\n", dest_sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotSpriteToData(int gfx_op,
+                                       unsigned char *dest_data,
+                                       int dest_x, int dest_y,
+                                       int dest_image_width, int dest_image_height,
+                                       spritelib_block *source_sprite,
+                                       int source_x, int source_y,
+                                       int source_width, int source_height)
+{
+ /*
+  * Plot area of source_sprite from source_x, source_y to source_width, source_height
+  * into dest_data at coordinate dest_x, dest_y (top left)
+  */
+  int source_pixel_size = SpriteLib_PixelSize(source_sprite);
+  int dest_pixel_size = SpriteLib_DataPixelSize(source_sprite);
+  int source_linebytes = source_sprite->linebytes;
+  int dest_linebytes = dest_image_width * dest_pixel_size;
+  int source_start = source_sprite->image + (source_x * source_pixel_size) +
+                     (source_y * source_linebytes);
+  int dest_start = (dest_x * dest_pixel_size) + (dest_y * dest_linebytes);
+  int plot_bytes = source_width * source_pixel_size;
+
+  switch(source_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)&dest_data,
+                                           dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_SpriteToData(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotSpriteToData(bpp=%i)\n", source_sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotFlexDataToSprite(int gfx_op,
+                                           spritelib_block *dest_sprite,
+                                           int dest_x, int dest_y,
+                                           BOOL dest_is_screen,
+                                           unsigned char **source_data,
+                                           int source_data_offset,
+                                           int source_x, int source_y,
+                                           int source_width, int source_height,
+                                           int source_image_width, int source_image_height)
+{
+  int source_pixel_size;
+  int dest_pixel_size;
+  int source_linebytes;
+  int dest_linebytes;
+  int source_start;
+  int dest_start;
+  int plot_bytes;
+ /*
+  * Plot area of source_data from source_x, source_y to source_width, source_height
+  * into dest_sprite at coordinate dest_x, dest_y (top left)
+  */
+  if(!clip_source_dest(dest_sprite,
+                       &dest_x, &dest_y, &source_width, &source_height,
+                       &source_x, &source_y))
+     return;
+
+  source_pixel_size = SpriteLib_PixelSize(dest_sprite);
+  dest_pixel_size = SpriteLib_PixelSize(dest_sprite);
+  source_linebytes = source_image_width * source_pixel_size;
+  dest_linebytes = dest_sprite->linebytes;
+  source_start = (source_x * source_pixel_size) + (source_y * source_linebytes) + source_data_offset;
+  dest_start = dest_sprite->image + (dest_x * dest_pixel_size) + (dest_y * dest_linebytes);
+  plot_bytes = source_width * source_pixel_size;
+
+  switch(dest_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)source_data,
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotFlexDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          if(iyonix_15bpp_colour_swap && dest_is_screen)
+             GFXLib_PlotDataToSprite_15_Copy(source_linebytes,
+                                             dest_linebytes,
+                                             source_width,
+                                             source_height,
+                                             (unsigned char **)source_data,
+                                             source_start,
+                                             (unsigned char **)&(dest_sprite->spritearea),
+                                             dest_start);
+          else
+             GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                              dest_linebytes,
+                                              plot_bytes,
+                                              source_height,
+                                              (unsigned char **)source_data,
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotFlexDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)source_data,
+                                           source_start,
+                                           (unsigned char **)&(dest_sprite->spritearea),
+                                           dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotFlexDataToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotFlexDataToSprite(bpp=%i)\n",dest_sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotSpriteToFlexData(int gfx_op,
+                                           unsigned char **dest_data,
+                                           int dest_data_offset,
+                                           int dest_x, int dest_y,
+                                           int dest_image_width, int dest_image_height,
+                                           spritelib_block *source_sprite,
+                                           int source_x, int source_y,
+                                           int source_width, int source_height,
+                                           BOOL source_is_screen)
+{
+ /*
+  * Plot area of source_sprite from source_x, source_y to source_width, source_height
+  * into dest_data at coordinate dest_x, dest_y (top left)
+  */
+  int source_pixel_size = SpriteLib_PixelSize(source_sprite);
+  int dest_pixel_size = SpriteLib_PixelSize(source_sprite);
+  int source_linebytes = source_sprite->linebytes;
+  int dest_linebytes = dest_image_width * dest_pixel_size;
+  int source_start = source_sprite->image + (source_x * source_pixel_size) +
+                     (source_y * source_linebytes);
+  int dest_start = (dest_x * dest_pixel_size) + (dest_y * dest_linebytes) + dest_data_offset;
+  int plot_bytes = source_width * source_pixel_size;
+
+/*
+fprintf(stderr, "SpriteLib_PlotSpriteToFlexData(gfx_op=%i, dest_data=%i, dest_data_offset=%i, dest_x=%i, dest_y=%i, dest_image_width=%i, dest_image_height=%i,\n  source_sprite=%i, source_x=%i, source_y=%i, source_width=%i, source_height=%i, source_is_screen=%s)\n", gfx_op, dest_data, dest_data_offset, dest_x, dest_y, dest_image_width, dest_image_height, source_sprite, source_x, source_y, source_width, source_height, (source_is_screen ? "TRUE" : "FALSE"));
+
+fprintf(stderr, "source_pixel_size=%i, dest_pixel_size=%i, source_linebytes=%i, dest_linebytes=%i, source_start=%i, dest_start=%i, plot_bytes=%i\n", source_pixel_size, dest_pixel_size, source_linebytes, dest_linebytes, source_start, dest_start, plot_bytes);  
+
+dest_ptr = (*dest_data);
+dest_ptr += dest_start;
+
+channel = File_Open("RAM:$.8", file_WRITE);
+File_WriteBytes(channel, dest_ptr, dest_linebytes * source_height);
+File_Close(channel);
+*/
+
+  switch(source_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)dest_data,
+                                           dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteToFlexData(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          if(iyonix_15bpp_colour_swap && source_is_screen)
+             GFXLib_PlotDataToSprite_15_Copy(source_linebytes,
+                                             dest_linebytes,
+                                             source_width,
+                                             source_height,
+                                             (unsigned char **)&(source_sprite->spritearea),
+                                             source_start,
+                                             (unsigned char **)dest_data,
+                                             dest_start);
+
+          else
+             GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                              dest_linebytes,
+                                              plot_bytes,
+                                              source_height,
+                                              (unsigned char **)&(source_sprite->spritearea),
+                                              source_start,
+                                              (unsigned char **)dest_data,
+                                              dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteToFlexData(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_PlotSpriteToSprite_8_Copy(source_linebytes,
+                                           dest_linebytes,
+                                           plot_bytes,
+                                           source_height,
+                                           (unsigned char **)&(source_sprite->spritearea),
+                                           source_start,
+                                           (unsigned char **)dest_data,
+                                           dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteToFlexData(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotSpriteToFlexData(bpp=%i)\n", source_sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotSpriteBitMaskToSprite(int gfx_op,
+                                                spritelib_block *dest_sprite,
+                                                int dest_x, int dest_y,
+                                                BOOL dest_is_screen,
+                                                spritelib_block *source_sprite,
+                                                int source_x, int source_y,
+                                                int plot_origin_x, int plot_origin_y,
+                                                int plot_width, int plot_height,
+                                                int foreground_colour,
+                                                int background_colour, BOOL set_background)
+{
+  int pixel_size;
+  int source_initial_x;
+  int source_initial_y;
+  int dest_start;
+  int fgcolour_value;
+  int bgcolour_value;
+  int source_start;
+  unsigned int fgcolour_value32;
+  unsigned int bgcolour_value32;
+ /*
+  * Plot 1 bit per pixel source_sprite onto dest_sprite.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  * Where the source_sprite is 1, the dest_sprite is set to foreground_colour.
+  * If set_background is TRUE, where the source_sprite is 0, the dest_sprite is set
+  * to background_colour.
+  */
+//if(plot_width == 1){
+//fprintf(stderr, "SpriteLib_PlotSpriteBitMaskToSprite(gfx_op=%i, dest_sprite->size.x=%i, dest_sprite->size.y=%i, dest_x=%i, dest_y=%i, source_sprite->size.x=%i, source_sprite->size.y=%i, source_x=%i, source_y=%i, plot_origin_x=%i, plot_origin_y=%i, plot_width=%i, plot_height=%i, foreground_colour=%i, background_colour=%i, set_background=%i)\n", gfx_op, dest_sprite->size.x, dest_sprite->size.y, dest_x, dest_y, source_sprite->size.x, source_sprite->size.y, source_x, source_y, plot_origin_x, plot_origin_y, plot_width, plot_height, foreground_colour, background_colour, set_background);
+//}
+
+  if(!clip_source_dest(dest_sprite,
+                       &dest_x, &dest_y, &plot_width, &plot_height,
+                       &source_x, &source_y))
+     return;
+
+//if(plot_width == 1){
+//fprintf(stderr, "clip_source_dest(dest_x=%i, dest_y=%i, plot_width=%i, plot_height=%i, source_x=%i, source_y=%i)\n", dest_x, dest_y, plot_width, plot_height, source_x, source_y);
+//}
+  if(source_sprite->bpp != 1)
+     return;
+
+  pixel_size = SpriteLib_PixelSize(dest_sprite);
+  source_initial_x = source_x;
+  source_initial_y = source_y;
+  dest_start = dest_sprite->image + (dest_x * pixel_size) + (dest_y * dest_sprite->linebytes);
+
+  if(source_initial_x != 0){
+     set_tile_offset(&source_initial_x, source_sprite->size.x);
+//fprintf(stderr, "set_tile_offset(source_initial_x=%i (before), source_initial_x=%i (after))\n", source_x, source_initial_x);
+  }
+
+  if(source_initial_y != 0){
+     set_tile_offset(&source_initial_y, source_sprite->size.y);
+//fprintf(stderr, "set_tile_offset(source_initial_y=%i (before), source_initial_y=%i (after))\n", source_y, source_initial_y);
+  }
+  
+  switch(dest_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+
+        case SpriteLib_GXxor:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          (unsigned char)foreground_colour,
+                                                          (unsigned char)background_colour,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Xor(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       (unsigned char)foreground_colour,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        case SpriteLib_GXequiv:
+          fgcolour_value = ~foreground_colour;
+          bgcolour_value = ~background_colour;
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Xor(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          (unsigned char)fgcolour_value,
+                                                          (unsigned char)bgcolour_value,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Xor(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       (unsigned char)fgcolour_value,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        case SpriteLib_GXand:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_And(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          (unsigned char)foreground_colour,
+                                                          (unsigned char)background_colour,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_And(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       (unsigned char)foreground_colour,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        case SpriteLib_GXcopy:
+          if(source_initial_x == 0 && plot_width <= 8 &&
+             source_initial_y + plot_height <= source_sprite->size.y){
+
+             source_start = source_sprite->image + (source_initial_y * source_sprite->linebytes);
+             
+             if(set_background)
+                GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy_Byte(source_sprite->linebytes,
+                                                                dest_sprite->linebytes,
+                                                                plot_width,
+                                                                plot_height,
+                                                                (unsigned char)foreground_colour,
+                                                                (unsigned char)background_colour,
+                                                                (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                                source_start,
+                                                                (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                                dest_start);
+             else
+                GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Copy_Byte(source_sprite->linebytes,
+                                                                dest_sprite->linebytes,
+                                                                plot_width,
+                                                                plot_height,
+                                                                (unsigned char)foreground_colour,
+                                                                (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                                source_start,
+                                                                (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                                dest_start);
+          }
+          else{
+
+             if(set_background)
+                GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Copy(source_sprite->linebytes,
+                                                              source_initial_x,
+                                                              source_initial_y,
+                                                              dest_sprite->linebytes,
+                                                              plot_width,
+                                                              plot_height,
+                                                              (unsigned char)foreground_colour,
+                                                              (unsigned char)background_colour,
+                                                              source_sprite->size.x,
+                                                              source_sprite->size.y,
+                                                              (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                              source_sprite->image,
+                                                              (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                              dest_start);
+             else
+                GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Copy(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           (unsigned char)foreground_colour,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                           dest_start);
+          }
+          break;
+
+        case SpriteLib_GXorInverted:
+          fgcolour_value = ~foreground_colour;
+          bgcolour_value = ~background_colour;
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Or(source_sprite->linebytes,
+                                                         source_initial_x,
+                                                         source_initial_y,
+                                                         dest_sprite->linebytes,
+                                                         plot_width,
+                                                         plot_height,
+                                                         (unsigned char)fgcolour_value,
+                                                         (unsigned char)bgcolour_value,
+                                                         source_sprite->size.x,
+                                                         source_sprite->size.y,
+                                                         (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                         source_sprite->image,
+                                                         (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                         dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Or(source_sprite->linebytes,
+                                                      source_initial_x,
+                                                      source_initial_y,
+                                                      dest_sprite->linebytes,
+                                                      plot_width,
+                                                      plot_height,
+                                                      (unsigned char)fgcolour_value,
+                                                      source_sprite->size.x,
+                                                      source_sprite->size.y,
+                                                      (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                      source_sprite->image,
+                                                      (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                      dest_start);
+          break;
+
+        case SpriteLib_GXor:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Bg_Or(source_sprite->linebytes,
+                                                         source_initial_x,
+                                                         source_initial_y,
+                                                         dest_sprite->linebytes,
+                                                         plot_width,
+                                                         plot_height,
+                                                         (unsigned char)foreground_colour,
+                                                         (unsigned char)background_colour,
+                                                         source_sprite->size.x,
+                                                         source_sprite->size.y,
+                                                         (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                         source_sprite->image,
+                                                         (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                         dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_8_Fg_Or(source_sprite->linebytes,
+                                                      source_initial_x,
+                                                      source_initial_y,
+                                                      dest_sprite->linebytes,
+                                                      plot_width,
+                                                      plot_height,
+                                                      (unsigned char)foreground_colour,
+                                                      source_sprite->size.x,
+                                                      source_sprite->size.y,
+                                                      (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                      source_sprite->image,
+                                                      (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                      dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteBitMaskToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      if(dest_sprite->bpp == 15){
+         if(iyonix_15bpp_colour_swap && dest_is_screen){
+            fgcolour_value32 = GFXLib_TranslateColour_15S((unsigned int)foreground_colour);
+            bgcolour_value32 = GFXLib_TranslateColour_15S((unsigned int)background_colour);
+         }
+         else{
+            fgcolour_value32 = GFXLib_TranslateColour_15((unsigned int)foreground_colour);
+            bgcolour_value32 = GFXLib_TranslateColour_15((unsigned int)background_colour);
+         }
+      }
+      else{
+         if(iyonix_15bpp_colour_swap && dest_is_screen){
+            fgcolour_value32 = GFXLib_TranslateColour_16S((unsigned int)foreground_colour);
+            bgcolour_value32 = GFXLib_TranslateColour_16S((unsigned int)background_colour);
+         }
+         else{
+            fgcolour_value32 = GFXLib_TranslateColour_16((unsigned int)foreground_colour);
+            bgcolour_value32 = GFXLib_TranslateColour_16((unsigned int)background_colour);
+         }
+      }
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXxor:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Xor(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           fgcolour_value32,
+                                                           bgcolour_value32,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                           dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Xor(source_sprite->linebytes,
+                                                        source_initial_x,
+                                                        source_initial_y,
+                                                        dest_sprite->linebytes,
+                                                        plot_width,
+                                                        plot_height,
+                                                        fgcolour_value32,
+                                                        source_sprite->size.x,
+                                                        source_sprite->size.y,
+                                                        (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                        source_sprite->image,
+                                                        (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                        dest_start);
+           break;
+
+        case SpriteLib_GXequiv:
+          fgcolour_value32 = ~fgcolour_value32;
+          bgcolour_value32 = ~bgcolour_value32;
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Xor(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           fgcolour_value32,
+                                                           bgcolour_value32,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                           dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Xor(source_sprite->linebytes,
+                                                        source_initial_x,
+                                                        source_initial_y,
+                                                        dest_sprite->linebytes,
+                                                        plot_width,
+                                                        plot_height,
+                                                        fgcolour_value32,
+                                                        source_sprite->size.x,
+                                                        source_sprite->size.y,
+                                                        (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                        source_sprite->image,
+                                                        (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                        dest_start);
+          break;
+
+        case SpriteLib_GXand:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_And(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           fgcolour_value32,
+                                                           bgcolour_value32,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                           dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_And(source_sprite->linebytes,
+                                                        source_initial_x,
+                                                        source_initial_y,
+                                                        dest_sprite->linebytes,
+                                                        plot_width,
+                                                        plot_height,
+                                                        fgcolour_value32,
+                                                        source_sprite->size.x,
+                                                        source_sprite->size.y,
+                                                        (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                        source_sprite->image,
+                                                        (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                        dest_start);
+          break;
+
+        case SpriteLib_GXcopy:
+          if(source_initial_x == 0 && plot_width <= 8 &&
+             source_initial_y + plot_height <= source_sprite->size.y){
+
+             source_start = source_sprite->image + (source_initial_y * source_sprite->linebytes);
+
+             if(set_background)
+                GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Copy_Byte(source_sprite->linebytes,
+                                                                    dest_sprite->linebytes,
+                                                                    plot_width,
+                                                                    plot_height,
+                                                                    fgcolour_value32,
+                                                                    bgcolour_value32,
+                                                                    (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                                    source_start,
+                                                                    (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                                    dest_start);
+             else
+                GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Copy_Byte(source_sprite->linebytes,
+                                                                 dest_sprite->linebytes,
+                                                                 plot_width,
+                                                                 plot_height,
+                                                                 fgcolour_value32,
+                                                                 (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                                 source_start,
+                                                                 (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                                 dest_start);
+          }
+          else{
+             if(set_background)
+                GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Copy(source_sprite->linebytes,
+                                                               source_initial_x,
+                                                               source_initial_y,
+                                                               dest_sprite->linebytes,
+                                                               plot_width,
+                                                               plot_height,
+                                                               fgcolour_value32,
+                                                               bgcolour_value32,
+                                                               source_sprite->size.x,
+                                                               source_sprite->size.y,
+                                                               (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                               source_sprite->image,
+                                                               (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                               dest_start);
+             else             
+                GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Copy(source_sprite->linebytes,
+                                                            source_initial_x,
+                                                            source_initial_y,
+                                                            dest_sprite->linebytes,
+                                                            plot_width,
+                                                            plot_height,
+                                                            fgcolour_value32,
+                                                            source_sprite->size.x,
+                                                            source_sprite->size.y,
+                                                            (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                            source_sprite->image,
+                                                            (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                            dest_start);
+          }
+          break;
+
+        case SpriteLib_GXorInverted:
+          fgcolour_value32 = ~fgcolour_value32;
+          bgcolour_value32 = ~bgcolour_value32;
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Or(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          fgcolour_value32,
+                                                          bgcolour_value32,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Or(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       fgcolour_value32,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        case SpriteLib_GXor:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Bg_Or(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          fgcolour_value32,
+                                                          bgcolour_value32,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_15_Fg_Or(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       fgcolour_value32,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteBitMaskToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      fgcolour_value32 = (unsigned int)foreground_colour;
+      bgcolour_value32 = (unsigned int)background_colour;
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXxor:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_Xor(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           fgcolour_value32,
+                                                           bgcolour_value32,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                           dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Xor(source_sprite->linebytes,
+                                                        source_initial_x,
+                                                        source_initial_y,
+                                                        dest_sprite->linebytes,
+                                                        plot_width,
+                                                        plot_height,
+                                                        fgcolour_value32,
+                                                        source_sprite->size.x,
+                                                        source_sprite->size.y,
+                                                        (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                        source_sprite->image,
+                                                        (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                        dest_start);
+           break;
+
+        case SpriteLib_GXequiv:
+          fgcolour_value32 = (~fgcolour_value32) & 0x00FFFFFF;
+          bgcolour_value32 = (~bgcolour_value32) & 0x00FFFFFF;
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_Xor(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           fgcolour_value32,
+                                                           bgcolour_value32,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                           dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Xor(source_sprite->linebytes,
+                                                        source_initial_x,
+                                                        source_initial_y,
+                                                        dest_sprite->linebytes,
+                                                        plot_width,
+                                                        plot_height,
+                                                        fgcolour_value32,
+                                                        source_sprite->size.x,
+                                                        source_sprite->size.y,
+                                                        (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                        source_sprite->image,
+                                                        (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                        dest_start);
+          break;
+
+        case SpriteLib_GXand:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_And(source_sprite->linebytes,
+                                                           source_initial_x,
+                                                           source_initial_y,
+                                                           dest_sprite->linebytes,
+                                                           plot_width,
+                                                           plot_height,
+                                                           fgcolour_value32,
+                                                           bgcolour_value32,
+                                                           source_sprite->size.x,
+                                                           source_sprite->size.y,
+                                                           (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                           source_sprite->image,
+                                                           (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                           dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_And(source_sprite->linebytes,
+                                                        source_initial_x,
+                                                        source_initial_y,
+                                                        dest_sprite->linebytes,
+                                                        plot_width,
+                                                        plot_height,
+                                                        fgcolour_value32,
+                                                        source_sprite->size.x,
+                                                        source_sprite->size.y,
+                                                        (unsigned char **)
+                                                                  &(source_sprite->spritearea),
+                                                        source_sprite->image,
+                                                        (unsigned char **)
+                                                                  &(dest_sprite->spritearea),
+                                                        dest_start);
+          break;
+
+        case SpriteLib_GXcopy:
+          if(source_initial_x == 0 && plot_width <= 8 &&
+             source_initial_y + plot_height <= source_sprite->size.y){
+
+             source_start = source_sprite->image + (source_initial_y * source_sprite->linebytes);
+
+             if(set_background)
+                GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_Copy_Byte(source_sprite->linebytes,
+                                                                    dest_sprite->linebytes,
+                                                                    plot_width,
+                                                                    plot_height,
+                                                                    fgcolour_value32,
+                                                                    bgcolour_value32,
+                                                                    (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                                    source_start,
+                                                                    (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                                    dest_start);
+             else
+                GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Copy_Byte(source_sprite->linebytes,
+                                                                 dest_sprite->linebytes,
+                                                                 plot_width,
+                                                                 plot_height,
+                                                                 fgcolour_value32,
+                                                                 (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                                 source_start,
+                                                                 (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                                 dest_start);
+          }
+          else{
+             if(set_background)
+                GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_Copy(source_sprite->linebytes,
+                                                               source_initial_x,
+                                                               source_initial_y,
+                                                               dest_sprite->linebytes,
+                                                               plot_width,
+                                                               plot_height,
+                                                               fgcolour_value32,
+                                                               bgcolour_value32,
+                                                               source_sprite->size.x,
+                                                               source_sprite->size.y,
+                                                               (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                               source_sprite->image,
+                                                               (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                               dest_start);
+             else             
+                GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Copy(source_sprite->linebytes,
+                                                            source_initial_x,
+                                                            source_initial_y,
+                                                            dest_sprite->linebytes,
+                                                            plot_width,
+                                                            plot_height,
+                                                            fgcolour_value32,
+                                                            source_sprite->size.x,
+                                                            source_sprite->size.y,
+                                                            (unsigned char **)
+                                                                    &(source_sprite->spritearea),
+                                                            source_sprite->image,
+                                                            (unsigned char **)
+                                                                    &(dest_sprite->spritearea),
+                                                            dest_start);
+          }
+          break;
+
+        case SpriteLib_GXorInverted:
+          fgcolour_value32 = (~fgcolour_value32) & 0x00FFFFFF;
+          bgcolour_value32 = (~bgcolour_value32) & 0x00FFFFFF;
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_Or(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          fgcolour_value32,
+                                                          bgcolour_value32,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Or(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       fgcolour_value32,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        case SpriteLib_GXor:
+          if(set_background)
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Bg_Or(source_sprite->linebytes,
+                                                          source_initial_x,
+                                                          source_initial_y,
+                                                          dest_sprite->linebytes,
+                                                          plot_width,
+                                                          plot_height,
+                                                          fgcolour_value32,
+                                                          bgcolour_value32,
+                                                          source_sprite->size.x,
+                                                          source_sprite->size.y,
+                                                          (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                          source_sprite->image,
+                                                          (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                          dest_start);
+          else
+             GFXLib_PlotSpriteBitMaskToSprite_24_Fg_Or(source_sprite->linebytes,
+                                                       source_initial_x,
+                                                       source_initial_y,
+                                                       dest_sprite->linebytes,
+                                                       plot_width,
+                                                       plot_height,
+                                                       fgcolour_value32,
+                                                       source_sprite->size.x,
+                                                       source_sprite->size.y,
+                                                       (unsigned char **)
+                                                                 &(source_sprite->spritearea),
+                                                       source_sprite->image,
+                                                       (unsigned char **)
+                                                                 &(dest_sprite->spritearea),
+                                                       dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteBitMaskToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotSpriteBitMaskToSprite(bpp=%i)\n", dest_sprite->bpp);
+      break;
+  }
+
+}                                   
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotSpriteTiledToSprite(int gfx_op,
+                                              spritelib_block *dest_sprite,
+                                              int dest_x, int dest_y,
+                                              BOOL dest_is_screen,
+                                              spritelib_block *source_sprite,
+                                              int source_x, int source_y,
+                                              int plot_origin_x, int plot_origin_y,
+                                              int plot_width, int plot_height)
+{
+  int pixel_size;
+  int source_initial_x;
+  int source_initial_y;
+  int dest_start;
+  int source_start;
+ /*
+  * Plot source_sprite onto dest_sprite.
+  * source_sprite is tiled to fill the space dest_x, dest_y to plot_width, plot_height.
+  * The top left of source_sprite is lined up with plot_origin_x, plot_origin_y which
+  * may not be in the plot area.
+  */
+//if(plot_width == 1){
+//fprintf(stderr, "SpriteLib_PlotSpriteTiledToSprite(gfx_op=%X, dest_sprite->size.x=%i, dest_sprite->size.y=%i, dest_x=%i, dest_y=%i, source_sprite->size.x=%i, source_sprite->size.y=%i, source_x=%i, source_y=%i, plot_origin_x=%i, plot_origin_y=%i, plot_width=%i, plot_height=%i)\n", gfx_op, dest_sprite->size.x, dest_sprite->size.y, dest_x, dest_y, source_sprite->size.x, source_sprite->size.y, source_x, source_y, plot_origin_x, plot_origin_y, plot_width, plot_height);
+//}
+
+  if(!clip_source_dest(dest_sprite,
+                       &dest_x, &dest_y, &plot_width, &plot_height,
+                       &source_x, &source_y))
+     return;
+
+//if(plot_width == 1){
+//fprintf(stderr, "clip_source_dest(dest_x=%i, dest_y=%i, plot_width=%i, plot_height=%i, source_x=%i, source_y=%i)\n", dest_x, dest_y, plot_width, plot_height, source_x, source_y);
+//}
+
+  pixel_size = SpriteLib_PixelSize(dest_sprite);
+  source_initial_x = source_x;
+  source_initial_y = source_y;
+  dest_start = dest_sprite->image + (dest_x * pixel_size) + (dest_y * dest_sprite->linebytes);
+
+  if(source_initial_x != 0){
+     set_tile_offset(&source_initial_x, source_sprite->size.x);
+//fprintf(stderr, "set_tile_offset(source_initial_x=%i (before), source_initial_x=%i (after))\n", source_x, source_initial_x);
+  }
+
+  if(source_initial_y != 0){
+     set_tile_offset(&source_initial_y, source_sprite->size.y);
+//fprintf(stderr, "set_tile_offset(source_initial_y=%i (before), source_initial_y=%i (after))\n", source_y, source_initial_y);
+  }
+  
+  switch(dest_sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          if(source_initial_x == 0 && plot_width <= 8 &&
+             source_initial_y + plot_height <= source_sprite->size.y){
+
+             source_start = source_sprite->image + (source_initial_y * source_sprite->linebytes);
+
+             GFXLib_PlotSpriteToSprite_8_Copy(source_sprite->linebytes,
+                                              dest_sprite->linebytes,
+                                              plot_width,
+                                              plot_height,
+                                              (unsigned char **)&(source_sprite->spritearea),
+                                              source_start,
+                                              (unsigned char **)&(dest_sprite->spritearea),
+                                              dest_start);
+          }
+          else{
+
+             GFXLib_PlotSpriteTiledToSprite_8_Copy(source_sprite->linebytes,
+                                                   source_initial_x,
+                                                   source_initial_y,
+                                                   dest_sprite->linebytes,
+                                                   plot_width,
+                                                   plot_height,
+                                                   source_sprite->size.x,
+                                                   source_sprite->size.y,
+                                                  (unsigned char **)&(source_sprite->spritearea),
+                                                   source_sprite->image,
+                                                   (unsigned char **)&(dest_sprite->spritearea),
+                                                   dest_start);
+          }
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotSpriteTiledToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotSpriteTiledToSprite(bpp=%i)\n", dest_sprite->bpp);
+      break;
+  }
+
+}                                   
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotRectangleToSprite(int gfx_op,
+                                            spritelib_block *sprite,
+                                            BOOL sprite_is_screen,
+                                            int x, int y,
+                                            int width, int height,
+                                            int colour)
+{
+  int pixel_size;
+  int linebytes;
+  int start;
+  int plot_length;
+  int colour_value;
+  unsigned int colour_value32;
+ /*
+  * Plot rectangle of colour 'colour'
+  */
+  if(!clip_dest(sprite, &x, &y, &width, &height))
+     return;
+
+  pixel_size = SpriteLib_PixelSize(sprite);
+  linebytes = sprite->linebytes;
+  start = sprite->image + (x * pixel_size) + (y * linebytes);
+  plot_length = width * pixel_size;
+
+  switch(sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXclear:
+          GFXLib_PlotRectangleToSprite_8_Clear(linebytes,
+                                               plot_length,
+                                               height,
+                                               (unsigned char **)&(sprite->spritearea),
+                                               start);
+          break;
+      
+        case SpriteLib_GXinvert:
+          GFXLib_PlotRectangleToSprite_8_Invert(linebytes,
+                                                plot_length,
+                                                height,
+                                                (unsigned char **)&(sprite->spritearea),
+                                                start);
+          break;
+        
+        case SpriteLib_GXxor:
+          GFXLib_PlotRectangleToSprite_8_Xor(linebytes,
+                                             plot_length,
+                                             height,
+                                             (unsigned char)colour,
+                                             (unsigned char **)&(sprite->spritearea),
+                                             start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value = ~colour;
+          GFXLib_PlotRectangleToSprite_8_Xor(linebytes,
+                                              plot_length,
+                                              height,
+                                              (unsigned char)colour_value,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        case SpriteLib_GXcopy:
+          GFXLib_PlotRectangleToSprite_8_Copy(linebytes,
+                                              plot_length,
+                                              height,
+                                              (unsigned char)colour,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        case SpriteLib_GXset:
+          GFXLib_PlotRectangleToSprite_8_Set(linebytes,
+                                             plot_length,
+                                             height,
+                                             (unsigned char **)&(sprite->spritearea),
+                                             start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotRectangleToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      if(sprite->bpp == 15){
+         if(iyonix_15bpp_colour_swap && sprite_is_screen)
+            colour_value32 = GFXLib_TranslateColour_15S((unsigned int)colour);
+         else
+            colour_value32 = GFXLib_TranslateColour_15((unsigned int)colour);
+      }
+      else{
+         if(iyonix_15bpp_colour_swap && sprite_is_screen)
+            colour_value32 = GFXLib_TranslateColour_16S((unsigned int)colour);
+         else
+            colour_value32 = GFXLib_TranslateColour_16((unsigned int)colour);
+      }
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXclear:
+          GFXLib_PlotRectangleToSprite_8_Clear(linebytes,
+                                               plot_length,
+                                               height,
+                                               (unsigned char **)&(sprite->spritearea),
+                                               start);
+          break;
+
+        case SpriteLib_GXinvert:
+          GFXLib_PlotRectangleToSprite_15_Invert(linebytes,
+                                                 width,
+                                                 height,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotRectangleToSprite_15_Xor(linebytes,
+                                              width,
+                                              height,
+                                              colour_value32,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value32 = ~colour_value32;
+          GFXLib_PlotRectangleToSprite_15_Xor(linebytes,
+                                              width,
+                                              height,
+                                              colour_value32,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        case SpriteLib_GXcopy:
+          GFXLib_PlotRectangleToSprite_15_Copy(linebytes,
+                                               width,
+                                               height,
+                                               colour_value32,
+                                               (unsigned char **)&(sprite->spritearea),
+                                               start);
+          break;
+
+        case SpriteLib_GXset:
+          GFXLib_PlotRectangleToSprite_15_Set(linebytes,
+                                              width,
+                                              height,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotRectangleToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      colour_value32 = (unsigned int)colour;
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXclear:
+          GFXLib_PlotRectangleToSprite_8_Clear(linebytes,
+                                               plot_length,
+                                               height,
+                                               (unsigned char **)&(sprite->spritearea),
+                                               start);
+          break;
+
+        case SpriteLib_GXinvert:
+          GFXLib_PlotRectangleToSprite_24_Invert(linebytes,
+                                                 width,
+                                                 height,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotRectangleToSprite_24_Xor(linebytes,
+                                              width,
+                                              height,
+                                              colour_value32,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value32 = (~colour_value32) & 0x00FFFFFF;
+          GFXLib_PlotRectangleToSprite_24_Xor(linebytes,
+                                              width,
+                                              height,
+                                              colour_value32,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        case SpriteLib_GXcopy:
+          GFXLib_PlotRectangleToSprite_24_Copy(linebytes,
+                                               width,
+                                               height,
+                                               colour_value32,
+                                               (unsigned char **)&(sprite->spritearea),
+                                               start);
+          break;
+
+        case SpriteLib_GXset:
+          GFXLib_PlotRectangleToSprite_24_Set(linebytes,
+                                              width,
+                                              height,
+                                              (unsigned char **)&(sprite->spritearea),
+                                              start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotRectangleToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotRectangleToSprite(bpp=%i)\n", sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotHorizontalLineToSprite(int gfx_op,
+                                                 spritelib_block *sprite,
+                                                 BOOL sprite_is_screen,
+                                                 int x, int y,
+                                                 int length,
+                                                 int colour)
+{
+  int pixel_size;
+  int linebytes;
+  int start;
+  int colour_value;
+  unsigned int colour_value32;
+ /*
+  * Plot single pixel horizontal line in positive x directory of colour 'colour'
+  */
+  int height = 1;
+  if(!clip_dest(sprite, &x, &y, &length, &height))
+     return;
+
+  pixel_size = SpriteLib_PixelSize(sprite);
+  linebytes = sprite->linebytes;
+  start = sprite->image + (x * pixel_size) + (y * linebytes);
+
+  switch(sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXinvert:
+          GFXLib_PlotHorizontalLineToSprite_8_Invert(length,
+                                                     (unsigned char **)&(sprite->spritearea),
+                                                     start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotHorizontalLineToSprite_8_Xor(length,
+                                                  (unsigned char)colour,
+                                                  (unsigned char **)&(sprite->spritearea),
+                                                  start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value = ~colour;
+          GFXLib_PlotHorizontalLineToSprite_8_Xor(length,
+                                                  (unsigned char)colour_value,
+                                                  (unsigned char **)&(sprite->spritearea),
+                                                  start);
+          break;
+        
+        case SpriteLib_GXcopy:
+          GFXLib_PlotHorizontalLineToSprite_8_Copy(length,
+                                                   (unsigned char)colour,
+                                                   (unsigned char **)&(sprite->spritearea),
+                                                   start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotHorizontalLineToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      if(sprite->bpp == 15){
+         if(iyonix_15bpp_colour_swap && sprite_is_screen)
+            colour_value32 = GFXLib_TranslateColour_15S((unsigned int)colour);
+         else
+            colour_value32 = GFXLib_TranslateColour_15((unsigned int)colour);
+      }
+      else{
+         if(iyonix_15bpp_colour_swap && sprite_is_screen)
+            colour_value32 = GFXLib_TranslateColour_16S((unsigned int)colour);
+         else
+            colour_value32 = GFXLib_TranslateColour_16((unsigned int)colour);
+      }
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXinvert:
+          GFXLib_PlotHorizontalLineToSprite_15_Invert(length,
+                                                      (unsigned char **)&(sprite->spritearea),
+                                                      start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotHorizontalLineToSprite_15_Xor(length,
+                                                   colour_value32,
+                                                   (unsigned char **)&(sprite->spritearea),
+                                                   start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value32 = ~colour_value32;
+          GFXLib_PlotHorizontalLineToSprite_15_Xor(length,
+                                                   colour_value32,
+                                                   (unsigned char **)&(sprite->spritearea),
+                                                   start);
+          break;
+        
+        case SpriteLib_GXcopy:
+          GFXLib_PlotHorizontalLineToSprite_15_Copy(length,
+                                                    colour_value32,
+                                                    (unsigned char **)&(sprite->spritearea),
+                                                    start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotHorizontalLineToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      colour_value32 = (unsigned int)colour;
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXinvert:
+          GFXLib_PlotHorizontalLineToSprite_24_Invert(length,
+                                                      (unsigned char **)&(sprite->spritearea),
+                                                      start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotHorizontalLineToSprite_24_Xor(length,
+                                                   colour_value32,
+                                                   (unsigned char **)&(sprite->spritearea),
+                                                   start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value32 = (~colour_value32) & 0x00FFFFFF;
+          GFXLib_PlotHorizontalLineToSprite_24_Xor(length,
+                                                   colour_value32,
+                                                   (unsigned char **)&(sprite->spritearea),
+                                                   start);
+          break;
+        
+        case SpriteLib_GXcopy:
+          GFXLib_PlotHorizontalLineToSprite_24_Copy(length,
+                                                    colour_value32,
+                                                    (unsigned char **)&(sprite->spritearea),
+                                                    start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotHorizontalLineToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotHorizontalLineToSprite(bpp=%i)\n", sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotVerticalLineToSprite(int gfx_op,
+                                               spritelib_block *sprite,
+                                               BOOL sprite_is_screen,
+                                               int x, int y,
+                                               int length,
+                                               int colour)
+{
+  int pixel_size;
+  int linebytes;
+  int start;
+  int colour_value;
+  unsigned int colour_value32;
+ /*
+  * Plot single pixel vertical line in positive y directory of colour 'colour'
+  */
+  int width = 1;
+  if(!clip_dest(sprite, &x, &y, &width, &length))
+     return;
+
+  pixel_size = SpriteLib_PixelSize(sprite);
+  linebytes = sprite->linebytes;
+  start = sprite->image + (x * pixel_size) + (y * linebytes);
+
+  switch(sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXinvert:
+          GFXLib_PlotVerticalLineToSprite_8_Invert(linebytes,
+                                                   length,
+                                                   (unsigned char **)&(sprite->spritearea),
+                                                   start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotVerticalLineToSprite_8_Xor(linebytes,
+                                                length,
+                                                (unsigned char)colour,
+                                                (unsigned char **)&(sprite->spritearea),
+                                                start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value = ~colour;
+          GFXLib_PlotVerticalLineToSprite_8_Xor(linebytes,
+                                                length,
+                                                (unsigned char)colour_value,
+                                                (unsigned char **)&(sprite->spritearea),
+                                                start);
+          break;
+        
+        case SpriteLib_GXcopy:
+          GFXLib_PlotVerticalLineToSprite_8_Copy(linebytes,
+                                                 length,
+                                                 (unsigned char)colour,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotVerticalLineToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      if(sprite->bpp == 15){
+         if(iyonix_15bpp_colour_swap && sprite_is_screen)
+            colour_value32 = GFXLib_TranslateColour_15S((unsigned int)colour);
+         else
+            colour_value32 = GFXLib_TranslateColour_15((unsigned int)colour);
+      }
+      else{
+         if(iyonix_15bpp_colour_swap && sprite_is_screen)
+            colour_value32 = GFXLib_TranslateColour_16S((unsigned int)colour);
+         else
+            colour_value32 = GFXLib_TranslateColour_16((unsigned int)colour);
+      }
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXinvert:
+          GFXLib_PlotVerticalLineToSprite_15_Invert(linebytes,
+                                                    length,
+                                                    (unsigned char **)&(sprite->spritearea),
+                                                    start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotVerticalLineToSprite_15_Xor(linebytes,
+                                                 length,
+                                                 colour_value32,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value32 = ~colour_value32;
+          GFXLib_PlotVerticalLineToSprite_15_Xor(linebytes,
+                                                 length,
+                                                 colour_value32,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+        
+        case SpriteLib_GXcopy:
+          GFXLib_PlotVerticalLineToSprite_15_Copy(linebytes,
+                                                  length,
+                                                  colour_value32,
+                                                  (unsigned char **)&(sprite->spritearea),
+                                                  start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotVerticalLineToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      colour_value32 = (unsigned int)colour;
+
+      switch(gfx_op)
+      {
+        case SpriteLib_GXinvert:
+          GFXLib_PlotVerticalLineToSprite_24_Invert(linebytes,
+                                                    length,
+                                                    (unsigned char **)&(sprite->spritearea),
+                                                    start);
+          break;
+
+        case SpriteLib_GXxor:
+          GFXLib_PlotVerticalLineToSprite_24_Xor(linebytes,
+                                                 length,
+                                                 colour_value32,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+
+        case SpriteLib_GXequiv:
+          colour_value32 = (~colour_value32) & 0x00FFFFFF;
+          GFXLib_PlotVerticalLineToSprite_24_Xor(linebytes,
+                                                 length,
+                                                 colour_value32,
+                                                 (unsigned char **)&(sprite->spritearea),
+                                                 start);
+          break;
+        
+        case SpriteLib_GXcopy:
+          GFXLib_PlotVerticalLineToSprite_24_Copy(linebytes,
+                                                  length,
+                                                  colour_value32,
+                                                  (unsigned char **)&(sprite->spritearea),
+                                                  start);
+          break;
+
+        default:
+          unimpl("SpriteLib_PlotVerticalLineToSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_PlotVerticalLineToSprite(bpp=%i)\n", sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_PlotLineToSprite(int gfx_op,
+                                       spritelib_block *sprite,
+                                       BOOL sprite_is_screen,
+                                       int start_x, int start_y,
+                                       int finish_x, int finish_y,
+                                       int colour)
+{
+  int plot_action;
+  int colour_value;
+  unsigned int colour_value32;
+  int origin_x;
+  int origin_y;
+  BOOL success;
+  int bound_min_x;
+  int bound_min_y;
+  int bound_max_x;
+  int bound_max_y;
+ /*
+  * Plot single pixel line of colour 'colour'
+  * If screen is TRUE then output is to the screen
+  */
+  _kernel_swi_regs saver;
+  _kernel_swi_regs r;
+
+ /*
+  * switch output to sprite
+  */
+  if(!sprite_is_screen){
+     saver.r[0] = 60 + 512; /* switch output to sprite */
+     saver.r[1] = (int)sprite->spritearea;
+     saver.r[2] = (int)((char *)sprite->spritearea + (sprite->spritearea)->firstoffset);
+     saver.r[3] = 0;
+     if(_kernel_swi(SWI_XOS_Bit | SWI_OS_SpriteOp , &saver, &saver) != NULL)
+        return;
+  }
+
+ /*
+  * set foreground graphics colour
+  */
+  success = TRUE;
+  switch(gfx_op)
+  {
+    case SpriteLib_GXandInverted:
+      plot_action = 6;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXinvert:
+      plot_action = 4;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXxor:
+      plot_action = 3;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXand:
+      plot_action = 2;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXequiv:
+      plot_action = 3;         /* src XOR dest */
+      colour_value = ~colour;  /* NOT src XOR desc */
+      break;
+
+    case SpriteLib_GXnoop:
+      plot_action = 5;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXorInverted:
+      plot_action = 7;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXcopy:
+      plot_action = 0;
+      colour_value = colour;
+      break;
+
+    case SpriteLib_GXor:
+      plot_action = 1;
+      colour_value = colour;
+      break;
+
+    default:
+      success = FALSE;
+      break;
+  }
+
+  switch(sprite->bpp)
+  {
+    case 8:
+      colour_value32 = colour_value & 0x000000FF;
+      break;
+
+    case 15:
+      if(iyonix_15bpp_colour_swap && sprite_is_screen)
+         colour_value32 = GFXLib_TranslateColour_15S((unsigned int)colour_value);
+      else
+         colour_value32 = GFXLib_TranslateColour_15((unsigned int)colour_value);
+      break;
+
+    case 16:
+      if(iyonix_15bpp_colour_swap && sprite_is_screen)
+         colour_value32 = GFXLib_TranslateColour_16S((unsigned int)colour_value);
+      else
+         colour_value32 = GFXLib_TranslateColour_16((unsigned int)colour_value);
+      break;
+
+    case 24:
+    case 32:
+      colour_value32 = (unsigned int)colour_value && 0x00FFFFFF;
+      break;
+  }
+
+  r.r[0] = plot_action;
+  r.r[1] = colour_value32;
+  _kernel_swi( SWI_XOS_Bit | SWI_OS_SetColour , &r, &r );
+
+
+  if(success){
+
+    /*
+     * set graphics origin to bottom left corner
+     */
+     origin_x = 0;
+     origin_y = 0;
+     GFX_VDU(29);
+     GFX_VDU((char) origin_x & 0xFF);
+     GFX_VDU((char) (origin_x >> 8) & 0xFF);
+     GFX_VDU((char) origin_y & 0xFF);
+     GFX_VDU((char) (origin_y >> 8) & 0xFF);
+
+    /*
+     * set graphics window to bounding box
+     */
+     bound_min_x = sprite->clip_origin.x;
+     bound_min_y = sprite->clip_origin.y + sprite->clip_size.y - 1; /* lower when reversed */
+     bound_max_x = sprite->clip_origin.x + sprite->clip_size.x - 1;
+     bound_max_y = sprite->clip_origin.y;
+
+     bound_min_x = bound_min_x << 1;
+     bound_max_x = bound_max_x << 1;
+     bound_min_y = sprite->size.y - bound_min_y - 1;
+     bound_min_y = bound_min_y << 1;
+     bound_max_y = sprite->size.y - bound_max_y - 1;
+     bound_max_y = bound_max_y << 1;
+
+     GFX_VDU(24); /* set graphics window */
+     GFX_VDU((char) bound_min_x & 0xff);
+     GFX_VDU((char) (bound_min_x >> 8) & 0xff);
+     GFX_VDU((char) bound_min_y & 0xff);
+     GFX_VDU((char) (bound_min_y >> 8) & 0xff);
+     GFX_VDU((char) bound_max_x & 0xff);
+     GFX_VDU((char) (bound_max_x >> 8) & 0xff);
+     GFX_VDU((char) bound_max_y & 0xff);
+     GFX_VDU((char) (bound_max_y >> 8) & 0xff);
+
+    /*
+     * modify coords from top left 0,0 to bottom left 0,0 and from
+     * pixels to OS units
+     */
+     start_x = start_x << 1;
+     finish_x = finish_x << 1;
+     start_y = sprite->size.y - start_y - 1;
+     start_y = start_y << 1;
+     finish_y = sprite->size.y - finish_y - 1;
+     finish_y = finish_y << 1;
+
+     GFX_Move(start_x, start_y);
+     GFX_Draw(finish_x, finish_y);
+     
+  }
+
+ /*
+  * restore output
+  */
+  if(!sprite_is_screen){
+     _kernel_swi(SWI_XOS_Bit | SWI_OS_SpriteOp, &saver, &saver);
+  }
+
+  if(!success)
+     unimpl("SpriteLib_PlotLineToSprite(gfx_op=%X)\n", gfx_op);
+
+}
+
+/******************************************************************************/
+
+extern void SpriteLib_CopyRectangleSprite(int gfx_op,
+                                         spritelib_block *sprite,
+                                         int dest_x, int dest_y,
+                                         int source_x, int source_y,
+                                         int source_width, int source_height)
+{
+  int pixel_size;
+  int linebytes;
+  int source_start;
+  int dest_start;
+  int plot_length;
+ /*
+  * Copy rectangle area of sprite source_x, source_y, source_width, source_height to
+  * coordinate dest_x, dest_y
+  */
+  if(!clip_source_dest(sprite,
+                       &dest_x, &dest_y, &source_width, &source_height,
+                       &source_x, &source_y))
+     return;
+
+  pixel_size = SpriteLib_PixelSize(sprite);
+  linebytes = sprite->linebytes;
+  source_start = sprite->image + (source_x * pixel_size) + (source_y * linebytes);
+  dest_start = sprite->image + (dest_x * pixel_size) + (dest_y * linebytes);
+  plot_length = source_width * pixel_size;
+
+  switch(sprite->bpp)
+  {
+    case 8:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_CopyRectangleSprite_8_Copy(linebytes,
+                                            source_width,
+                                            source_height,
+                                            (unsigned char **)&(sprite->spritearea),
+                                            source_start,
+                                            dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_CopyRectangleSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 15:
+    case 16:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_CopyRectangleSprite_8_Copy(linebytes,
+                                            plot_length,
+                                            source_height,
+                                            (unsigned char **)&(sprite->spritearea),
+                                            source_start,
+                                            dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_CopyRectangleSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    case 24:
+    case 32:
+      switch(gfx_op)
+      {
+        case SpriteLib_GXcopy:
+          GFXLib_CopyRectangleSprite_8_Copy(linebytes,
+                                            plot_length,
+                                            source_height,
+                                            (unsigned char **)&(sprite->spritearea),
+                                            source_start,
+                                            dest_start);
+          break;
+
+        default:
+          unimpl("SpriteLib_CopyRectangleSprite(gfx_op=%X)\n", gfx_op);
+          break;
+      }
+      break;
+
+    default:
+      unimpl("SpriteLib_CopyRectangleSprite(bpp=%i)\n", sprite->bpp);
+      break;
+  }
+  
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_PixelSize(spritelib_block *block)
+{
+ /*
+  * Returns pixel size in bytes for sprite
+  */
+  int pixelsize = 1;
+
+  switch(block->bpp)
+  {
+    case 1:
+      pixelsize = 0;
+      break;
+
+    case 8:
+      pixelsize = 1;
+      break;
+
+    case 15:
+    case 16:
+      pixelsize = 2;
+      break;
+
+    case 24:
+    case 32:
+      pixelsize = 4;
+      break;
+  }
+
+  return(pixelsize);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_DataPixelSize(spritelib_block *block)
+{
+ /*
+  * Returns pixel size in bytes for raw data with same bpp as sprite 
+  */
+  int pixelsize = 1;
+
+  pixelsize = SpriteLib_RawDataPixelSize(block->bpp);
+
+  return(pixelsize);
+}
+
+/******************************************************************************/
+
+extern int SpriteLib_RawDataPixelSize(int bpp)
+{
+ /*
+  * Returns pixel size in bytes for raw data
+  */
+  int pixelsize = 1;
+
+  switch(bpp)
+  {
+    case 1:
+      pixelsize = 0;
+      break;
+
+    case 8:
+      pixelsize = 1;
+      break;
+
+    case 15:
+    case 16:
+      pixelsize = 2;
+      break;
+
+    case 24:
+      pixelsize = 3;
+      break;
+
+    case 32:
+      pixelsize = 4;
+      break;
+  }
+
+  return(pixelsize);
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void set_palette(spritelib_block *block, BOOL initialise)
+{
+  palette_entry *source_palette;
+  palette_entry *image_palette;
+  int colour;
+
+  if(!block->has_palette)
+     return;
+
+  if(initialise || (custom_palette && custom_palette_version > block->custom_palette_version)){
+
+     block->custom_palette_version = custom_palette_version;
+
+     if(custom_palette)
+        source_palette = CustomPalette;
+     else
+        source_palette = ColourPalette;
+
+     if(initialise){
+        image_palette = (void *) ((char *)block->spritearea +
+                                  (block->spritearea)->firstoffset +
+                                  sizeof(sprite_header));
+     }
+     else
+        image_palette = (void *) ((char *)block->spritearea + block->palette);
+
+    /*
+     * set palette
+     */
+     for(colour = 0; colour < 256; colour++){
+
+         image_palette->value = source_palette[colour].value;
+         image_palette++;
+         image_palette->value = source_palette[colour].value;
+         image_palette++;
+     }
+
+  }
+}
+
+/******************************************************************************/
+
+static BOOL clip_dest(spritelib_block *block,
+                      int *clip_origin_x, int *clip_origin_y,
+                      int *clip_size_x, int *clip_size_y)
+{
+  int orig_top_left_x;
+  int orig_top_left_y;
+  int orig_bottom_right_x;
+  int orig_bottom_right_y;
+
+  int clip_top_left_x;
+  int clip_top_left_y;
+  int clip_bottom_right_x;
+  int clip_bottom_right_y;
+
+  int image_bottom_right_x = block->clip_origin.x + block->clip_size.x - 1;
+  int image_bottom_right_y = block->clip_origin.y + block->clip_size.y - 1;
+
+  orig_top_left_x = *clip_origin_x;
+  orig_top_left_y = *clip_origin_y;
+  orig_bottom_right_x = *clip_origin_x + *clip_size_x - 1;
+  orig_bottom_right_y = *clip_origin_y + *clip_size_y - 1;
+
+  clip_top_left_x = orig_top_left_x;
+  clip_top_left_y = orig_top_left_y;
+  clip_bottom_right_x = orig_bottom_right_x;
+  clip_bottom_right_y = orig_bottom_right_y;
+
+ /*
+  * Clip top left to image clip box
+  */
+  if(clip_top_left_x < block->clip_origin.x)
+     clip_top_left_x = block->clip_origin.x;
+
+  if(clip_top_left_y < block->clip_origin.y)
+     clip_top_left_y = block->clip_origin.y;
+
+ /*
+  * Clip bottom right to image clip box
+  */
+  if(clip_bottom_right_x > image_bottom_right_x)
+     clip_bottom_right_x = image_bottom_right_x;
+
+  if(clip_bottom_right_y > image_bottom_right_y)
+     clip_bottom_right_y = image_bottom_right_y;
+
+ /*
+  * Check if outside
+  */
+  if(clip_top_left_x > clip_bottom_right_x || clip_top_left_y > clip_bottom_right_y)
+     return(FALSE);
+
+ /*
+  * Calculate new clip origin and size
+  */
+  *clip_origin_x += clip_top_left_x - orig_top_left_x;
+  *clip_origin_y += clip_top_left_y - orig_top_left_y;
+
+  if((clip_top_left_x - orig_top_left_x) >= *clip_size_x ||
+     (clip_top_left_y - orig_top_left_y) >= *clip_size_y)
+     return(FALSE);
+
+  *clip_size_x -= (clip_top_left_x - orig_top_left_x) +
+                  (orig_bottom_right_x - clip_bottom_right_x);
+  *clip_size_y -= (clip_top_left_y - orig_top_left_y) +
+                  (orig_bottom_right_y - clip_bottom_right_y);
+
+  if(*clip_size_x <= 0 || *clip_size_y <= 0)
+     return(FALSE);
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+static BOOL clip_source_dest(spritelib_block *block,
+                             int *clip_dest_origin_x, int *clip_dest_origin_y,
+                             int *clip_dest_size_x, int *clip_dest_size_y,
+                             int *clip_source_origin_x, int *clip_source_origin_y)
+{
+  int dest_origin_x;
+  int dest_origin_y;
+  int dest_size_x;
+  int dest_size_y;
+  int source_origin_x;
+  int source_origin_y;
+
+  dest_origin_x = *clip_dest_origin_x;
+  dest_origin_y = *clip_dest_origin_y;
+  dest_size_x = *clip_dest_size_x;
+  dest_size_y = *clip_dest_size_y;
+  source_origin_x = *clip_source_origin_x;
+  source_origin_y = *clip_source_origin_y;
+
+ /*
+  * Clip destination plot rectangle to clip rectangle
+  */
+  if(!clip_dest(block, &dest_origin_x, &dest_origin_y, &dest_size_x, &dest_size_y))
+     return(FALSE);
+
+ /*
+  * Adjust source origin as nessesary
+  */
+  source_origin_x += dest_origin_x - *clip_dest_origin_x;
+  source_origin_y += dest_origin_y - *clip_dest_origin_y;
+
+ /*
+  * Should be OK if we get here
+  */
+  *clip_dest_origin_x = dest_origin_x;
+  *clip_dest_origin_y = dest_origin_y;
+  *clip_dest_size_x = dest_size_x;
+  *clip_dest_size_y = dest_size_y;
+  *clip_source_origin_x = source_origin_x;
+  *clip_source_origin_y = source_origin_y;
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+/*
+static int palete_entry_to_colour_number(int red, int green, int blue)
+{
+  palette_entry colour;
+  _kernel_swi_regs r;
+
+// *
+// * calculate colour number for RGB values
+// *
+  colour.data.gcol = 0;
+  colour.data.red = (char) red;
+  colour.data.green = (char) green;
+  colour.data.blue = (char) blue;
+  r.r[0] = (int) colour.value;
+  _kernel_swi( SWI_XOS_Bit | SWI_ColourTrans_ReturnColourNumber , &r, &r );
+
+  return(r.r[0]);
+}
+*/
+/******************************************************************************/
+/*
+static BOOL set_colour(int gfx_op, int colour_number)
+{
+  int plot_action;
+  _kernel_swi_regs r;
+  int colour;
+
+  switch(gfx_op)
+  {
+    case SpriteLib_GXandInverted:
+      plot_action = 6;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXinvert:
+      plot_action = 4;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXxor:
+      plot_action = 3;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXand:
+      plot_action = 2;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXequiv:
+      plot_action = 3;          // src XOR dest
+      colour = ~colour_number;  // NOT src XOR desc
+      break;
+
+    case SpriteLib_GXnoop:
+      plot_action = 5;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXorInverted:
+      plot_action = 7;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXcopy:
+      plot_action = 0;
+      colour = colour_number;
+      break;
+
+    case SpriteLib_GXor:
+      plot_action = 1;
+      colour = colour_number;
+      break;
+
+    default:
+      return(FALSE);
+      break;
+  }
+
+  r.r[0] = plot_action;
+  r.r[1] = colour;
+  _kernel_swi( SWI_XOS_Bit | SWI_OS_SetColour , &r, &r );
+
+  return(TRUE);
+}
+*/
+/******************************************************************************/
+/*
+static void set_origin(int x, int y)
+{
+  GFX_VDU(29);
+  GFX_VDU((char) x & 0xFF);
+  GFX_VDU((char) (x >> 8) & 0xFF);
+  GFX_VDU((char) y & 0xFF);
+  GFX_VDU((char) (y >> 8) & 0xFF);
+}
+*/
+/******************************************************************************/
+
+static void set_tile_offset(int *offset, int size)
+{
+  int remainder;
+
+  remainder = *offset % size;
+
+  if(remainder < 0)
+     remainder = size - remainder;
+
+  if(remainder < 0)
+     remainder = 0;
+
+  if(remainder >= size)
+     remainder = 0;
+     
+  *offset = remainder;
+}

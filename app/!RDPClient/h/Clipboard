@@ -1,0 +1,67 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Clipboard.h                                             *
+ *                                                                      *
+ *     Purpose: Interaction between client and server clipboard.        *
+ *                                                                      *
+ ************************************************************************/
+
+ /*
+  * Clipbord redirection modes
+  */
+#define clipboard_OFF     0
+#define clipboard_PASSIVE 1
+#define clipboard_ACTIVE  2
+
+
+ /*
+  * initialisation to be done on startup
+  */
+extern void Clipboard_Init(void);
+
+
+ /*
+  * Start up clipboard handling, called by RDesktop_Main
+  * Must be called only once
+  */
+extern BOOL Clipboard_Startup(void);
+
+
+ /*
+  * Connect to clipboard redirection.
+  * Must be called after connecting to server
+  */
+extern BOOL Clipboard_ConnectToServer(void);
+
+
+ /*
+  * Called frequently
+  */
+extern void Clipboard_Poll(void);
+
+
+ /*
+  * Set mode of clipboard redirection
+  */
+extern void Clipboard_SetMode(int mode);
+
+
+ /*
+  * Return mode of clipboard redirection
+  */
+extern int Clipboard_GetMode(void);
+
+
+ /*
+  * Set maximum size of clipboard data buffer in K
+  * (mimimum value possible is 16K, 0 sets buffer as unlimited)
+  */
+extern void Clipboard_SetBufferSize(int size);
+
+
+ /*
+  * Return maximum size of clipboard data buffer in K
+  * (0 = unlimited)
+  */
+extern int Clipboard_GetBufferSize(void);
+

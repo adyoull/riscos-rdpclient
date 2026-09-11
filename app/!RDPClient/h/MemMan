@@ -1,0 +1,30 @@
+/************************************************************************
+ *                                                                      *
+ *        File: MemMan.c                                                *
+ *                                                                      *
+ *     Purpose: Memory Management functions.                            *
+ *                                                                      *
+ ************************************************************************/
+
+typedef void **memman_ptr;
+
+
+extern void MemMan_Init(void);
+
+extern void MemMan_InitMemoryManagement(BOOL use_dynamic_areas);
+
+extern void MemMan_PollMemoryManagement(void);
+
+extern int MemMan_Alloc(memman_ptr anchor, int n);
+
+extern void MemMan_Free(memman_ptr anchor);
+
+extern int MemMan_Size(memman_ptr anchor);
+
+extern int MemMan_Extend(memman_ptr anchor, int newsize);
+
+extern int MemMan_MidExtend(memman_ptr anchor, int at, int by);
+
+extern int MemMan_Reanchor(memman_ptr to, memman_ptr from);
+
+

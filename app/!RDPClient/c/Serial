@@ -1,0 +1,243 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Serial.c                                                *
+ *                                                                      *
+ *     Purpose: Serial port link to rdesktop.                           *
+ *                                                                      *
+ ************************************************************************/
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+/*#include <socklib.h>*/
+
+#include "rdesktop/rdesktop.h"
+
+#define FILE_DEVICE_SERIAL_PORT  0x1b
+
+#define SERIAL_SET_BAUD_RATE     1
+#define SERIAL_SET_QUEUE_SIZE    2
+#define SERIAL_SET_LINE_CONTROL  3
+#define SERIAL_SET_BREAK_ON      4
+#define SERIAL_SET_BREAK_OFF     5
+#define SERIAL_IMMEDIATE_CHAR    6
+#define SERIAL_SET_TIMEOUTS      7
+#define SERIAL_GET_TIMEOUTS      8
+#define SERIAL_SET_DTR           9
+#define SERIAL_CLR_DTR           10
+#define SERIAL_RESET_DEVICE      11
+#define SERIAL_SET_RTS           12
+#define SERIAL_CLR_RTS           13
+#define SERIAL_SET_XOFF          14
+#define SERIAL_SET_XON           15
+#define SERIAL_GET_WAIT_MASK     16
+#define SERIAL_SET_WAIT_MASK     17
+#define SERIAL_WAIT_ON_MASK      18
+#define SERIAL_PURGE             19
+#define SERIAL_GET_BAUD_RATE     20
+#define SERIAL_GET_LINE_CONTROL  21
+#define SERIAL_GET_CHARS         22
+#define SERIAL_SET_CHARS         23
+#define SERIAL_GET_HANDFLOW      24
+#define SERIAL_SET_HANDFLOW      25
+#define SERIAL_GET_MODEMSTATUS   26
+#define SERIAL_GET_COMMSTATUS    27
+#define SERIAL_XOFF_COUNTER      28
+#define SERIAL_GET_PROPERTIES    29
+#define SERIAL_GET_DTRRTS        30
+#define SERIAL_LSRMST_INSERT     31
+#define SERIAL_CONFIG_SIZE       32
+#define SERIAL_GET_COMMCONFIG    33
+#define SERIAL_SET_COMMCONFIG    34
+#define SERIAL_GET_STATS         35
+#define SERIAL_CLEAR_STATS       36
+#define SERIAL_GET_MODEM_CONTROL 37
+#define SERIAL_SET_MODEM_CONTROL 38
+#define SERIAL_SET_FIFO_CONTROL  39
+
+#define STOP_BITS_1              0
+#define STOP_BITS_2              2
+
+#define NO_PARITY                0
+#define ODD_PARITY               1
+#define EVEN_PARITY              2
+
+#define SERIAL_PURGE_TXABORT 0x00000001
+#define SERIAL_PURGE_RXABORT 0x00000002
+#define SERIAL_PURGE_TXCLEAR 0x00000004
+#define SERIAL_PURGE_RXCLEAR 0x00000008
+
+/* SERIAL_WAIT_ON_MASK */
+#define SERIAL_EV_RXCHAR           0x0001	// Any Character received
+#define SERIAL_EV_RXFLAG           0x0002	// Received certain character
+#define SERIAL_EV_TXEMPTY          0x0004	// Transmitt Queue Empty
+#define SERIAL_EV_CTS              0x0008	// CTS changed state
+#define SERIAL_EV_DSR              0x0010	// DSR changed state
+#define SERIAL_EV_RLSD             0x0020	// RLSD changed state
+#define SERIAL_EV_BREAK            0x0040	// BREAK received
+#define SERIAL_EV_ERR              0x0080	// Line status error occurred
+#define SERIAL_EV_RING             0x0100	// Ring signal detected
+#define SERIAL_EV_PERR             0x0200	// Printer error occured
+#define SERIAL_EV_RX80FULL         0x0400	// Receive buffer is 80 percent full
+#define SERIAL_EV_EVENT1           0x0800	// Provider specific event 1
+#define SERIAL_EV_EVENT2           0x1000	// Provider specific event 2
+
+extern RDPDR_DEVICE g_rdpdr_device[];
+
+/* serial port configuration parameters */
+static int dtr;
+static uint32 baud_rate;
+static uint32 queue_in_size, queue_out_size;
+static uint32 wait_mask;
+static uint8 stop_bits, parity, word_length;
+
+/* although these routines are static, they are called from outside using */
+/* the serial_fns function pointer table */
+static RD_NTSTATUS Serial_Create(uint32 device_id, uint32 accessmask, uint32 sharemode,
+                                 uint32 create_disposition, uint32 flags_and_attributes,
+                                 char *filename, RD_NTHANDLE *handle);
+static RD_NTSTATUS Serial_Close(RD_NTHANDLE handle);
+static RD_NTSTATUS Serial_Read(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                               uint32 *result);
+static RD_NTSTATUS Serial_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                                uint32 *result);
+static RD_NTSTATUS Serial_DeviceControl(RD_NTHANDLE handle, uint32 request,
+                                        STREAM in, STREAM out);
+
+/* function table for serial control routines */
+DEVICE_FNS serial_fns = {
+  Serial_Create,
+  Serial_Close,
+  Serial_Read,
+  Serial_Write,
+  Serial_DeviceControl
+};
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Serial_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Serial_Create(uint32 device_id, uint32 access, uint32 share_mode,
+                                 uint32 disposition, uint32 flags_and_attributes,
+                                 char *filename, RD_NTHANDLE *handle)
+{
+ /*
+  * Initialise connection to serial port
+  */
+  fprintf(stderr, "Called Serial_Create(device_id=%li, access=%li, share_mode=%li, disposition=%li, flags_and_attributes=%li, filename='%s', handle=%li, *handle=%li)\n", device_id, access, share_mode, disposition, flags_and_attributes, filename, handle, *handle);
+
+ /* return STATUS_ACCESS_DENIED */
+
+ /*
+  * Return success state
+  */
+//  *handle = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Serial_Close(RD_NTHANDLE handle)
+{
+ /*
+  * Close connetion to serial port
+  */
+  fprintf(stderr, "Called Serial_Close(handle=%li)\n", handle);
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Serial_Read(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                               uint32 *result)
+{
+ /*
+  * Read up to 'length' bytes from serial port into 'data'.
+  * Return number of bytes read in 'result'
+  */
+  fprintf(stderr, "Called Serial_Read(handle=%li, data=%li, *data=%c, length=%li, offset=%li)\n", handle, data, *data, length, offset);
+
+  *result = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Serial_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
+                                uint32 *result)
+{
+ /*
+  * Write up to 'length' bytes to serial port from 'data'.
+  * Return number of bytes written in 'result'
+  */
+  fprintf(stderr, "Called Serial_Write(handle=%li, data=%li, length=%li, offset=%li)\n", handle, data, length, offset);
+
+  *result = 0;
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+static RD_NTSTATUS Serial_DeviceControl(RD_NTHANDLE handle, uint32 request,
+                                        STREAM in, STREAM out)
+{
+ /*
+  * Read and Write various configuration parameters
+  */
+  fprintf(stderr, "Called Serial_DeviceControl(handle=%li, request=%li)\n", handle, request);
+
+  return(RD_STATUS_SUCCESS);
+}
+
+/******************************************************************************/
+
+/* called from rdpdr.c */
+/* Read timeout for a given file descripter (device) when adding fd's to select() */
+extern RD_BOOL serial_get_timeout(RD_NTHANDLE handle, uint32 length,
+                               uint32 *timeout, uint32 *itv_timeout)
+{
+
+  *timeout = 0;
+  *itv_timeout = 0;
+
+  return(True);
+}
+
+/******************************************************************************/
+
+/* called from rdpdr.c */
+extern RD_BOOL serial_get_event(RD_NTHANDLE handle, uint32 * result)
+{
+
+  return(True);
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+

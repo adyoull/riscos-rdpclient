@@ -1,0 +1,72 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Status.h                                                *
+ *                                                                      *
+ *     Purpose: Status display window.                                  *
+ *                                                                      *
+ ************************************************************************/
+
+#ifndef BOOL
+#define BOOL  unsigned
+
+#define FALSE 0
+#define TRUE  1
+
+#define ERROR   1
+#define NOERROR 0
+
+#endif
+
+#define status_SOUND_OPTION_OFF    0
+#define status_SOUND_OPTION_LOCAL  1
+#define status_SOUND_OPTION_REMOTE 2
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Status_Init(void);
+
+ /*
+  * Open status window on screen
+  */
+extern void Status_Open(void);
+
+
+ /*
+  * Close status window
+  */
+extern void Status_Close(void);
+
+
+extern void Status_SetConnected(BOOL connected);
+
+extern void Status_SetUsername(char *username);
+
+extern void Status_SetDomain(char *domain);
+
+extern void Status_SetServername(char *servername);
+
+extern void Status_SetServeraddress(char *serveraddress);
+
+extern void Status_SetHostname(char *hostname);
+
+extern void Status_SetConnectionname(char *connectionname);
+
+extern void Status_SetKeymapname(char *keymapname);
+
+extern void Status_SetClipboardMode(int clipboardmode);
+
+extern void Status_SetClipboardBufferSize(int buffersize);
+
+extern void Status_SetSoundOption(int soundoption);
+
+extern void Status_SetSoundChannels(int channels);
+
+extern void Status_SetSoundBits(int bits);
+
+extern void Status_SetSoundRate(int rate);
+
+extern void Status_SetRDPCompression(BOOL compression);
+
+extern void Status_Display(void);
+

@@ -1,0 +1,984 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Pointer.c                                               *
+ *                                                                      *
+ *     Purpose: Handle mouse pointer sprites.                           *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Template.h"          /* Template loading and caching    */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Menu.h"              /* Menu create & show support      */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+#include "DeskLib:GFX.h"
+#include "DeskLib:Time.h"
+
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "MemMan.h"
+#include "ScreenMode.h"
+#include "Display.h"   
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+static int hardware_pointer_bank = 0;
+
+#define HISTOGRAM_BARS 512
+static int histogram_value[HISTOGRAM_BARS];
+static palette_entry histogram_colour[HISTOGRAM_BARS];
+static int histogram_bars = 0;
+
+static void populate_histogram(pointer_block *pointerblock);
+static void make_palette(palette_entry *palette);
+static void create_hardware_sprite(pointer_block *pointerblock);
+static BOOL os_spriteop_setpointer(spritelib_block *sprite,
+                                   int hardware_bank, int origin_x, int origin_y);
+static void set_pointer_shape(int shape);
+static int get_pointer_shape(void);
+static void link_mouse_to_pointer(void);
+static void set_pointer_position(int x, int y);
+static void clear_histogram(int bars);
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void Pointer_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  hardware_pointer_bank = 0;
+
+  clear_histogram(HISTOGRAM_BARS);
+}
+
+/******************************************************************************/
+
+extern void Pointer_SingleTask(void)
+{
+ /*
+  * Set up pointer for single task mode
+  */
+  link_mouse_to_pointer();
+
+  hardware_pointer_bank = 0;
+
+  set_pointer_shape(hardware_pointer_bank);
+}
+
+/******************************************************************************/
+
+extern void Pointer_EnsureHardwarePointer(void)
+{
+ /*
+  * Ensure that the correct hardware pointer is enabled
+  */
+
+  if(get_pointer_shape() != hardware_pointer_bank)
+     set_pointer_shape(hardware_pointer_bank);
+}
+
+/******************************************************************************/
+
+extern pointer_block *Pointer_Create(int width, int height, int origin_x, int origin_y,
+                                     BOOL has_mask)
+{
+ /*
+  * Initialise pointer environment for image of size width, height
+  */
+  pointer_block *pointerblock;
+  
+  pointerblock = (pointer_block *)malloc(sizeof(pointer_block));
+
+  if(pointerblock == NULL)
+     return(NULL);
+
+  pointerblock->origin.x = origin_x;
+  pointerblock->origin.y = origin_y;
+  pointerblock->plot_mask = has_mask;
+
+ /*
+  * Pointer as supplied is a 24bit image with a 1bpp plot mask if required
+  */
+  pointerblock->base_sprite = SpriteLib_Create(width, height, 24, FALSE, has_mask);
+
+  if(pointerblock->base_sprite == NULL){
+     free(pointerblock);
+     return(NULL);
+  }
+
+ /*
+  * Set up 2bpp equivalent sprite for hardware cursor
+  */
+  pointerblock->hardware_sprite = NULL; /* built on demand */
+
+
+  return(pointerblock);
+}
+
+/******************************************************************************/
+
+extern void Pointer_Destroy(pointer_block *pointerblock)
+{
+ /*
+  * Destroy everything
+  */
+  if(pointerblock != NULL){
+
+     if(pointerblock->base_sprite != NULL){
+        SpriteLib_Destroy(pointerblock->base_sprite);
+        pointerblock->base_sprite = NULL;
+     }
+
+     if(pointerblock->hardware_sprite != NULL){
+        SpriteLib_Destroy(pointerblock->hardware_sprite);
+        pointerblock->hardware_sprite = NULL;
+     }
+
+     free(pointerblock);
+  }
+
+}
+
+/******************************************************************************/
+
+extern unsigned char *Pointer_PrepMaskData(int width, int height, unsigned char *mask_data,
+                                           BOOL flip_vertical)
+{
+ /*
+  * Prepare 1bpp mask data for use with Sprite Mask.
+  * If all mask bits are 0, NULL is returned as no mask is present.
+  * Returned pointer needs to be free()ed after use.
+  */
+  unsigned char *mask_buffer, *mask_buffer_p, *mask_data_p;
+  int bit, byte, line;
+  int mask_linebytes;
+  unsigned int source, dest;
+  BOOL mask_present;
+
+  mask_linebytes = (width + 7) / 8;
+
+  mask_buffer = (unsigned char *)malloc(mask_linebytes * height);
+  if(mask_buffer == NULL)
+     return(NULL);
+
+  mask_present = FALSE;
+
+ /*
+  * Reverse bit ordering in bytes
+  * Invert bits so that:
+  * 1 = plot cursor   0 = don't plot cursor
+  */
+  mask_buffer_p = mask_buffer;
+
+  for(line = 0; line < height; line++){
+
+     if(flip_vertical)
+        mask_data_p = mask_data + ((height - line - 1) * mask_linebytes);
+     else
+        mask_data_p = mask_data + (line * mask_linebytes);
+
+     for(byte = 0; byte < mask_linebytes; byte++){
+
+        source = (unsigned int)*mask_data_p++;
+
+        dest = (0x1 & source);
+
+        if(0x1 & source == 0)
+           mask_present = TRUE; /* bits are inverted at this stage */
+
+        for(bit = 1; bit < 8; bit++){
+        
+           dest = dest << 1;
+           source = source >> 1;
+           dest = dest | (0x1 & source);
+
+           if(0x1 & source == 0)
+              mask_present = TRUE; /* bits are inverted at this stage */
+
+        }
+
+        *mask_buffer_p++ = ~(unsigned char)dest;
+
+     }        
+
+  }
+
+  if(!mask_present){
+
+     free(mask_buffer);
+     mask_buffer = NULL;
+  }
+
+  return(mask_buffer);
+}
+ 
+/******************************************************************************/
+//int pointer_number = 1;
+extern BOOL Pointer_SetData(pointer_block *pointerblock,
+                            int image_bpp, unsigned char *image_data,
+                            unsigned char *mask_data)
+{
+  palette_entry *pointer_palette;
+ /*
+  * Fill pointer sprite with image data and 1bpp mask data
+  */
+  if(pointerblock == NULL)
+     return(FALSE);
+
+  pointer_palette = NULL;
+
+  if(image_bpp == 8){
+     pointer_palette = Display_GetCustomPalette();
+  }
+
+ /*
+  * Fill 24bit sprite with image and mask data
+  */
+  SpriteLib_SetImageDataTrans(pointerblock->base_sprite, image_bpp,
+                              (unsigned char *)image_data, pointer_palette,
+                              (image_bpp != 1)); /* only 1bpp image is not inverted */
+
+  if(mask_data != NULL)
+     SpriteLib_SetMaskData(pointerblock->base_sprite, (unsigned char *)mask_data, FALSE);
+
+//char filename[256];
+//fprintf(stderr, "%i\n", pointer_number);
+//sprintf(filename, "<RDPClient$Dir>.^.Debug.Pointers.%i", pointer_number++);
+//Sprite_Save((pointerblock->base_sprite)->spritearea, filename);
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern int Pointer_PlotArea(pointer_block *last_pointer, wimp_point *last_pos,
+                            pointer_block *next_pointer, wimp_point *next_pos,
+                            wimp_rect *area1, wimp_rect *area2)
+{
+ /*
+  * Calculate update areas for pointer movement
+  */
+  int top_left_1_x, top_left_1_y, bottom_right_1_x, bottom_right_1_y;
+  int top_left_2_x, top_left_2_y, bottom_right_2_x, bottom_right_2_y;
+  int area_count;
+  int area_index;
+  BOOL overlap;
+
+  area_count = 0;
+  area_index = 0;
+  
+  if(last_pointer == NULL && next_pointer == NULL){
+     return(0); /* nothing needs updating */
+  }
+
+  if(last_pointer != NULL){
+     top_left_1_x = last_pos->x - last_pointer->origin.x;
+     top_left_1_y = last_pos->y - last_pointer->origin.y;
+     bottom_right_1_x = top_left_1_x + (last_pointer->base_sprite)->size.x;
+     bottom_right_1_y = top_left_1_y + (last_pointer->base_sprite)->size.y;
+
+     area_count++; /* first rectangle needs updating */
+     area_index = 1;
+  }
+
+  if(next_pointer != NULL){
+     top_left_2_x = next_pos->x - next_pointer->origin.x;
+     top_left_2_y = next_pos->y - next_pointer->origin.y;
+     bottom_right_2_x = top_left_2_x + (next_pointer->base_sprite)->size.x;
+     bottom_right_2_y = top_left_2_y + (next_pointer->base_sprite)->size.y;
+
+     area_count++; /* second rectangle needs updating */
+     area_index = 2;
+  }
+
+//fprintf(stderr, "Pointer_PlotArea()  area_count=%i  area_index=%i\n", area_count, area_index);
+
+  if(area_count == 1){
+     if(area_index == 1){
+        area1->min.x = top_left_1_x;
+        area1->min.y = top_left_1_y;
+        area1->max.x = bottom_right_1_x;
+        area1->max.y = bottom_right_1_y;
+     }
+     else{
+        area1->min.x = top_left_2_x;
+        area1->min.y = top_left_2_y;
+        area1->max.x = bottom_right_2_x;
+        area1->max.y = bottom_right_2_y;
+     }
+  }
+  else if(area_count == 2){
+    /*
+     * If rectangles overlap, do one update on rectangle covering both,
+     * otherwise do two updates with both rectangles
+     */
+     overlap = FALSE;
+
+//fprintf(stderr, "top_left_1_x=%i  top_left_1_y=%i  bottom_right_1_x=%i  bottom_right_1_y=%i\ntop_left_2_x=%i  top_left_2_y=%i  bottom_right_2_x=%i  bottom_right_2_y=%i\n", top_left_1_x, top_left_1_y, bottom_right_1_x, bottom_right_1_y, top_left_2_x, top_left_2_y, bottom_right_2_x, bottom_right_2_y);
+
+     if(top_left_1_x >= top_left_2_x && top_left_1_x <= bottom_right_2_x &&
+        top_left_1_y >= top_left_2_y && top_left_1_y <= bottom_right_2_y)
+        overlap = TRUE;
+     else if(bottom_right_1_x >= top_left_2_x && bottom_right_1_x <= bottom_right_2_x &&
+             bottom_right_1_y >= top_left_2_y && bottom_right_1_y <= bottom_right_2_y)
+        overlap = TRUE;
+     else if(top_left_1_x >= top_left_2_x && top_left_1_x <= bottom_right_2_x &&
+             bottom_right_1_y >= top_left_2_y && bottom_right_1_y <= bottom_right_2_y)
+        overlap = TRUE;
+     else if(bottom_right_1_x >= top_left_2_x && bottom_right_1_x <= bottom_right_2_x &&
+             top_left_1_y >= top_left_2_y && top_left_1_y <= bottom_right_2_y)
+        overlap = TRUE;
+
+//fprintf(stderr, "overlap=%i\n", overlap);
+
+     if(overlap){
+        if(top_left_1_x < top_left_2_x)
+           area1->min.x = top_left_1_x;
+        else
+           area1->min.x = top_left_2_x;
+
+        if(top_left_1_y < top_left_2_y)
+           area1->min.y = top_left_1_y;
+        else
+           area1->min.y = top_left_2_y;
+
+        if(bottom_right_1_x > bottom_right_2_x)
+           area1->max.x = bottom_right_1_x;
+        else
+           area1->max.x = bottom_right_2_x;
+
+        if(bottom_right_1_y > bottom_right_2_y)
+           area1->max.y = bottom_right_1_y;
+        else
+           area1->max.y = bottom_right_2_y;
+
+        area_count = 1;
+     }
+     else{
+        area1->min.x = top_left_1_x;
+        area1->min.y = top_left_1_y;
+        area1->max.x = bottom_right_1_x;
+        area1->max.y = bottom_right_1_y;
+
+        area2->min.x = top_left_2_x;
+        area2->min.y = top_left_2_y;
+        area2->max.x = bottom_right_2_x;
+        area2->max.y = bottom_right_2_y;
+     }
+  }
+
+  return(area_count);
+}
+
+/******************************************************************************/
+
+extern BOOL Pointer_SetHardwarePointer(pointer_block *pointerblock)
+{
+ /*
+  * Programs hardware pointer with sprite in pointerblock
+  */
+  if(pointerblock == NULL){
+    /*
+     * turn off pointer
+     */
+     set_pointer_shape(0);
+  }
+  else{
+    /*
+     * program 3 colour pointer into hardware
+     */
+
+     if(hardware_pointer_bank == 3)
+        hardware_pointer_bank = 4;
+     else     
+        hardware_pointer_bank = 3;
+
+     if(pointerblock->hardware_sprite == NULL)
+        create_hardware_sprite(pointerblock);
+
+     if(pointerblock->hardware_sprite != NULL){
+        os_spriteop_setpointer(pointerblock->hardware_sprite,
+                               hardware_pointer_bank,
+                               pointerblock->origin.x, pointerblock->origin.y);
+     }
+  }
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern void Pointer_MoveHardwarePointer(int x, int y)
+{
+ /*
+  * Moves hardware pointer to supplied coordinates
+  * origin (0, 0) is on top left
+  */
+  wimp_point coord;
+
+  Display_DisplayToScreenCoords(&coord, &coord);
+
+  set_pointer_position(coord.x, coord.y);
+}
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void populate_histogram(pointer_block *pointerblock)
+{
+  spritelib_block *base_sprite = pointerblock->base_sprite;
+  BOOL use_mask = (pointerblock->base_sprite)->has_mask;
+  BOOL use_colour;
+  unsigned char *image_24_ptr;
+  unsigned char *image_24_ptr2;
+  unsigned char *mask_ptr;
+  unsigned char *mask_ptr2;
+  unsigned int pixel_24;
+  int mask;
+  unsigned int mask_pixel;
+  int y_counter;
+  int x_counter;
+  int index;
+  int bar;
+
+  clear_histogram(histogram_bars);
+
+  image_24_ptr = (unsigned char *)base_sprite->spritearea + base_sprite->image;
+  image_24_ptr2 = image_24_ptr;
+  if(use_mask){
+     mask_ptr = (unsigned char *)base_sprite->spritearea + base_sprite->mask;
+     mask_ptr2 = mask_ptr;
+  }
+
+  y_counter = base_sprite->size.y;
+
+  while(y_counter > 0){
+
+     x_counter = base_sprite->size.x;
+
+     if(use_mask){
+        mask = 0;
+        mask_pixel = *((unsigned int *)(mask_ptr));
+        mask_ptr += 4;
+     }
+
+     while(x_counter > 0){
+
+        pixel_24 = *((unsigned int *)(image_24_ptr));
+
+        pixel_24 = pixel_24 << 8; /* convert into palette format */
+
+        use_colour = FALSE;
+
+        if(use_mask){
+           if((mask_pixel & 0x1) == 1)
+              use_colour = TRUE;
+        }
+        else{
+           if(pixel_24 != 0x00000000){
+              pixel_24 = ~pixel_24 & 0xFFFFFF00;
+              use_colour = TRUE;
+           }
+        }
+
+        if(use_colour){
+
+           bar = -1;
+
+           if(histogram_bars > 0){
+
+              for(index = 0; index < histogram_bars; index++){
+
+                  if(histogram_colour[index].value == pixel_24){
+                     bar = index;
+                     break;
+                  }
+              }
+           }
+
+           if(bar == -1 && histogram_bars < HISTOGRAM_BARS){
+
+              histogram_colour[histogram_bars].value = pixel_24;
+              histogram_value[histogram_bars] += 1;
+
+              histogram_bars++;
+           }
+           else{
+
+              histogram_value[bar] += 1;
+
+           }
+
+        }
+
+        if(use_mask){
+           mask++;
+
+           mask_pixel = mask_pixel >> 1;
+
+           if(mask == 32){
+
+              mask_pixel = *((unsigned int *)(mask_ptr));
+              mask_ptr += 4;
+
+              mask = 0;
+           }
+        }
+
+        image_24_ptr += 4;
+
+        x_counter--;
+
+     }
+
+     image_24_ptr2 += base_sprite->linebytes;
+     image_24_ptr = image_24_ptr2;
+
+     if(use_mask){
+        mask_ptr2 += base_sprite->masklinebytes;
+        mask_ptr = mask_ptr2;
+     }
+
+     y_counter--;
+  }
+/*
+  if(histogram_bars > 0){
+
+     fprintf(stderr, "bar count %i\n", histogram_bars);
+
+     fprintf(stdout, "bar count %i\n", histogram_bars);
+
+     for(index = 0; index < histogram_bars; index++){
+
+         fprintf(stderr, "r %i g %i b %i  count %i\n",
+                 histogram_colour[index].data.red,
+                 histogram_colour[index].data.green,
+                 histogram_colour[index].data.blue,
+                 histogram_value[index]);
+
+         fprintf(stdout, "r %i g %i b %i  count %i\n",
+                 histogram_colour[index].data.red,
+                 histogram_colour[index].data.green,
+                 histogram_colour[index].data.blue,
+                 histogram_value[index]);
+
+     }
+
+     fprintf(stderr, "\n\n");
+
+     fprintf(stdout, "\n\n");
+
+  }
+*/
+}
+
+/******************************************************************************/
+
+static void make_palette(palette_entry *palette)
+{
+  int index;
+  palette_entry colour;
+  int count;
+  int max_index_1;
+  int max_index_2;
+
+  for(index = 0; index < 4; index++){
+     palette[index].value = 0;
+  }
+
+  if(histogram_bars > 0){
+
+    /*
+     * find most popular colour for colour 1
+     */
+     count = 0;
+     colour.value = 0;
+     max_index_1 = -1;
+
+     for(index = 0; index < histogram_bars; index++){
+
+        if(histogram_value[index] > count){
+           count = histogram_value[index];
+           colour.value = histogram_colour[index].value;
+           max_index_1 = index;
+        }
+
+     }
+     palette[1].value = colour.value;
+  }
+
+  if(histogram_bars > 1){
+
+    /*
+     * Find next most popular colour for colour 2
+     */
+     count = 0;
+     colour.value = 0;
+     max_index_2 = -1;
+     
+     for(index = 0; index < histogram_bars; index++){
+
+        if(index != max_index_1 &&
+           histogram_value[index] > count){
+           count = histogram_value[index];
+           colour.value = histogram_colour[index].value;
+           max_index_2 = index;
+        }
+
+     }
+     palette[2].value = colour.value;
+  }
+
+  if(histogram_bars > 2){
+
+    /*
+     * Find next most popular colour for colour 3
+     */
+     count = 0;
+     colour.value = 0;
+
+     for(index = 0; index < histogram_bars; index++){
+
+        if(index != max_index_1 && index != max_index_2 &&
+           histogram_value[index] > count){
+           count = histogram_value[index];
+           colour.value = histogram_colour[index].value;
+        }
+
+     }
+     palette[3].value = colour.value;
+  }
+
+  palette[0].value = palette[1].value;
+/*
+  fprintf(stderr, "palette\n");
+  fprintf(stdout, "palette\n");
+
+  for(index = 0; index < 4; index++){
+
+    fprintf(stderr, "r %i g %i b %i\n", palette[index].data.red, palette[index].data.green,
+            palette[index].data.blue);
+    fprintf(stdout, "r %i g %i b %i\n", palette[index].data.red, palette[index].data.green,
+            palette[index].data.blue);
+
+  }
+
+  fprintf(stderr, "\n\n");
+  fprintf(stdout, "\n\n");
+*/
+}
+
+/******************************************************************************/
+
+static void create_hardware_sprite(pointer_block *pointerblock)
+{
+  BOOL use_mask;
+  BOOL use_colour;
+  palette_entry palette[4];
+  int index;
+  spritelib_block *base_sprite;
+  spritelib_block *hardware_sprite;
+  int size_x = (pointerblock->base_sprite)->size.x;
+  int size_y = (pointerblock->base_sprite)->size.y;
+  palette_entry *sprite_palette;
+  palette_entry *sprite_palette_ptr;
+  unsigned char *image_24_ptr;
+  unsigned char *image_24_ptr2;
+  unsigned char *mask_ptr;
+  unsigned char *mask_ptr2;
+  unsigned char *image_2_ptr;
+  unsigned char *image_2_ptr2;
+  int y_counter;
+  int x_counter;
+  unsigned int pixel_24;
+  unsigned char pixel_8;
+  int colour_index;
+  int nibble;
+  int mask;
+  unsigned int mask_pixel;
+  _kernel_swi_regs r;
+  use_mask = (pointerblock->base_sprite)->has_mask;
+
+ /*
+  * Create 4 colour sprite
+  */
+  hardware_sprite = SpriteLib_Create(size_x, size_y, 2, TRUE, FALSE);
+
+  if(hardware_sprite == NULL)
+     return;
+
+  pointerblock->hardware_sprite = hardware_sprite;
+  base_sprite = pointerblock->base_sprite;
+
+ /*
+  * Create palette of most popular 3 colours
+  */
+  populate_histogram(pointerblock);
+
+  make_palette(palette);
+
+ /*
+  * Set palette of sprite
+  */
+  sprite_palette = (palette_entry *)((unsigned char *)hardware_sprite->spritearea +
+                                     hardware_sprite->palette);
+  sprite_palette_ptr = sprite_palette;
+  
+  for(index = 0; index < 4; index++){
+     sprite_palette_ptr->value = palette[index].value;
+     sprite_palette_ptr++;
+     sprite_palette_ptr->value = palette[index].value;
+     sprite_palette_ptr++;
+  }
+
+  image_24_ptr = (unsigned char *)base_sprite->spritearea + base_sprite->image;
+  image_24_ptr2 = image_24_ptr;
+  if(use_mask){
+     mask_ptr = (unsigned char *)base_sprite->spritearea + base_sprite->mask;
+     mask_ptr2 = mask_ptr;
+  }
+  image_2_ptr = (unsigned char *)hardware_sprite->spritearea + hardware_sprite->image;
+  image_2_ptr2 = image_2_ptr; 
+  
+  y_counter = base_sprite->size.y;
+
+  while(y_counter > 0){
+
+     x_counter = base_sprite->size.x;
+
+     nibble = 0;
+     pixel_8 = 0;
+     if(use_mask){
+        mask = 0;
+        mask_pixel = *((unsigned int *)(mask_ptr));
+        mask_ptr += 4;
+     }
+
+     while(x_counter > 0){
+
+        pixel_24 = *((unsigned int *)(image_24_ptr));
+
+        pixel_24 = pixel_24 << 8; /* convert into palette format */
+        
+        colour_index = 0;
+
+        use_colour = FALSE;
+
+        if(use_mask){
+           if((mask_pixel & 0x1) == 1)
+              use_colour = TRUE;
+        }
+        else{
+           if(pixel_24 != 0x00000000){
+              pixel_24 = ~pixel_24 & 0xFFFFFF00;
+              use_colour = TRUE;
+           }
+        }
+
+        if(use_colour){
+
+          /*
+           * find colour if already in palette
+           */
+           for(index = 1; index <= 3; index++){
+              if(palette[index].value == pixel_24){
+                 colour_index = index;
+                 break;
+              }
+           }
+
+           if(colour_index == 0){
+             /*
+              * if exact match not found, find nearest colour
+              */
+              r.r[0] = (int)pixel_24;
+              r.r[1] = 19; /* 4 colour mode */
+              r.r[2] = (int)sprite_palette;
+              if(_kernel_swi(SWI_XOS_Bit | SWI_ColourTrans_ReturnColourNumberForMode, &r, &r)
+                 == NULL){
+                 colour_index = r.r[0];
+              }
+              if(colour_index <= 0)
+                 colour_index = 1;
+              if(colour_index > 3)
+                 colour_index = 1;
+           }
+        }
+
+        if(use_mask){
+           mask++;
+
+           mask_pixel = mask_pixel >> 1;
+
+           if(mask == 32){
+
+              mask_pixel = *((unsigned int *)(mask_ptr));
+              mask_ptr += 4;
+
+              mask = 0;
+           }
+        }
+
+       /*
+        * colour_index is the palette number of the colour
+        */
+
+        nibble++;
+
+        pixel_8 = pixel_8 >> 2;
+        pixel_8 = pixel_8 | ((colour_index & 0x3) << 6);
+
+        if(nibble == 4){
+
+           *image_2_ptr = pixel_8;
+           image_2_ptr++;
+
+           nibble = 0;
+           pixel_8 = 0;
+        }
+
+        image_24_ptr += 4;
+
+        x_counter--;
+
+     }
+
+     if(nibble > 0)
+        *image_2_ptr = pixel_8;
+
+     image_24_ptr2 += base_sprite->linebytes;
+     image_24_ptr = image_24_ptr2;
+
+     if(use_mask){
+        mask_ptr2 += base_sprite->masklinebytes;
+        mask_ptr = mask_ptr2;
+     }
+
+     image_2_ptr2 += hardware_sprite->linebytes;
+     image_2_ptr = image_2_ptr2;
+
+     y_counter--;
+  }
+
+}
+
+/******************************************************************************/
+
+static BOOL os_spriteop_setpointer(spritelib_block *sprite,
+                                   int hardware_bank, int origin_x, int origin_y)
+{
+  sprite_header *header;
+  BOOL success;
+  _kernel_swi_regs r;
+  success = FALSE;
+
+  header = (void *) ((char *)sprite->spritearea + (sprite->spritearea)->firstoffset);
+
+  r.r[0] = 36 + 512;
+  r.r[1] = (int)sprite->spritearea;
+  r.r[2] = (int)header;
+  r.r[3] = hardware_bank;
+  r.r[4] = origin_x;
+  r.r[5] = origin_y;
+  r.r[6] = 0;
+  r.r[7] = 0;
+  if(_kernel_swi( SWI_XOS_Bit | SWI_OS_SpriteOp, &r, &r ) == NULL)
+     success = TRUE;
+
+  return(success);
+}
+
+/******************************************************************************/
+
+static void set_pointer_shape(int shape)
+{
+  int r1out, r2out, r1in;
+  int shape_masked;
+
+  shape_masked = shape & 0x7;
+
+  OS_Byte(osbyte_SELECTPOINTER, -1, 0, &r1out, &r2out);
+  
+  r1in = ~0x7 & r1out; /* reset point shape bits (this turns off the pointer) */
+
+  r1in = r1in | shape_masked; /* enable pointer shape */
+
+  OS_Byte(osbyte_SELECTPOINTER, r1in, 0, &r1out, &r2out);
+}
+
+/******************************************************************************/
+
+static int get_pointer_shape(void)
+{
+  int r1out, r2out;
+
+  OS_Byte(osbyte_SELECTPOINTER, -1, 0, &r1out, &r2out);
+
+  return(0x7 & r1out);
+}
+
+/******************************************************************************/
+
+static void link_mouse_to_pointer(void)
+{
+  int r1out, r2out, r1in;
+
+  OS_Byte(osbyte_SELECTPOINTER, -1, 0, &r1out, &r2out);
+  
+  r1in = ~0x80 & r1out; /* reset enable bit 7 (this links mouse to pointer) */
+
+  OS_Byte(osbyte_SELECTPOINTER, r1in, 0, &r1out, &r2out);
+}
+
+/******************************************************************************/
+
+static void set_pointer_position(int x, int y)
+{
+  unsigned char block[5];
+
+  block[0] = 3; /* set mouse position */
+  block[1] = x & 0x00FF;
+  block[2] = (x & 0xFF00) >> 8;
+  block[3] = y & 0x00FF;
+  block[4] = (y & 0xFF00) >> 8;
+
+  OS_Word(osword_DEFINEPOINTERANDMOUSE, &block);
+}
+
+/******************************************************************************/
+
+static void clear_histogram(int bars)
+{
+  memset(histogram_value, 0, bars * sizeof(int));
+
+  memset(histogram_colour, 0, bars * sizeof(palette_entry));
+
+  histogram_bars = 0;
+}

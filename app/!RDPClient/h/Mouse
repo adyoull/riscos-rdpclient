@@ -1,0 +1,118 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Mouse.h                                                 *
+ *                                                                      *
+ *     Purpose: Mouse handling.                                         *
+ *                                                                      *
+ ************************************************************************/
+
+/*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Mouse-wheel modifications (C) 2026 Andrew Youll, released under the same
+ * GNU General Public License. Andrew Youll's changes in this file: the
+ * scroll-wheel settings API (invert flag and speed step controls).
+ */
+
+
+#ifndef __dl_wimp_h
+#include "DeskLib:Wimp.h"
+#endif
+
+
+typedef union {
+  int value;
+  struct {
+    unsigned int adjust        :1;
+    unsigned int menu          :1;
+    unsigned int select        :1;
+
+    unsigned int dummy         :29;
+  } data;
+} mouse_button_block;
+
+#define mouse_MOTION_INTERVAL_MULTITASK 15
+#define mouse_MOTION_INTERVAL_SINGLETASK 7
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Mouse_Init(void);
+
+
+ /*
+  * Process MouseClick events
+  */
+extern void Mouse_MouseClick(mouse_button_block *current_buttons,
+                             wimp_point *current_position);
+
+
+ /*
+  * Set minimum time between sending mouse position packets
+  */
+extern void Mouse_SetMotionUpdateInterval(int interval);
+
+ /*
+  * Called at various times to handle checking for buttons being released
+  * and movement
+  */
+extern void Mouse_Poll(void);
+
+
+ /*
+  * Update stored mouse pointer position
+  */
+extern void Mouse_UpdatePointerPosition(int x, int y);
+
+
+ /*
+  * Called when the Display looses input focus
+  */
+extern void Mouse_LooseFocus(void);
+
+
+ /*
+  * Called when the Display gains input focus
+  */
+extern void Mouse_GainFocus(void);
+
+
+ /*
+  * Ensure that the system pointer is enabled
+  */
+extern void Mouse_EnsurePointerEnabled(void);
+
+
+ /*
+  * Ensure that the system pointer is enabled
+  */
+extern void Mouse_EnsurePointerDisabled(void);
+
+
+/*
+ * (C) 2026 Andrew Youll -- scroll-wheel settings (iconbar Scroll menu).
+ */
+
+ /*
+  * Get the current scroll-wheel invert flag (0 = normal, 1 = inverted).
+  */
+extern int Mouse_GetWheelInvert(void);
+
+ /*
+  * Set the scroll-wheel invert flag (non-zero = inverted) and save it.
+  */
+extern void Mouse_SetWheelInvert(int invert);
+
+ /*
+  * Get the current scroll speed (remote notches sent per wheel step).
+  */
+extern int Mouse_GetWheelSpeed(void);
+
+ /*
+  * Step the scroll speed up / down (clamped) and save it.
+  */
+extern void Mouse_WheelSpeedFaster(void);
+extern void Mouse_WheelSpeedSlower(void);

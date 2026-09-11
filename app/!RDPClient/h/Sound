@@ -1,0 +1,54 @@
+/************************************************************************
+ *                                                                      *
+ *        File: Sound.h                                                 *
+ *                                                                      *
+ *     Purpose: Sound link to rdesktop.                                 *
+ *                                                                      *
+ ************************************************************************/
+
+
+typedef struct {
+  unsigned char  *data;
+  int            length;
+  int            tick;
+  int            index;
+} sound_queue_block;
+
+ /*
+  * Initialisation to be done on startup.
+  */
+extern void Sound_Init(void);
+
+
+ /*
+  * Start up sound system (only when configured to play sound)
+  */
+extern void Sound_Startup(void);
+
+
+ /*
+  * Shut down sound system
+  */
+extern void Sound_Closedown(void);
+
+
+ /*
+  * Called frequently
+  */
+extern void Sound_Poll(void);
+
+
+ /*
+  * Return total size of sound buffer in bytes
+  */
+extern int Sound_BufferSize(void);
+
+
+ /*
+  * Return amount of sound buffer used in bytes
+  */
+extern int Sound_BufferUsed(void);
+
+
+
+

@@ -1,0 +1,1069 @@
+/************************************************************************
+ *                                                                      *
+ *        File: UI.c                                                    *
+ *                                                                      *
+ *     Purpose: User Interface link to rdesktop.                        *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
+#include "DeskLib:Window.h"            /* Window handling automation      */
+#include "DeskLib:Core.h"              /* usefull core functions          */
+#include "DeskLib:Error.h"             /* Error despatcher                */
+#include "DeskLib:Event.h"             /* Event despatcher                */
+#include "DeskLib:EventMsg.h"          /* Wimp Message event dispatcher   */
+#include "DeskLib:File.h"              /* Low level file handling         */
+#include "DeskLib:Msgs.h"              /* Message translation code        */
+#include "DeskLib:Resource.h"          /* Handles finding resource files  */
+#include "DeskLib:Sound.h"             /* Beep!                           */
+#include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:Screen.h"            /* Caching screen info             */
+#include "DeskLib:Sprite.h"            /* Sprite handling routines        */
+#include "DeskLib:KeyCodes.h"          /* Codes for wimp returned keys    */
+#include "DeskLib:Time.h"              /* "TIME"                          */
+#include "DeskLib:KernelSWIs.h"
+#include "DeskLib:Dialog2.h"
+
+#include "kernel.h"                    /* clib kernel functions           */
+#include "MySWIs.h"                    /* SWI no defs                     */
+
+
+#include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <time.h>
+
+#include <socklib.h>
+
+#include "rdesktop/rdesktop.h"
+
+#include "RDPClient.h"
+#include "SpriteLib.h"
+#include "Pointer.h"
+#include "ScreenMode.h"
+#include "Display.h"
+#include "Keyboard.h"
+#include "Mouse.h"
+#include "Sound.h"
+#include "MemMan.h"
+#include "Clipboard.h"
+
+extern BOOL g_owncolmap;
+
+extern int g_width;
+extern int g_height;
+extern BOOL g_sendmotion;
+extern BOOL g_fullscreen;
+extern BOOL g_grab_keyboard;
+extern BOOL g_hide_decorations;
+extern char g_title[];
+extern int g_server_depth;
+extern int g_win_button_size;
+
+#ifdef WITH_RDPSND
+extern BOOL g_rdpsnd;
+#endif
+
+static int current_foreground_colour;
+static int current_background_colour;
+
+static int current_server_bpp;
+
+static uint8 hatch_patterns[] = {
+	0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00,	/* 0 - bsHorizontal */
+	0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,	/* 1 - bsVertical */
+	0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,	/* 2 - bsFDiagonal */
+	0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,	/* 3 - bsBDiagonal */
+	0x08, 0x08, 0x08, 0xff, 0x08, 0x08, 0x08, 0x08,	/* 4 - bsCross */
+	0x81, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x81	/* 5 - bsDiagCross */
+};
+
+#define hatch_WIDTH  8
+#define hatch_HEIGHT 8
+
+//static int sprite_count = 0;
+
+unsigned int next_poll_time = 0;
+#define MAX_PROCESS_TIME 15
+
+static BOOL called_poll = FALSE;
+
+static void reinit_display(void);
+
+#ifdef WITH_DEBUG_AJS
+extern char *current_time_date(void);
+#endif
+
+/******************************************************************************
+ *                            extern routines                                 *
+ ******************************************************************************/
+
+extern void UI_Init(void)
+{
+ /*
+  * initialisation to be done on startup
+  */
+  current_foreground_colour = 0;
+  current_background_colour = 0;
+
+  called_poll = FALSE;
+
+  while((next_poll_time = Time_Monotonic()) == 0);
+}
+
+/******************************************************************************/
+
+extern BOOL UI_CalledPoll(void)
+{
+ /*
+  * returns TRUE if UI was polled
+  */
+  return(called_poll);
+}
+
+/******************************************************************************/
+
+extern RD_BOOL ui_init(void)
+{
+//fprintf(stderr, "Called ui_init()\n");
+
+  current_server_bpp = 0;
+
+  return(TRUE);
+}
+
+/******************************************************************************/
+
+extern void ui_deinit(void)
+{
+//fprintf(stderr, "Called ui_deinit()\n");
+}
+
+/******************************************************************************/
+
+extern void ui_init_connection(void)
+{
+ /*
+  * Initialize connection specific data, such as session size.
+  */
+
+}
+
+/******************************************************************************/
+
+extern RD_BOOL ui_create_window(void)
+{
+  BOOL success;
+//fprintf(stderr, "Called ui_create_window()\n");
+  success = Display_Create(g_width, g_height, g_server_depth);
+
+  if(success){
+
+     current_server_bpp = g_server_depth;
+
+     Display_SetWindowTitle(g_title);
+
+     success = Display_OpenWindow();
+  }
+
+  return(success);
+}
+
+/******************************************************************************/
+
+extern void ui_resize_window(void)
+{
+  //fprintf(stderr, "Called ui_resize_window()\n");
+
+  reinit_display();
+}
+
+/******************************************************************************/
+
+extern void ui_destroy_window(void)
+{
+//fprintf(stderr, "Called ui_destroy_window()\n");
+  Display_Destroy();
+  Mouse_EnsurePointerEnabled();
+}
+
+/******************************************************************************/
+
+extern int ui_select(int rdp_socket)
+{
+  int n;
+  struct timeval wait;
+  event_type event;
+  unsigned int time;
+  BOOL found_data;
+  int select_result;
+ /*
+  * Returns 0 after user quit, 1 otherwise
+  */
+#ifdef WITH_DEBUG_AJS
+	printf("\ncall ui_select(rdp_socket={%li})\n", rdp_socket);
+#endif
+  fd_set rfds, wfds;
+
+  called_poll = TRUE;
+
+ /*
+  * Make select poll (return immediately)
+  */
+  wait.tv_sec = 0;
+  wait.tv_usec = 0;
+
+  while (True){
+    n = rdp_socket;
+
+   /*
+    * Process any events already waiting
+    */
+    Display_Poll();
+    Keyboard_Poll();
+    Mouse_Poll();
+    Display_Poll();
+    MemMan_PollMemoryManagement();
+    Clipboard_Poll();
+
+    if(rdpclient_quit){
+#ifdef WITH_DEBUG_AJS
+       printf("return=0 (rdpclient_quit == TRUE : user quit)\n\n");
+#endif
+       return(0);
+    }
+
+   /*
+    * Check for present of incomming data
+    */
+    FD_ZERO(&rfds);
+    FD_ZERO(&wfds);
+    FD_SET(rdp_socket, &rfds);
+
+#ifdef WITH_RDPSND
+    rdpsnd_add_fds(&n, &rfds, &wfds, &wait);
+#endif
+
+    /* add redirection handles */
+/* NOT ON RISC OS
+    rdpdr_add_fds(&n, &rfds, &wfds, &tv, &s_timeout);
+    seamless_select_timeout(&tv);
+*/
+    n++;
+
+    found_data = FALSE;
+
+#ifdef WITH_DEBUG_AJS
+	printf("   about to call select(n {%li}, &rfds {%li}, NULL, NULL, &wait {%li});\n", n, &rfds, &wait);
+	printf("%s - before select() call\n", current_time_date());
+#endif
+
+/*
+    select_result = select(n, &rfds, NULL, NULL, &wait);
+*/
+    select_result = select(n, &rfds, &wfds, NULL, &wait);
+
+#ifdef WITH_DEBUG_AJS
+	printf("%s - after select() call\n", current_time_date());
+	printf("   select_result = %i;\n", select_result);
+#endif
+    
+/* Blocking poll
+    select_result = select(n, &rfds, NULL, NULL, NULL);
+*/
+    if(select_result == -1){
+
+       error("select: %s\n", strerror(errno));
+
+    }
+    else if(select_result > 0){
+
+       if(FD_ISSET(rdp_socket, &rfds)){
+#ifdef WITH_DEBUG_AJS
+          printf("   FD_ISSET(rdp_socket {%li}, &rfds {%li}) == TRUE;\n", rdp_socket, &rfds);
+#endif
+          found_data = TRUE;
+       }
+       else
+       {
+#ifdef WITH_DEBUG_AJS
+          printf("   FD_ISSET(rdp_socket {%li}, &rfds {%li}) == FALSE;\n", rdp_socket, &rfds);
+#endif
+       }
+    }
+
+    if(!Display_SingleTask()){
+
+       while((time = Time_Monotonic()) == 0);
+
+       if(!found_data || time > next_poll_time){
+//if(found_data && time > next_poll_time)
+//   fprintf(stderr, "Poll timeout with data   time %i  timeout %i\n", time, next_poll_time);
+   
+         /*
+          * Only poll if the process time has run out
+          * or there is no data waiting
+          */
+       
+          event = RDPClient_PollNull();
+          while(event != event_NULL)
+             event = RDPClient_PollNull();
+
+          while((time = Time_Monotonic()) == 0);
+
+          next_poll_time = time + MAX_PROCESS_TIME;
+       }
+    }
+
+#ifdef WITH_RDPSND
+    rdpsnd_check_fds(&rfds, &wfds);
+#endif
+
+/* NOT ON RISCOS
+    rdpdr_check_fds(&rfds, &wfds, (RD_BOOL) False);
+*/
+
+
+#ifdef WITH_DEBUG_AJS
+	printf("   if(found_data {%li}) return(1);\n", found_data);
+#endif
+    if(found_data){
+#ifdef WITH_DEBUG_AJS
+	printf("return=1\n\n");
+#endif
+       return(1);
+    }
+  }
+}
+
+/******************************************************************************/
+
+extern unsigned int read_keyboard_state(void)
+{
+  return((unsigned int)Keyboard_GetState());
+}
+
+/******************************************************************************/
+
+extern uint16 ui_get_numlock_state(unsigned int state)
+{
+  uint16 lock_state = 0;
+  keyboard_state_block state_block;
+
+  state_block.value = (int)state;
+
+  if(state_block.data.num_lock == 1)
+     lock_state |= KBD_FLAG_NUMLOCK;
+
+  if(state_block.data.caps_lock == 1)
+     lock_state |= KBD_FLAG_CAPITAL;
+
+  if(state_block.data.scroll_lock == 1)
+     lock_state |= KBD_FLAG_SCROLL;
+     
+//fprintf(stderr, "send lock state flag %i\n", lock_state);
+  return(lock_state);
+}
+
+/******************************************************************************/
+
+extern RD_HCURSOR ui_create_cursor(unsigned int x, unsigned int y, int width, int height,
+                                   uint8 * andmask, uint8 * xormask, int bpp)
+{
+  pointer_block *pointer;
+  unsigned char *mask_buffer;
+//fprintf(stderr, "Called ui_create_cursor(x=%i, y=%i, width=%i, height=%i, andmask=%li, xormask=%i, bpp=%i)\n", x, y, width, height, andmask, xormask, bpp);
+
+  mask_buffer = Pointer_PrepMaskData(width, height, (unsigned char *)andmask, (bpp != 1));
+
+  pointer = Pointer_Create(width, height, x, y, (mask_buffer != NULL));
+
+  if(pointer != NULL){
+     Pointer_SetData(pointer, bpp, (unsigned char *)xormask, mask_buffer);
+     free(mask_buffer);
+  }
+
+  return((RD_HCURSOR)pointer);
+}
+
+/******************************************************************************/
+
+extern void ui_set_cursor(RD_HCURSOR cursor)
+{
+//fprintf(stderr, "Called ui_set_cursor(cursor=%li)\n", cursor);
+
+  Display_SetPointer((pointer_block *)cursor);
+}
+
+/******************************************************************************/
+
+extern void ui_set_null_cursor(void)
+{
+//fprintf(stderr, "Called ui_set_null_cursor()\n");
+
+  Display_SetPointer((pointer_block *)NULL);
+}
+
+/******************************************************************************/
+
+extern void ui_move_pointer(int x, int y)
+{
+//fprintf(stderr, "Called ui_move_pointer(x=%i, y=%i)\n", x, y);
+
+  Display_UpdatePointerPosition(x, y);
+}
+
+/******************************************************************************/
+
+extern void ui_paint_bitmap(int x, int y, int cx, int cy, int width, int height, uint8 * data)
+{
+ /*
+  * Plot bitmap data to Display
+  *
+  * x       x coord in Display to plot to (top left)
+  * y       y coord in Display to plot to (top left)
+  * cx      width to plot (may be smaller than 'width')
+  * cy      height to plot (may be smaller than 'height')
+  * height  height of bitmap data
+  * width   width of bitmap data
+  * data    bitmap data
+  */
+//fprintf(stderr, "Called ui_paint_bitmap(x=%i, y=%i, cx=%i, cy=%i, width=%i, heigh=%i, data=%li)\n", x, y, cx, cy, width, height, data);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+    
+  Display_PlotData(SpriteLib_GXcopy, x, y, (unsigned char *)data, 0, 0, cx, cy, width, height);
+
+  Sound_Poll();
+  Mouse_Poll();
+}
+
+/******************************************************************************/
+
+extern RD_HCOLOURMAP ui_create_colourmap(COLOURMAP * colours)
+{
+  palette_entry *palette, *palette_p;
+  size_t size;
+  int maxcol;
+  int colour;
+  COLOURENTRY *colours_p;
+
+//fprintf(stderr, "Called ui_create_colourmap(%li)  colours.ncolours = %i\n", colours, colours->ncolours);
+
+  size = 256 * sizeof(palette_entry);
+  palette = malloc(size);
+  if(palette == NULL)
+     return(NULL);
+
+  memset(palette, 0, size);
+
+  if(colours->ncolours > 256)
+     maxcol = 256;
+  else
+     maxcol = (int)colours->ncolours;
+
+  palette_p = palette;
+  colours_p = colours->colours;
+
+  for(colour = 0; colour < maxcol; colour++){
+
+     palette_p->data.red = colours_p->red;
+     palette_p->data.green = colours_p->green;
+     palette_p->data.blue = colours_p->blue;
+
+/*
+fprintf(stderr, "  colour %i   red %i  green %i  blue %i\n", colour,
+        palette_p->data.red, palette_p->data.green, palette_p->data.blue);
+*/
+
+     palette_p++;
+     colours_p++;
+
+  }
+
+//fprintf(stderr, " ui_create_colourmap() returns %li\n", palette);
+
+  return((RD_HCOLOURMAP)palette);
+}
+
+/******************************************************************************/
+
+extern void ui_set_colourmap(RD_HCOLOURMAP map)
+{
+//fprintf(stderr, "Called ui_set_colourmap(%li)\n", map);
+
+  if(map != NULL){
+
+     Display_SetCustomPalette((palette_entry *)map);
+
+     free(map);
+
+  }
+}
+
+/******************************************************************************/
+
+extern void ui_bell(void)
+{
+  Sound_SysBeep();
+}
+
+/******************************************************************************/
+
+extern void ui_destblt(uint8 opcode, /* dest */ int x, int y, int cx, int cy)
+{
+//fprintf(stderr, "Called ui_destblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i)\n", opcode, x, y, cx, cy);
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_PlotRectangle(opcode, x, y, cx, cy, current_foreground_colour, TRUE);
+
+  Sound_Poll();
+  Mouse_Poll();
+}
+
+/******************************************************************************/
+
+static int sprite_count = 0;
+
+extern void ui_patblt(uint8 opcode,
+                      /* dest */ int x, int y, int cx, int cy,
+                      /* brush */ BRUSH * brush, int bgcolour, int fgcolour)
+{
+//if(cx == 1){
+//fprintf(stderr, "Called ui_patblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, brush=%li brush->style=%i, brush->xorigin=%i, brush->yorigin=%i, bgcolour=%i, fgcolour=%i)\n", opcode, x, y, cx, cy, brush, brush->style, brush->xorigin, brush->yorigin, bgcolour, fgcolour);
+//}
+
+  spritelib_block *sprite;
+  uint8 i, ipattern[8];
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  current_foreground_colour = fgcolour;
+  current_background_colour = bgcolour;
+
+  switch(brush->style)
+  {
+    case 0: /* solid fill */
+      current_foreground_colour = fgcolour;
+
+      Display_PlotRectangle(opcode, x, y, cx, cy, fgcolour, TRUE);
+      break;
+
+    case 2: /* predefined pattern fill */
+//fprintf(stderr, "Called ui_patblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, brush=%li brush->style=%i, bgcolour=%i, fgcolour=%i)\n", opcode, x, y, cx, cy, brush, brush->style, bgcolour, fgcolour);
+      current_foreground_colour = fgcolour;
+      current_background_colour = bgcolour;
+
+      sprite = SpriteLib_Create(8, 8, 1, FALSE, FALSE);
+
+      if(sprite != NULL){
+
+         SpriteLib_SetImageData(sprite,
+                                (unsigned char *)(hatch_patterns + brush->pattern[0] * 8),
+                                FALSE);
+
+         Display_PlotSpriteBitMask(opcode, x, y, sprite, 0, 0, brush->xorigin, brush->yorigin,
+                                   cx, cy, fgcolour, bgcolour, TRUE, TRUE);
+
+         SpriteLib_Destroy(sprite);
+      }
+      break;
+
+    case 3: /* custom pattern fill */
+//if(cx == 1){
+//fprintf(stderr, "Called ui_patblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, brush=%li brush->style=%i, bgcolour=%i, fgcolour=%i)\n", opcode, x, y, cx, cy, brush, brush->style, bgcolour, fgcolour);
+//}
+      if(brush->bd == 0){ /* rdp4 brush */
+
+         current_foreground_colour = bgcolour;
+         current_background_colour = fgcolour;
+
+         for(i = 0; i < 8; i++){
+            ipattern[7 - i] = brush->pattern[i];
+         }
+
+         sprite = SpriteLib_Create(8, 8, 1, FALSE, FALSE);
+
+         if(sprite != NULL){
+
+            SpriteLib_SetImageData(sprite, (unsigned char *)ipattern, FALSE);
+            
+            Display_PlotSpriteBitMask(opcode, x, y, sprite, 0, 0, brush->xorigin, brush->yorigin,
+                                      cx, cy, bgcolour, fgcolour, TRUE, TRUE);
+
+            SpriteLib_Destroy(sprite);
+         }
+      }
+      else if(brush->bd->colour_code > 1){ /* > 1 bpp */
+//fprintf(stderr, "Called ui_patblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, brush=%li brush->style=%i, bgcolour=%i, fgcolour=%i, bruch->bd->colour_code=%i)\n", opcode, x, y, cx, cy, brush, brush->style, bgcolour, fgcolour, brush->bd->colour_code);
+         sprite = SpriteLib_Create(8, 8, g_server_depth, (g_server_depth == 8), FALSE);
+
+         if(sprite != NULL){
+            char filename[255];
+            SpriteLib_SetImageData(sprite, (unsigned char *)brush->bd->data, FALSE);
+
+sprite_count++;
+sprintf(filename, "RAM::RamDisc0.$.%i", sprite_count);
+Sprite_Save(sprite->spritearea, filename);
+
+            Display_PlotSpriteTiled(opcode, x, y, sprite, 0, 0, brush->xorigin, brush->yorigin,
+                                    cx, cy, TRUE);
+                                                           
+            SpriteLib_Destroy(sprite);
+         }
+      }
+      else{
+
+         current_foreground_colour = bgcolour;
+         current_background_colour = fgcolour;
+
+         sprite = SpriteLib_Create(8, 8, 1, FALSE, FALSE);
+
+         if(sprite != NULL){
+
+            SpriteLib_SetImageData(sprite, (unsigned char *)brush->bd->data, FALSE);
+            
+            Display_PlotSpriteBitMask(opcode, x, y, sprite, 0, 0, brush->xorigin, brush->yorigin,
+                                      cx, cy, bgcolour, fgcolour, TRUE, TRUE);
+
+            SpriteLib_Destroy(sprite);
+         }
+      }
+      break;
+
+    default:
+      unimpl("brush %d\n", brush->style);
+  }
+
+}
+
+/******************************************************************************/
+
+extern void ui_screenblt(uint8 opcode,
+                         /* dest */ int x, int y, int cx, int cy,
+                         /* src */ int srcx, int srcy)
+{
+//fprintf(stderr, "Called ui_screenblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, srcx=%i, srcy=%i)\n", opcode, x, y, cx, cy, srcx, srcy);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_CopyRectangle(opcode, x, y, srcx, srcy, cx, cy);
+
+}
+
+/******************************************************************************/
+
+extern void ui_memblt(uint8 opcode,
+                      /* dest */ int x, int y, int cx, int cy,
+                      /* src */ RD_HBITMAP src, int srcx, int srcy)
+{
+ /*
+  * Plot cached Sprite to Display
+  *
+  * x       x coord in Display to plot to (top left)
+  * y       y coord in Display to plot to (top left)
+  * cx      width to plot (may be smaller than Sprite width)
+  * cy      height to plot (may be smaller than Sprite height)
+  * src     source Sprite
+  * srcx    x coord of source image to copy from (top left)
+  * srcy    y coord of source image to copy from (top left)
+  */
+//fprintf(stderr, "Called ui_memblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, src=%li, srcx=%i, srcy=%i)\n", opcode, x, y, cx, cy, src, srcx, srcy);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_PlotSprite(opcode, x, y, (spritelib_block *)src, srcx, srcy, cx, cy);
+
+  Sound_Poll();
+  Mouse_Poll();
+}
+
+/******************************************************************************/
+
+extern void ui_triblt(uint8 opcode,
+                      /* dest */ int x, int y, int cx, int cy,
+                      /* src */ RD_HBITMAP src, int srcx, int srcy,
+                      /* brush */ BRUSH * brush, int bgcolour, int fgcolour)
+{
+  unimpl("Called ui_triblt(opcode=%X, x=%i, y=%i, cx=%i, cy=%i, src=%li, srcx=%i, srcy=%i, brush=%li, bgcolour=%i, fgcolour=%i)\n", opcode, x, y, cx, cy, src, srcx, srcy, brush, bgcolour, fgcolour);
+
+  current_foreground_colour = fgcolour;
+  current_background_colour = bgcolour;
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+}
+
+/******************************************************************************/
+
+extern void ui_line(uint8 opcode,
+                    /* dest */ int startx, int starty, int endx, int endy,
+                    /* pen */ PEN * pen)
+{
+//fprintf(stderr, "Called ui_line(opcode=%X, startx=%i, starty=%i, endx=%i, endy=%i, pen=%li)\n", opcode, startx, starty, endx, endy, pen);
+  current_foreground_colour = pen->colour;
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_PlotLine(opcode, startx, starty, endx, endy, pen->colour, TRUE);
+}
+
+/******************************************************************************/
+
+extern void ui_rect(/* dest */ int x, int y, int cx, int cy,
+                    /* brush */ int colour)
+{
+//fprintf(stderr, "Called ui_rect(x=%i, y=%i, cx=%i, cy=%i, colour=%i)\n", x, y, cx, cy, colour);
+  current_foreground_colour = colour;
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_PlotRectangle(SpriteLib_GXcopy, x, y, cx, cy, colour, TRUE);
+  
+}
+
+/******************************************************************************/
+
+extern void ui_polygon(uint8 opcode,
+                       /* mode */ uint8 fillmode,
+                       /* dest */ RD_POINT * point, int npoints,
+                       /* brush */ BRUSH * brush, int bgcolour, int fgcolour)
+{
+//fprintf(stderr, "Called ui_polygon(opcode=%i, fillmode=%i, point=%i, npoints=%i, brush=%i, bgcolour=%i, fgcolour=%i)\n", opcode, fillmode, point, npoints, brush, bgcolour, fgcolour);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  /* AJS TO DO */
+}
+
+/******************************************************************************/
+
+extern void ui_polyline(uint8 opcode,
+                        /* dest */ RD_POINT * points, int npoints,
+                        /* pen */ PEN * pen)
+{
+//fprintf(stderr, "Called ui_polyline(opcode=%i, points=%i, npoints=%i, pen=%i)\n", opcode, points, npoints, pen);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  /* AJS TO DO */
+}
+
+/******************************************************************************/
+
+extern void ui_ellipse(uint8 opcode,
+                      /* mode */ uint8 fillmode,
+                      /* dest */ int x, int y, int cx, int cy,
+                      /* brush */ BRUSH * brush, int bgcolour, int fgcolour)
+{
+//fprintf(stderr, "Called ui_ellipse(opcode=%i, fillmode=%i, x=%i, y=%i, cx=%i, cy=%i, brush=%i, bgcolour=%i, fgcolour=%i)\n", opcode, fillmode, x, y, cx, cy, brush, bgcolour, fgcolour);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  /* AJS TO DO */
+}
+
+/******************************************************************************/
+
+extern void ui_desktop_save(uint32 offset, int x, int y, int cx, int cy)
+{
+//fprintf(stderr, "Called ui_desktop_save(offset=%i, x=%i, y=%i, cx=%i, cy=%i)\n", offset, x, y, cx, cy);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_SaveToCache((unsigned int)offset, x, y, cx, cy);
+
+  Sound_Poll();
+  Mouse_Poll();
+}
+
+/******************************************************************************/
+
+extern void ui_desktop_restore(uint32 offset, int x, int y, int cx, int cy)
+{
+//fprintf(stderr, "Called ui_desktop_restore(offset=%i, x=%i, y=%i, cx=%i, cy=%i)\n", offset, x, y, cx, cy);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  Display_RestoreFromCache((unsigned int) offset, x, y, cx, cy);
+
+  Sound_Poll();
+  Mouse_Poll();
+}
+
+/******************************************************************************/
+
+extern void ui_draw_glyph(int mixmode,
+                          /* dest */ int x, int y, int cx, int cy,
+                          /* src */ RD_HGLYPH glyph, int srcx, int srcy,
+                          int bgcolour, int fgcolour)
+{
+  BOOL set_background = !(mixmode == MIX_TRANSPARENT);
+//fprintf(stderr, "ui_draw_glyph(mixmode=%i, x=%i, y=%i, cx=%i, cy=%i, srcx=%i, srcy=%i, bgcolour=%i, fgcolour=%i)\n",mixmode, x, y, cx, cy, srcx, srcy, bgcolour, fgcolour);
+
+  current_foreground_colour = fgcolour;
+  current_background_colour = bgcolour;  
+
+  Display_PlotSpriteBitMask(SpriteLib_GXcopy, x, y, (spritelib_block *)glyph, srcx, srcy,
+                            x, y, cx, cy, fgcolour, bgcolour, set_background, FALSE);
+}
+
+/******************************************************************************/
+
+#define DO_GLYPH(ttext,idx) \
+{\
+  glyph = cache_get_font (font, ttext[idx]);\
+  if (!(flags & TEXT2_IMPLICIT_X))\
+    {\
+      xyoffset = ttext[++idx];\
+      if ((xyoffset & 0x80))\
+	{\
+	  if (flags & TEXT2_VERTICAL) \
+	    y += ttext[idx+1] | (ttext[idx+2] << 8);\
+	  else\
+	    x += ttext[idx+1] | (ttext[idx+2] << 8);\
+	  idx += 2;\
+	}\
+      else\
+	{\
+	  if (flags & TEXT2_VERTICAL) \
+	    y += xyoffset;\
+	  else\
+	    x += xyoffset;\
+	}\
+    }\
+  if (glyph != NULL)\
+    {\
+      ui_draw_glyph (mixmode, x + glyph->offset,\
+		     y + glyph->baseline,\
+		     glyph->width, glyph->height,\
+		     glyph->pixmap, 0, 0, bgcolour, fgcolour);\
+      if (flags & TEXT2_IMPLICIT_X)\
+	x += glyph->width;\
+    }\
+}
+
+/******************************************************************************/
+
+extern void ui_draw_text(uint8 font, uint8 flags, uint8 opcode, int mixmode, int x, int y,
+                         int clipx, int clipy, int clipcx, int clipcy,
+                         int boxx, int boxy, int boxcx, int boxcy, BRUSH *brush,
+                         int bgcolour, int fgcolour, uint8 *text, uint8 length)
+{
+//fprintf(stderr, "Called ui_draw_text(font=%i, flags=%i, mixmode=%i, x=%i, y=%i, clipx=%i, clipy=%i, clipcx=%i, clipcy=%i, boxx=%i, boxy=%i, boxcx=%i, boxcy=%i, bgcolour=%i, fgcolour%i, text='%s', length=%i)\n", font, flags, mixmode, x, y, clipx, clipy, clipcx, clipcy, boxx, boxy, boxcx, boxcy, bgcolour, fgcolour, (char *)text, length);
+
+  /* TODO: use brush appropriately */
+  
+  FONTGLYPH *glyph;
+  int i, j, xyoffset;
+  DATABLOB *entry;
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+ /*
+  * Draw background rectangle which goes behind text
+  */
+  if(boxcx > 1)
+     Display_PlotRectangle(SpriteLib_GXcopy, boxx, boxy, boxcx, boxcy, bgcolour, FALSE);
+  else if(mixmode == MIX_OPAQUE)
+     Display_PlotRectangle(SpriteLib_GXcopy, clipx, clipy, clipcx, clipcy, bgcolour, FALSE);
+
+  /*
+   * Paint text, character by character
+   * (Magic taken from rdesktop\xwin.c)
+   */
+  for(i = 0; i < length;){
+
+     switch (text[i])
+     {
+       case 0xff:
+         if(i + 2 < length)
+            cache_put_text(text[i + 1], text, text[i + 2]);
+         else{
+            error("this shouldn't be happening\n");
+            exit(1);
+         }
+
+         /* this will move pointer from start to first character after FF command */
+         length -= i + 3;
+         text = &(text[i + 3]);
+         i = 0;
+         break;
+
+       case 0xfe:
+         entry = cache_get_text(text[i + 1]);
+         if(entry != NULL){
+            if((((uint8 *) (entry->data))[1] == 0) && (!(flags & TEXT2_IMPLICIT_X))){
+               if(flags & TEXT2_VERTICAL)
+                  y += text[i + 2];
+               else
+                  x += text[i + 2];
+            }
+            for(j = 0; j < entry->size; j++)
+               DO_GLYPH(((uint8 *) (entry->data)), j);
+         }
+
+         if(i + 2 < length)
+            i += 3;
+         else
+            i += 2;
+
+         length -= i;
+
+         /* this will move pointer from start to first character after FE command */
+         text = &(text[i]);
+         i = 0;
+         break;
+
+       default:
+         DO_GLYPH(text, i);
+         i++;
+         break;
+     }
+  }
+
+ /*
+  * Update display with drawn text as calls above only write to the
+  * backing store Sprite
+  */
+  if(boxcx > 1)
+     Display_Update(boxx, boxy, boxcx, boxcy);
+  else
+     Display_Update(clipx, clipy, clipcx, clipcy);
+
+}
+
+/******************************************************************************/
+
+extern RD_HBITMAP ui_create_bitmap(int width, int height, uint8 * data)
+{
+  spritelib_block *sprite;
+//fprintf(stderr, "Called ui_create_bitmap(%i, %i, %li)\n", width, height, data);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  sprite = SpriteLib_Create(width, height, g_server_depth, (g_server_depth == 8), FALSE);
+
+  if(sprite != NULL)
+     SpriteLib_SetImageData(sprite, (unsigned char *)data, FALSE);
+
+//fprintf(stderr, " ui_create_bitmap() returns %li\n", sprite);
+
+//  char filename[255];
+//  sprite_count++;
+//  sprintf(filename, "RAM::RamDisc0.$.%i", sprite_count);
+//  Sprite_Save(sprite->spritearea, filename);
+
+  return((RD_HBITMAP)sprite);
+}
+
+/******************************************************************************/
+
+extern RD_HGLYPH ui_create_glyph(int width, int height, uint8 * data)
+{
+  spritelib_block *sprite;
+//fprintf(stderr, "Called ui_create_glyph(width=%i, height=%i, data=%li)\n", width, height, data);
+
+  if(current_server_bpp != g_server_depth)
+     reinit_display();
+
+  sprite = SpriteLib_Create(width, height, 1, FALSE, FALSE);
+
+  if(sprite != NULL)
+     SpriteLib_SetImageData(sprite, (unsigned char *)data, FALSE);
+
+  return((RD_HGLYPH)sprite);
+}
+
+/******************************************************************************/
+
+extern void ui_set_clip(int x, int y, int cx, int cy)
+{
+//fprintf(stderr, "Called ui_set_clip(x=%i, y=%i, cx=%i, cy=%i)\n", x, y, cx, cy);
+
+  Display_SetClipArea(x, y, cx, cy);
+}
+
+/******************************************************************************/
+
+extern void ui_reset_clip(void)
+{
+//fprintf(stderr, "Called ui_reset_clip()\n");
+
+  Display_ResetClipArea();
+}
+
+/******************************************************************************/
+
+extern void ui_destroy_bitmap(RD_HBITMAP bmp)
+{
+//fprintf(stderr, "Called ui_destroy_bitmap(bmp=%li)\n", bmp);
+
+  SpriteLib_Destroy((spritelib_block *)bmp);
+}
+
+/******************************************************************************/
+
+extern void ui_destroy_glyph(RD_HGLYPH glyph)
+{
+//fprintf(stderr, "Called ui_destroy_glyph(glyph=%li)\n", glyph);
+
+  SpriteLib_Destroy((spritelib_block *)glyph);
+}
+
+/******************************************************************************/
+
+extern void ui_destroy_cursor(RD_HCURSOR cursor)
+{
+//fprintf(stderr, "Called ui_destroy_cursor(cursor=%li)\n", cursor);
+
+  Pointer_Destroy((pointer_block *)cursor);
+}
+
+/******************************************************************************/
+
+extern void ui_begin_update(void)
+{
+/* do nothing here but is used in uiports */
+}
+
+/******************************************************************************/
+
+extern void ui_end_update(void)
+{
+/* do nothing here but is used in uiports */
+}
+
+/******************************************************************************
+ *                                  handlers                                  *
+ ******************************************************************************/
+
+/******************************************************************************
+ *                                  routines                                  *
+ ******************************************************************************/
+
+static void reinit_display(void)
+{
+
+  ui_destroy_window();
+  ui_create_window();
+  
+}

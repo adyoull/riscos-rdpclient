@@ -1,0 +1,42 @@
+!RDPClient version 0.88 05/04/2010
+
+A port of rdesktop 1.6.0 to RISC OS by Andrew Sellors
+Email: asellors@orac2.demon.co.uk
+Web: http://www.orac2.demon.co.uk
+
+This software is released under the GNU General Public License
+See the document "Licence" for more details.
+
+
+DeepKeys
+========
+
+The DeapKeys module must be loaded at boot time for this software to work.
+Double click on DeepKeys.InstDeepK to copy the module into !Boot and reboot
+the computer to allow the installation to take effect.
+
+DeepKeys © Cerilica Ltd 1999-2003  Contact: <simon@cerilica.com>
+
+
+Documentation
+=============
+
+Please read the supplied !Help file before using this application. This
+may be opened by clicking Menu over the !RDPClient icon in the Filer and
+choosing the "App. '!RDPClient' => Help" menu item.
+
+
+New in this release
+===================
+
+Changes since 0.79:
+~~~~~~~~~~~~~~~~~~~
+
+* Based on rdesktop 1.6.0 sources.
+* Compatible with Windows Vista and Windows 7.
+* Synchronisation of "lock" keys with remote computer.
+* Support for full colour mouse pointers.
+* Support for 15bit screen mode on Iyonix nVidia FX series graphics cards.
+* Screen mode selection support for ViewFinder graphics cards. 
+
+
