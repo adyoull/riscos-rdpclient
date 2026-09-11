@@ -342,7 +342,7 @@ def assemble_built(outp):
     """Assemble a ready-to-run application in ./Built/!RDPClient.
 
     WHY: the app's resources (Messages, Templates, sprites, DeepKeys, ...) live
-    in the source !RDPClient, not here in "Claude outputs". Copying only the
+    in the source !RDPClient, not here in the build folder. Copying only the
     linked binary to the Pi leaves those stale (old menu text, old version).
     This step produces one self-contained folder to copy across.
 

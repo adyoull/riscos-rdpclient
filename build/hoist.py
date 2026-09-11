@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Hoist C99 mid-block declarations to C89 (block-top), semantics-preserving.
 Char-accurate brace tracking (ignores braces in strings/chars/comments)."""
-import re, sys
+import re, sys, os
 
-TYPES = set(open("/home/claude/typeset.txt").read().split())
+TYPES = set(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "typeset.txt")).read().split())
 TYPEKW = set("unsigned signed short long int char float double void const volatile struct union enum".split())
 STORAGE = set("register static auto extern".split())
 skipped = []

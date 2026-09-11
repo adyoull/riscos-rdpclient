@@ -31,7 +31,7 @@ everything:
 1. **C89 ONLY.** Norcroft rejects C99 mid-block declarations and compound
    literals. Sources must be transformed to C89 before building (see §5).
 2. **Reachable only from a normal network.** In this project the build was
-   driven from the user's **native macOS Terminal**. The Claude cloud container
+   driven from the user's **native macOS Terminal**. A sandboxed cloud container
    and the desktop-bridge Linux VM are both proxy-blocked (and the VM has no DNS)
    — they cannot reach the build service. So: **edit/prepare anywhere, but run
    the actual build from a machine with plain internet.**
@@ -45,8 +45,7 @@ Dependency for the driver: `python3 -m pip install websocket-client`.
 
 ## 3. Inputs (the build kit)
 
-All of these live in the working folder (on the user's drive: `RiscOS/Claude
-outputs/`):
+All of these live in the working folder (in the build folder):
 
 - `buildapp.py` — the build driver (chunked, incremental, assembles the app).
 - `plan.json` — the compile/link plan (per-file `cc` command lines + final link).

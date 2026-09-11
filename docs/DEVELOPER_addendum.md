@@ -188,7 +188,7 @@ us several confusing test cycles.
 Rule: after every build, refresh the deliverable so the file you copy to the Pi
 is the one you just built, e.g. on the Mac:
 
-    cd "…/Claude outputs"
+    cd "…/build"
     cat RDPClient > "RDPClient,ff8"     # overwrite content, keep the &FF8 type
 
 then copy `RDPClient,ff8` into `!RDPClient`. Or just copy the freshly-written
