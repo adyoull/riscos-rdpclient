@@ -35,7 +35,7 @@
 #endif
 #endif
 
-extern uint16 g_mcs_userid;
+extern uint32 g_mcs_userid;	/* full word: see mcs.c (alignment fix) */
 extern char *g_username;
 extern char g_codepage[16];
 extern RD_BOOL g_bitmap_compression;
@@ -44,7 +44,7 @@ extern RD_BOOL g_encryption;
 extern RD_BOOL g_desktop_save;
 extern RD_BOOL g_polygon_ellipse_orders;
 extern RD_BOOL g_use_rdp5;
-extern uint16 g_server_rdp_version;
+extern uint32 g_server_rdp_version;	/* full word: see secure.c (alignment fix) */
 extern uint32 g_rdp5_performanceflags;
 extern int g_server_depth;
 extern int g_width;

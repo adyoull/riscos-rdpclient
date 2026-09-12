@@ -69,7 +69,29 @@ extern void Die_Init(void)
 
   atexit(atexit_handler);
 
+ /*
+  * (C) 2026 Andrew Youll -- capture the C runtime's error output to a
+  * persistent file from the very start. This catches the "heap overwritten"
+  * runtime message and, for a data abort (e.g. an unaligned access), the
+  * postmortem the runtime prints -- registers, the aborting address and a
+  * stack backtrace -- which is what pinpoints a fault. Viewable afterwards in
+  * <Wimp$ScrapDir>.RDPClient.Error (the Filer opens that directory on death).
+  */
+  OS_CLI("CDIR "filename_DIR);
+  freopen(filename_ERROR, "w", stderr);
+  setbuf(stderr, NULL);
+
   for(signalnumber = 1; signalnumber <= signal_MAX; signalnumber++){
+
+     /*
+      * Leave the hardware-fault signals uncaught -- SIGFPE (2), SIGILL (3) and
+      * SIGSEGV (5) -- so the C runtime prints its full postmortem (with the
+      * aborting address) to the captured stderr instead of us swallowing it in
+      * a Wimp error box. atexit_handler still runs afterwards to tidy up and
+      * open the log directory.
+      */
+     if(signalnumber == 2 || signalnumber == 3 || signalnumber == 5)
+        continue;
 
      signal(signalnumber, die_message);
 
@@ -163,11 +185,10 @@ static void die_message(int signalnumber)
      Log_Save(filename_LOG);
 
     /*
-     * Redirect stderr to error file
+     * stderr is already redirected to the error file (from Die_Init), so the
+     * runtime's own output is preserved -- just append to it, don't truncate.
+     * (C) 2026 Andrew Youll.
      */
-     freopen(filename_ERROR, "w", stderr);
-     setbuf(stderr, NULL);
-
 
      OS_CLI("Filer_OpenDir "filename_DIR);
 

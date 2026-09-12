@@ -42,17 +42,22 @@ extern void GFXLib_PlotDataToSprite_32_Copy(int source_linebytes,
 
      while(x_counter > 0){
 
-       pixel = *((unsigned int *)(source_ptr));
+       /* (C) 2026 Andrew Youll -- assemble the source pixel from individual
+          bytes rather than one word read, so we never perform an unaligned
+          load (which faults when CPU alignment checking is on -- the RISC OS
+          default on ARMv7). Dest is word-aligned sprite memory. Source bytes
+          are B,G,R,(A); output is RISC OS &00BbGgRr order, as before. */
+       pixel = ((unsigned int)source_ptr[0] << 16) |
+               ((unsigned int)source_ptr[1] << 8)  |
+                (unsigned int)source_ptr[2];
 
-       *((unsigned int *)(dest_ptr)) = ((pixel << 16) & 0x00FF0000) |
-                                        (pixel        & 0x0000FF00) |
-                                       ((pixel >> 16) & 0x000000FF);
+       *((unsigned int *)(dest_ptr)) = pixel;
 
        source_ptr += 4;
        dest_ptr += 4;
 
        x_counter--;
-       
+
      }
 
      source_ptr2 += source_linebytes;
@@ -93,12 +98,13 @@ extern void GFXLib_PlotDataToSprite_FlipVertical_32_Copy(int source_linebytes,
 
      while(x_counter > 0){
 
-       pixel = *((unsigned int *)(source_ptr));
+       /* (C) 2026 Andrew Youll -- byte-assemble to avoid an unaligned load
+          (see GFXLib_PlotDataToSprite_32_Copy above). */
+       pixel = ((unsigned int)source_ptr[0] << 16) |
+               ((unsigned int)source_ptr[1] << 8)  |
+                (unsigned int)source_ptr[2];
 
-       *((unsigned int *)(dest_ptr)) = ((pixel << 16) & 0x00FF0000) |
-                                        (pixel        & 0x0000FF00) |
-                                       ((pixel >> 16) & 0x000000FF);
-                                       /* pixel & 0x00FFFFFF; */
+       *((unsigned int *)(dest_ptr)) = pixel;
 
        source_ptr += 4;
        dest_ptr += 4;

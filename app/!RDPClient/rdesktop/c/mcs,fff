@@ -19,7 +19,14 @@
 
 #include "rdesktop.h"
 
-uint16 g_mcs_userid;
+/* (C) 2026 Andrew Youll -- widened from uint16 to a full word. Norcroft 5.18
+ * (build.riscos.online) compiled the read of this 16-bit global in mcs_connect()
+ * into an unaligned word load (LDR [rn,#2]; MOV rn,LSR#16) rather than an LDRH.
+ * On RISC OS 5 with CPU alignment checking ON (the ARMv7 default on a Pi 4) that
+ * aborts: "abort on data transfer ... in function mcs_connect (type 20)". As a
+ * full word it is word-aligned and read with a plain aligned LDR. The value only
+ * ever occupies 16 bits on the wire, so every out_uint16_*() use is unchanged. */
+uint32 g_mcs_userid;
 extern VCHANNEL g_channels[];
 extern unsigned int g_num_channels;
 
@@ -228,7 +235,7 @@ mcs_send_aurq(void)
 
 /* Expect a AUcf message (ASN.1 PER) */
 static RD_BOOL
-mcs_recv_aucf(uint16 * mcs_userid)
+mcs_recv_aucf(uint32 * mcs_userid)
 {
 	uint8 opcode, result;
 	STREAM s;

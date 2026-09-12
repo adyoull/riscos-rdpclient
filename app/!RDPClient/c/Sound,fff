@@ -41,7 +41,9 @@ static int sound_channels = 0;
 static int sound_bits = 0;
 
 static uint32 snd_rate;
-static short samplewidth;
+static int samplewidth;	/* (C) 2026 Andrew Youll: full word, not short -- avoids
+                         * Norcroft 5.18 unaligned word load of a 16-bit global
+                         * (same class as g_mcs_userid / g_server_rdp_version). */
 
 static unsigned char *sound_global_buffer_data = NULL;
 static int sound_global_buffer_length = 0;

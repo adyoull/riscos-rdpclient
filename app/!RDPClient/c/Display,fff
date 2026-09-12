@@ -99,7 +99,8 @@ static BOOL Redraw(event_pollblock *event, void *reference);
 static BOOL OpenWindow(event_pollblock *event, void *reference);
 static BOOL BuildPixTransTable(event_pollblock *event, void *reference);
 static void build_pixtranstable(spritelib_block *sprite,
-                                char **pixtranstable, char *pixtransbuffer);
+                                char **pixtranstable, char **pixtransbuffer,
+                                int *pixtransbuffer_size);
 static BOOL LooseCaret(event_pollblock *event, void *reference);
 static BOOL GainCaret(event_pollblock *event, void *reference);
 static BOOL PointerEnter(event_pollblock *event, void *reference);
@@ -277,6 +278,10 @@ extern BOOL Display_Create(int width, int height, int bpp)
   displayblock->pointer_coord.x = 0;
   displayblock->pointer_coord.y = 0;
   displayblock->pointer = NULL;
+  displayblock->pixtransbuffer = NULL;          /* (C) 2026 Andrew Youll */
+  displayblock->pixtransbuffer_size = 0;
+  displayblock->pointer_pixtransbuffer = NULL;
+  displayblock->pointer_pixtransbuffer_size = 0;
 
  /*
   * set up dummy sprite block for DSA
@@ -372,7 +377,9 @@ extern BOOL Display_Create(int width, int height, int bpp)
   * initialise pixel translation table for current screen palette
   */
   build_pixtranstable(displayblock->sprite,
-                      &(displayblock->pixtranstable), (char *)&(displayblock->pixtransbuffer));
+                      &(displayblock->pixtranstable),
+                      &(displayblock->pixtransbuffer),
+                      &(displayblock->pixtransbuffer_size));
 
   displayblock->pointer_pixtranstable = (char *)-1;
 
@@ -552,6 +559,18 @@ extern void Display_Destroy(void)
         displayblock->cache = NULL;
      }
 
+     /* (C) 2026 Andrew Youll -- free the dynamically-sized pixel trans tables */
+     if(displayblock->pixtransbuffer != NULL){
+        free(displayblock->pixtransbuffer);
+        displayblock->pixtransbuffer = NULL;
+        displayblock->pixtransbuffer_size = 0;
+     }
+     if(displayblock->pointer_pixtransbuffer != NULL){
+        free(displayblock->pointer_pixtransbuffer);
+        displayblock->pointer_pixtransbuffer = NULL;
+        displayblock->pointer_pixtransbuffer_size = 0;
+     }
+
      EventMsg_Release(message_PALETTECHANGE, event_ANY, BuildPixTransTable);
      EventMsg_Release(message_MODECHANGE, event_ANY, BuildPixTransTable);
      EventMsg_Release(message_MODECHANGE, event_ANY, ModeChange);
@@ -605,7 +624,9 @@ extern void Display_SetCustomPalette(palette_entry *palette)
   }
   else
      build_pixtranstable(displayblock->sprite,
-                        &(displayblock->pixtranstable), (char *)&(displayblock->pixtransbuffer));
+                        &(displayblock->pixtranstable),
+                        &(displayblock->pixtransbuffer),
+                        &(displayblock->pixtransbuffer_size));
 }
 
 /******************************************************************************/
@@ -1240,7 +1261,8 @@ fprintf(stderr, "Display_SetPointer(pointer=%i) displayblock->pointer=%i display
   if(pointer != NULL){
      build_pixtranstable(pointer->base_sprite,
                          &(displayblock->pointer_pixtranstable),
-                         (char *)&(displayblock->pointer_pixtransbuffer));
+                         &(displayblock->pointer_pixtransbuffer),
+                         &(displayblock->pointer_pixtransbuffer_size));
   }
 
 //if(displayblock->pointer != NULL)
@@ -1633,14 +1655,16 @@ static BOOL BuildPixTransTable(event_pollblock *event, void *reference)
 
   if(displayblock->display_sprite != NULL)
      build_pixtranstable(displayblock->display_sprite, &(displayblock->pixtranstable),
-                         (char *)&(displayblock->pixtransbuffer));
+                         &(displayblock->pixtransbuffer),
+                         &(displayblock->pixtransbuffer_size));
 
   if(displayblock->pointer != NULL){
 
      if((displayblock->pointer)->base_sprite != NULL)
         build_pixtranstable((displayblock->pointer)->base_sprite,
                             &(displayblock->pointer_pixtranstable),
-                            (char *)&(displayblock->pointer_pixtransbuffer));
+                            &(displayblock->pointer_pixtransbuffer),
+                            &(displayblock->pointer_pixtransbuffer_size));
 
   }
 
@@ -1650,11 +1674,13 @@ static BOOL BuildPixTransTable(event_pollblock *event, void *reference)
 /******************************************************************************/
 
 static void build_pixtranstable(spritelib_block *sprite,
-                                char **pixtranstable, char *pixtransbuffer)
+                                char **pixtranstable, char **pixtransbuffer,
+                                int *pixtransbuffer_size)
 {
   int requiredsize;
   palette_entry palettebuff[300];
   int grab;
+  char *buf;
  /*
   * calculates pixel translation table for current screen palette
   * code taken from PRMs Vol. 1 Page 834
@@ -1684,9 +1710,29 @@ static void build_pixtranstable(spritelib_block *sprite,
   */
   if(requiredsize == 0){
      /* no table needed */
-     *pixtranstable = (char *)-1; 
+     *pixtranstable = (char *)-1;
      return;
   }
+
+ /*
+  * (C) 2026 Andrew Youll -- the translation table size depends on the SOURCE
+  * image depth (2^bpp entries), not a fixed 256 bytes. A >8bpp image plotted to
+  * an 8bpp screen needs a table of up to 64K; writing it into a fixed 256-byte
+  * field overran (and corrupted) the malloc heap in 8bpp screen modes. Grow the
+  * buffer to the size ColourTrans actually asked for. It is freed in
+  * Display_Destroy.
+  */
+  if(requiredsize > *pixtransbuffer_size){
+     char *nb = realloc(*pixtransbuffer, requiredsize);
+     if(nb == NULL){
+        /* out of memory: fall back to "no table" rather than crash */
+        *pixtranstable = (char *)-1;
+        return;
+     }
+     *pixtransbuffer = nb;
+     *pixtransbuffer_size = requiredsize;
+  }
+  buf = *pixtransbuffer;
 
  /*
   * if 8bit image then get image palette
@@ -1717,11 +1763,11 @@ static void build_pixtranstable(spritelib_block *sprite,
   r.r[1] = (int) header;
   r.r[2] = -1;
   r.r[3] = -1;
-  r.r[4] = (int)pixtransbuffer;
+  r.r[4] = (int)buf;
   r.r[5] = 1;
   Error_Check((os_error *)
               _kernel_swi(SWI_XOS_Bit | SWI_ColourTrans_SelectTable, &r, &r));
-  *pixtranstable = (char *)pixtransbuffer;
+  *pixtranstable = buf;
 
  /*
   * check if it is needed
@@ -1729,11 +1775,11 @@ static void build_pixtranstable(spritelib_block *sprite,
   if(sprite->bpp == 8) {
      *pixtranstable = (char *)-1;
      for(q = 0; q < 256; q++){
-     
-         if(pixtransbuffer[q] != q)
-            *pixtranstable = (char *)pixtransbuffer;
+
+         if(buf[q] != q)
+            *pixtranstable = buf;
      }
-  }     
+  }
 }
 
 /******************************************************************************

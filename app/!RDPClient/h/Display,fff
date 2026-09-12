@@ -52,11 +52,13 @@ typedef struct {
     wimp_point          plotcoord;           /* coord to plot at in window */
     sprite_scalefactors screenscale;         /* scale factors used on screen */
     char                *pixtranstable;      /* ptr to pixel trans table or 0 if not needed */
-    char                pixtransbuffer[256]; /* buffer for pixel trans table */
+    char                *pixtransbuffer;     /* dynamically-sized pixel trans table buffer */
+    int                 pixtransbuffer_size; /* bytes currently allocated at pixtransbuffer */
     wimp_point          pointer_coord;
     pointer_block       *pointer;
     char                *pointer_pixtranstable; /* ptr to pixel trans table or 0 if not needed */
-    char                pointer_pixtransbuffer[256]; /* buffer for pixel trans table */
+    char                *pointer_pixtransbuffer; /* dynamically-sized pixel trans table buffer */
+    int                 pointer_pixtransbuffer_size; /* bytes allocated at pointer_pixtransbuffer */
 } display_block;
 
 typedef struct {

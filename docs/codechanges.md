@@ -6,6 +6,37 @@ DEVELOPER_addendum.md / REBUILD_RECIPE.md (background).
 
 ---
 
+## 2026-09-11 (later) — 0.90.1
+
+### Fix: heap overrun in 8-bit screen modes (pixel translation table)
+- **`c/Display` / `h/Display`** — `build_pixtranstable()` wrote a ColourTrans
+  pixel-translation table into a fixed `char pixtransbuffer[256]` field of the
+  malloc'd `display_block`. The table is `2^(source bpp)` bytes, so a >8bpp
+  remote plotted to an 8bpp screen wrote up to 65536 bytes into 256 → malloc
+  heap corruption ("not enough memory / heap overwritten"), only in shallow
+  (8-bit) screen modes (deep modes need no table → `requiredsize==0`, early
+  return). Fixed: `pixtransbuffer`/`pointer_pixtransbuffer` are now `char *` with
+  a size, `realloc`'d to `requiredsize` on demand and `free`'d in
+  `Display_Destroy`. Same treatment for the pointer-sprite table.
+
+### Fix: unaligned-access aborts ("type 20")
+- **`plan.json`** — removed **`-Otime`** from all 72 compile command lines (it
+  let the optimiser fold byte reads into unaligned word loads).
+- NOTE: `-memaccess -L22-S22-L41` (the ARMv7-compat flag that stops Norcroft
+  emitting unaligned `LDR`/`STR`) was tried but is **rejected by the build
+  service's Norcroft 5.18** ("bad option '-memaccess': ignored") — it only
+  exists in newer DDE compilers. So it is NOT used; any residual unaligned
+  access must be fixed in the source (as was already done in `rdesktop/h/parse`).
+  0.90 added `-Otime`, which lets Norcroft fold byte/halfword reads into
+  **unaligned word loads**; on RISC OS 5 builds that don't fix up unaligned
+  access (reported on an RPi4 with 5.3x — "type 20" abort at startup, and an
+  RPi1 needing ARMv5 compatibility mode) the unaligned load faults. Reverting to
+  no optimisation matches 0.88's known-good codegen. Removing the flag changes
+  buildapp.py's SIG hash, forcing a full clean rebuild of every object.
+- **`!RDPClient/Messages`** — `info.version: 0.90.1 (11-Sep-2026)`.
+- The `volatile` channel mirror (fix C) stays; it was there to defeat a codegen
+  bug independent of `-O`, so it is still correct with optimisation off.
+
 ## 2026-09-11
 
 ### GitHub repository + RISC OS filetype suffixes

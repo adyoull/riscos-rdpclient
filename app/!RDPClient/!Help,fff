@@ -928,6 +928,22 @@ Any other suggestions will be gladly accepted.
 Version history:
 ~~~~~~~~~~~~~~~
 
+0.90.1 (12-Sep-2026)
+ * Fixed "type 20" data aborts that occurred with CPU alignment checking
+   turned on (the default on ARMv7 machines such as the Raspberry Pi 4). The
+   online build compiler (Norcroft 5.18) does not support the -memaccess flag
+   the original binary used, so some 16-bit values were being read with
+   unaligned word loads; these have been corrected in the source. 24-bit
+   display now connects with alignment left ON.
+ * Removed the -Otime optimisation (it encouraged the unaligned accesses
+   above).
+ * Restored crash/postmortem capture to <Wimp$ScrapDir>.RDPClient.Error to
+   aid bug reports.
+ * Enlarged the 8-bit pixel translation buffer to its correct size (it had
+   overrun a fixed 256-byte buffer).
+ * Note: 8-bit (256-colour) mode still has outstanding issues and is being
+   addressed for 0.90.2; 24-bit is the recommended mode.
+
 0.90 (09-Sep-2026)
  * Added mouse scroll wheel support: wheel movements over the RDP display
    (in windowed, fullwindow and fullscreen modes) are now sent to the server.

@@ -1,3 +1,26 @@
+12-Sep-2026  0.90.1 Fixes to make the 32-bit online build run under RISC OS 5
+                    CPU alignment checking (ARMv7 default, e.g. Raspberry Pi 4).
+                    The original binary used -memaccess -L22-S22-L41 (see 0.85)
+                    to tolerate unaligned access; Norcroft cc 5.18 on the online
+                    build service does not support that flag, so unaligned data
+                    aborts ("type 20") had to be fixed in the source. Widened
+                    three 16-bit globals the compiler read with unaligned word
+                    loads: the MCS user id (mcs_connect), the server RDP version
+                    (rdp_send_logon_info) and the sound sample width. Removed
+                    -Otime. Restored abort/postmortem capture to
+                    <Wimp$ScrapDir>.RDPClient.Error. Enlarged the 8-bit pixel
+                    translation buffer to its true size (was a fixed 256 bytes).
+                    24-bit display now connects with CPU alignment ON.
+                    (8-bit colour still has outstanding issues -> 0.90.2.)
+10-Sep-2026  0.90   First 32-bit rebuild from source on the RISC OS online build
+                    service (Norcroft cc 5.18; DeskLib rebuilt 32-bit). Added
+                    mouse scroll-wheel support in windowed and full-window modes,
+                    with invert and speed options saved to Choices. Fixed a blank
+                    display caused by unaligned/wrong-endian protocol stream reads
+                    and a Norcroft 16-bit write-back codegen bug, and a launch
+                    failure from a DeskLib bitfield struct-layout mismatch. Base
+                    port 0.88 by Andrew Sellors; scroll-wheel and 32-bit changes
+                    (C) 2026 Andrew Youll.
 05-Apr-2010  0.88  Implement synchronisation of "lock" keys with remote
                    host. Make compatible with VFPatch.
                    Third public release
