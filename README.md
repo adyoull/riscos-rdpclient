@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.90)
+# !RDPClient — RISC OS RDP client (32-bit, 0.90.1)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -10,6 +10,14 @@ This repository is designed for a **100% reproducible build**: everything needed
 to reproduce the exact working binary is here, and the single source of truth is
 `app/!RDPClient/` — the build input (`build/app_base.zip`) is *generated* from it,
 never hand-edited.
+
+---
+
+## Releases
+
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.90.1**.
+
+For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
 ---
 
@@ -150,6 +158,20 @@ objects, which is why a clean rebuild used to regress):
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
 
+### 0.90.1 — alignment fixes (RISC OS 5 CPU alignment checking)
+
+The original port was built with `-memaccess -L22-S22-L41` (see the 0.85
+`History` entry) to tolerate unaligned access. The build service's Norcroft
+5.18 does **not** support `-memaccess`, so several unaligned data aborts
+("type 20") that flag used to absorb surface when **CPU alignment checking is
+ON** — the ARMv7 default, e.g. on a Raspberry Pi 4. 0.90.1 fixes them in the
+source: three 16-bit globals the compiler read with unaligned word loads are
+widened to a full word (`g_mcs_userid` in `mcs_connect`, `g_server_rdp_version`
+in `rdp_send_logon_info`, and the sound `samplewidth`), and `-Otime` is removed.
+**24-bit now connects with alignment left ON**, so no `!Config` change is
+needed. 8-bit (256-colour) has remaining issues and is being addressed for
+0.90.2. Full detail in `docs/CHANGELOG.md`.
+
 ---
 
 ## Scroll-wheel feature (0.90)
@@ -195,4 +217,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.90`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.90.1`; wheel scrolls the remote.

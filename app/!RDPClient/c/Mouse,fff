@@ -73,7 +73,7 @@ static unsigned int motion_update_interval;
 static unsigned int next_motion_update;
 
 /*
- * (C) 2026 Andrew Youll -- scroll-wheel support.
+ * scroll-wheel support.
  *
  * OS_Pointer 2 (SWI &64) returns the accumulated position of the "alternate
  * positioning device" (the scroll wheel) in R1 (signed 32-bit Y). We remember
@@ -114,8 +114,8 @@ static int  wheel_last_y;
 static BOOL wheel_have_last;
 static int  wheel_accum;
 
-static int  wheel_invert = 0;                  /* (C) 2026 Andrew Youll */
-static int  wheel_speed  = WHEEL_SPEED_DEFAULT; /* (C) 2026 Andrew Youll */
+static int  wheel_invert = 0;
+static int  wheel_speed  = WHEEL_SPEED_DEFAULT;
 
 static void get_mouse_state(mouse_button_block *buttons, wimp_point *position);
 static void update_mouse(mouse_button_block *current_buttons, wimp_point *current_position,
@@ -145,7 +145,7 @@ extern void Mouse_Init(void)
   next_motion_update = Time_Monotonic();
 
  /*
-  * (C) 2026 Andrew Youll -- scroll-wheel state.
+  * scroll-wheel state.
   */
   wheel_last_y = 0;
   wheel_have_last = FALSE;
@@ -225,7 +225,7 @@ extern void Mouse_Poll(void)
         update_mouse(&current_buttons, &display_position, FALSE);
 
        /*
-        * (C) 2026 Andrew Youll -- forward any scroll-wheel movement to the
+        * forward any scroll-wheel movement to the
         * remote. Done here (pointer is over the remote display) so the wheel
         * behaves like the other mouse input, and in every display mode.
         */
@@ -329,7 +329,6 @@ static void get_mouse_state(mouse_button_block *buttons, wimp_point *position)
 static void send_wheel_notch(BOOL up)
 {
  /*
-  * (C) 2026 Andrew Youll.
   * Send a single scroll-wheel notch to the remote. The wheel carries no
   * position of its own, so use the current pointer, mapped into the remote
   * display (as Mouse_MouseClick / update_mouse do).
@@ -357,7 +356,6 @@ static void poll_wheel(void)
   int notches;
   int index;
  /*
-  * (C) 2026 Andrew Youll.
   * Read the scroll wheel directly via OS_Pointer 2 (the OS "alternate
   * positioning device") and forward any movement since the last poll to the
   * remote as wheel notches. Reading it here -- rather than relying on the Wimp
@@ -431,7 +429,7 @@ extern int Mouse_GetWheelInvert(void)
 extern void Mouse_SetWheelInvert(int invert)
 {
  /*
-  * (C) 2026 Andrew Youll -- set/toggle scroll-wheel direction and persist.
+  * set/toggle scroll-wheel direction and persist.
   */
   wheel_invert = (invert ? 1 : 0);
   save_wheel_choices();
@@ -449,7 +447,7 @@ extern int Mouse_GetWheelSpeed(void)
 extern void Mouse_WheelSpeedFaster(void)
 {
  /*
-  * (C) 2026 Andrew Youll -- step the scroll speed up (clamped) and persist.
+  * step the scroll speed up (clamped) and persist.
   */
   if(wheel_speed < WHEEL_SPEED_MAX){
      wheel_speed++;
@@ -462,7 +460,7 @@ extern void Mouse_WheelSpeedFaster(void)
 extern void Mouse_WheelSpeedSlower(void)
 {
  /*
-  * (C) 2026 Andrew Youll -- step the scroll speed down (clamped) and persist.
+  * step the scroll speed down (clamped) and persist.
   */
   if(wheel_speed > WHEEL_SPEED_MIN){
      wheel_speed--;
@@ -477,7 +475,7 @@ static void load_wheel_choices(void)
   int invert;
   int speed;
  /*
-  * (C) 2026 Andrew Youll -- read the saved wheel settings, if any. Missing or
+  * read the saved wheel settings, if any. Missing or
   * unreadable file just leaves the defaults in place.
   */
   FILE *f;
@@ -504,7 +502,7 @@ static void load_wheel_choices(void)
 static void save_wheel_choices(void)
 {
  /*
-  * (C) 2026 Andrew Youll -- persist the wheel settings. Best effort: if
+  * persist the wheel settings. Best effort: if
   * <Choices$Write> is not configured / not writable, the settings simply do
   * not persist across sessions (no error to the user).
   */

@@ -5,6 +5,9 @@
  *     Purpose: Sound link to rdesktop.                                 *
  *                                                                      *
  ************************************************************************/
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 #include "DeskLib:Core.h"              /* usefull core functions          */
 #include "DeskLib:Event.h"             /* Event despatcher                */
@@ -41,7 +44,7 @@ static int sound_channels = 0;
 static int sound_bits = 0;
 
 static uint32 snd_rate;
-static int samplewidth;	/* (C) 2026 Andrew Youll: full word, not short -- avoids
+static int samplewidth;	/* full word, not short -- avoids
                          * Norcroft 5.18 unaligned word load of a 16-bit global
                          * (same class as g_mcs_userid / g_server_rdp_version). */
 

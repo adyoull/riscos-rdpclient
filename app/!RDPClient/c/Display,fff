@@ -5,6 +5,9 @@
  *     Purpose: Display Window or Full Screen access.                   *
  *                                                                      *
  ************************************************************************/
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 #include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
 #include "DeskLib:Window.h"            /* Window handling automation      */
@@ -278,7 +281,7 @@ extern BOOL Display_Create(int width, int height, int bpp)
   displayblock->pointer_coord.x = 0;
   displayblock->pointer_coord.y = 0;
   displayblock->pointer = NULL;
-  displayblock->pixtransbuffer = NULL;          /* (C) 2026 Andrew Youll */
+  displayblock->pixtransbuffer = NULL;
   displayblock->pixtransbuffer_size = 0;
   displayblock->pointer_pixtransbuffer = NULL;
   displayblock->pointer_pixtransbuffer_size = 0;
@@ -559,7 +562,7 @@ extern void Display_Destroy(void)
         displayblock->cache = NULL;
      }
 
-     /* (C) 2026 Andrew Youll -- free the dynamically-sized pixel trans tables */
+     /* free the dynamically-sized pixel trans tables */
      if(displayblock->pixtransbuffer != NULL){
         free(displayblock->pixtransbuffer);
         displayblock->pixtransbuffer = NULL;
@@ -1715,7 +1718,7 @@ static void build_pixtranstable(spritelib_block *sprite,
   }
 
  /*
-  * (C) 2026 Andrew Youll -- the translation table size depends on the SOURCE
+  * the translation table size depends on the SOURCE
   * image depth (2^bpp entries), not a fixed 256 bytes. A >8bpp image plotted to
   * an 8bpp screen needs a table of up to 64K; writing it into a fixed 256-byte
   * field overran (and corrupted) the malloc heap in 8bpp screen modes. Grow the

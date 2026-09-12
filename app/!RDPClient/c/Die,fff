@@ -5,6 +5,9 @@
  *     Purpose: Displays debug when program dies.                       *
  *                                                                      *
  ************************************************************************/
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 #include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
 #include "DeskLib:Window.h"            /* Window handling automation      */
@@ -70,7 +73,7 @@ extern void Die_Init(void)
   atexit(atexit_handler);
 
  /*
-  * (C) 2026 Andrew Youll -- capture the C runtime's error output to a
+  * capture the C runtime's error output to a
   * persistent file from the very start. This catches the "heap overwritten"
   * runtime message and, for a data abort (e.g. an unaligned access), the
   * postmortem the runtime prints -- registers, the aborting address and a
@@ -187,7 +190,6 @@ static void die_message(int signalnumber)
     /*
      * stderr is already redirected to the error file (from Die_Init), so the
      * runtime's own output is preserved -- just append to it, don't truncate.
-     * (C) 2026 Andrew Youll.
      */
 
      OS_CLI("Filer_OpenDir "filename_DIR);

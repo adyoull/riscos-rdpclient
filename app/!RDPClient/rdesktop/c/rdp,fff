@@ -16,6 +16,9 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 #include <time.h>
 #ifndef _WIN32

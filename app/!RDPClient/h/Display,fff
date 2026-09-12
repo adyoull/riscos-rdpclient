@@ -5,6 +5,9 @@
  *     Purpose: Display Window or Full Screen access.                   *
  *                                                                      *
  ************************************************************************/
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 
 #ifndef __dl_wimp_h

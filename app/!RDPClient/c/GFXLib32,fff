@@ -5,6 +5,9 @@
  *     Purpose: Low level graphics operations for 32bpp images.         *
  *                                                                      *
  ************************************************************************/
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 #include "SpriteLib.h"
 #include "Utils.h"
@@ -42,7 +45,7 @@ extern void GFXLib_PlotDataToSprite_32_Copy(int source_linebytes,
 
      while(x_counter > 0){
 
-       /* (C) 2026 Andrew Youll -- assemble the source pixel from individual
+       /* assemble the source pixel from individual
           bytes rather than one word read, so we never perform an unaligned
           load (which faults when CPU alignment checking is on -- the RISC OS
           default on ARMv7). Dest is word-aligned sprite memory. Source bytes
@@ -98,7 +101,7 @@ extern void GFXLib_PlotDataToSprite_FlipVertical_32_Copy(int source_linebytes,
 
      while(x_counter > 0){
 
-       /* (C) 2026 Andrew Youll -- byte-assemble to avoid an unaligned load
+       /* byte-assemble to avoid an unaligned load
           (see GFXLib_PlotDataToSprite_32_Copy above). */
        pixel = ((unsigned int)source_ptr[0] << 16) |
                ((unsigned int)source_ptr[1] << 8)  |

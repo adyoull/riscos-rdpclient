@@ -16,10 +16,13 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
+   under the same licence as the rest of !RDPClient (GPL), preserving the
+   copyright of the original authors. */
 
 #include "rdesktop.h"
 
-/* (C) 2026 Andrew Youll -- widened from uint16 to a full word. Norcroft 5.18
+/* widened from uint16 to a full word. Norcroft 5.18
  * (build.riscos.online) compiled the read of this 16-bit global in mcs_connect()
  * into an unaligned word load (LDR [rn,#2]; MOV rn,LSR#16) rather than an LDRH.
  * On RISC OS 5 with CPU alignment checking ON (the ARMv7 default on a Pi 4) that
@@ -33,7 +36,7 @@ extern unsigned int g_num_channels;
 /* Norcroft codegen workaround (see DEVELOPER_addendum C): mcs_recv() parses the
  * MCS channel correctly but the uint16 out-param is not reliably delivered to
  * sec_recv() under Norcroft. Mirror it through a file-scope volatile int so
- * sec_recv() can reload the real value. (C) fix retained in source. */
+ * sec_recv() can reload the real value; this workaround is retained in source. */
 volatile int g_diag_mcs_chan = 0;
 
 /* Parse an ASN.1 BER header */

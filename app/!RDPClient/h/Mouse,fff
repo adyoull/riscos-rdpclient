@@ -93,7 +93,7 @@ extern void Mouse_EnsurePointerDisabled(void);
 
 
 /*
- * (C) 2026 Andrew Youll -- scroll-wheel settings (iconbar Scroll menu).
+ * scroll-wheel settings (iconbar Scroll menu).
  */
 
  /*
