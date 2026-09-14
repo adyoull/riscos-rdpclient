@@ -6,6 +6,9 @@
  *                                                                      *
  ************************************************************************/
 
+/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released under
+   the same licence as the rest of !RDPClient. */
+
 #include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
 #include "DeskLib:Window.h"            /* Window handling automation      */
 #include "DeskLib:Core.h"              /* usefull core functions          */
@@ -54,6 +57,9 @@
 #define message_CLIP_DATAREQUEST       16
 
 #define RDP_CF_TEXT CF_TEXT
+#ifndef CF_UNICODETEXT
+#define CF_UNICODETEXT 13
+#endif
 
 /*
     struct
@@ -175,9 +181,6 @@ extern void Clipboard_Init(void)
 
 extern BOOL Clipboard_Startup(void)
 {
-#ifdef clipboard_DEBUG
-  fprintf(stderr, "Called Clipboard_Startup()\n");
-#endif
  /*
   * Start up clipboard handling, called by RDesktop_Main
   * Must be called only once
@@ -185,6 +188,9 @@ extern BOOL Clipboard_Startup(void)
   int clipboard_message_list[] = {message_CLIP_CLAIMENTITY,
                                   message_CLIP_DATAREQUEST,
                                   0};
+#ifdef clipboard_DEBUG
+  fprintf(stderr, "Called Clipboard_Startup()\n");
+#endif
 
   clipboard_format_data_size = 0;
   clipboard_message_reference = 0;
@@ -351,8 +357,7 @@ extern void ui_clip_format_announce(uint8 * data, uint32 length)
 
   }
 
-  if(Display_GetDisplayMode() != display_mode_SINGLETASK)
-     clipboard_claim();
+  clipboard_claim();  /* claim in all modes, including single-task */
 }
 
 /******************************************************************************/
@@ -372,7 +377,37 @@ extern void ui_clip_handle_data(uint8 * data, uint32 length)
   * that is not available in server clipboard.
   */
 
-  if(requested_clipboard_format == CF_TEXT){
+ /*
+  * xrdp (and Windows) frequently return CF_UNICODETEXT (UTF-16LE) even for a
+  * CF_TEXT request. Detect interleaved-NUL wide text and collapse it to Latin-1
+  * in place, so RISC OS is not handed "mostly NULLs". Codepoints outside
+  * Latin-1 become '?'. Runs before the CF_TEXT handling below.
+  */
+  {
+     BOOL is_wide;
+     uint32 start = 0;
+
+     /* Skip a UTF-16LE byte-order mark (FF FE) if present. */
+     if(length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
+        start = 2;
+
+     is_wide = (requested_clipboard_format == CF_UNICODETEXT)
+               || (start == 2)
+               || (length - start >= 2 && ((length - start) & 1) == 0
+                   && data[start + 1] == 0);
+
+     if(is_wide){
+        uint32 wi, wo = 0;
+        for(wi = start; wi + 1 < length; wi += 2){
+           if(data[wi] == 0 && data[wi + 1] == 0)
+              break;                     /* UTF-16 NUL terminator */
+           data[wo++] = (data[wi + 1] == 0) ? data[wi] : '?';
+        }
+        length = wo;
+     }
+  }
+
+  if(requested_clipboard_format == CF_TEXT || requested_clipboard_format == CF_UNICODETEXT){
 
      actual_length = length;
     
@@ -396,8 +431,7 @@ extern void ui_clip_handle_data(uint8 * data, uint32 length)
   * Save clipboard data to client side app that requested a paste from the server
   * clipboard.
   */
-  if(Display_GetDisplayMode() != display_mode_SINGLETASK)
-     save_client_paste_data(data, actual_length);
+  save_client_paste_data(data, actual_length);
 }
 
 /******************************************************************************/
@@ -411,7 +445,7 @@ extern void ui_clip_request_data(uint32 format)
   * Called when past from clipboard is issued on the server
   */
 
-  if(!have_clipboard && Display_GetDisplayMode() != display_mode_SINGLETASK){
+  if(!have_clipboard){
     /*
      * Request clipboard data from current holder
      */
@@ -434,7 +468,7 @@ extern void ui_clip_sync(void)
   fprintf(stderr, "Called ui_clip_sync()\n");
 #endif
 
-  if(Display_GetDisplayMode() != display_mode_SINGLETASK){
+  if(TRUE){  /* clipboard active in all display modes */
 #ifdef clipboard_DEBUG
      fprintf(stderr, "sending clipboard_datarequest(TRUE, TRUE) to check if another app has clipboard data\n");
 #endif
@@ -492,7 +526,6 @@ static BOOL event_message_clip_claimentity(event_pollblock *event, void *referen
         * If bit 3 is set, message is clipboard claim
         */
 
-        actually_have_clipboard = FALSE;
      
        /*
         * Another app has claimed to have the clipboard.
@@ -905,6 +938,10 @@ static void request_clipboard_data_from_server(void)
 #endif
      requested_clipboard_format = CF_TEXT;
      cliprdr_send_data_request(CF_TEXT);
+  }
+  else if(check_clipboard_format(clipboard_format_data, clipboard_format_data_size, CF_UNICODETEXT)){
+     requested_clipboard_format = CF_UNICODETEXT;
+     cliprdr_send_data_request(CF_UNICODETEXT);
   }
   else{
     /*

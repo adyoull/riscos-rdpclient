@@ -168,7 +168,7 @@ licence_process_demand(STREAM s)
 		return;
 	}
 
-	licence_send_request(null_data, null_data, g_username, g_hostname);
+	licence_send_request(null_data, null_data, g_username ? g_username : "", g_hostname);
 }
 
 /* Send an authentication response packet */

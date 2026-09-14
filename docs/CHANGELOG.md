@@ -15,6 +15,72 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.90.2 — 2026-09-14
+
+Release that resolves the **entire** CPU-alignment fault class at the compiler
+level (including 8-bit mode) and fixes several issues seen connecting to
+**xrdp** servers.
+
+### The real alignment fix
+
+0.90.1 fixed individual unaligned data aborts by widening globals in the source,
+but 8-bit mode still aborted in `process_palette`, and the underlying cause was
+general: `buildapp.py` compiles each file with its own `cc` command line that
+**bypasses** the RISC OS shared-makefile defaults, so Norcroft's alignment-safe
+codegen was never switched on. The fix is to pass **`-za1`** (disable unaligned
+loads/stores) on every compile — the supported Norcroft 5.18 equivalent of the
+old `-memaccess` behaviour. With `-za1` the compiler never emits a word
+load/store at a non-word-aligned address, so the whole "type 20" abort class
+disappears — **including 8-bit (256-colour) mode** — without relying on the
+per-global source widenings (which remain in place, harmless, as belt-and-braces).
+
+### Fixed
+
+- **All remaining data aborts ("type 20") under CPU alignment checking**, via
+  `-za1` on all 72 compiles in `build/plan.json`. **8-bit (256-colour) now works**
+  with CPU alignment checking ON — the `process_palette` abort is gone, and the
+  8-bit draw-time heap issue noted in 0.90.1 no longer reproduces.
+- **xrdp: corrupted username field when no user is configured.** Connecting to an
+  xrdp server without `-u <username>` passed a NULL username into
+  `sec_connect` / `rdp_send_logon_info` / `licence_send_request`, which
+  dereferenced it and corrupted the xrdp login field so it could not be typed
+  into. All three call sites now substitute an empty string for a NULL username
+  (`rdesktop/c/rdp`, `rdesktop/c/licence`).
+- **Mouse pointer surrounded by a black square after login.** An
+  operator-precedence bug in `Pointer_PrepMaskData` (`c/Pointer`) —
+  `0x1 & source == 0` parses as `0x1 & (source == 0)` — inverted the AND-mask
+  test, so the cursor's transparent surround was drawn opaque. Parenthesised to
+  `(0x1 & source) == 0`. (xrdp users should also set `new_cursors=false` in
+  `xrdp.ini` and `Xcursor.core: 1` in `~/.Xresources` for correct server-side
+  cursors.) This corrects **standard-size** cursors; very large / high-resolution cursors (used by some Linux desktops) may still render imperfectly because RISC OS hardware pointers have size limits — a separate matter from the mask bug.
+- **Clipboard paste from remote didn't work / produced mostly NULLs.** Fixed
+  end-to-end in `c/Clipboard`: (1) **ownership** - when the Clipboard Store
+  re-claims the entity just after we claim it, `actually_have_clipboard` was
+  cleared *before* the "ignore the first holder re-claim" check, so RDPClient
+  stopped answering paste requests; the unconditional clear is removed. (2)
+  **negotiation** - servers such as **xrdp** and **NuoRDS** advertise only
+  `CF_UNICODETEXT`, so `request_clipboard_data_from_server` now requests it when
+  `CF_TEXT` is absent. (3) **data** - UTF-16LE text (with or without a BOM) is
+  collapsed to Latin-1 (characters outside Latin-1 become `?`). (4) **all display
+  modes** - the clipboard's single-task guards are lifted, so paste also works in
+  full-screen mode. Full Unicode is still to come (see below).
+
+### Known issues / next (→ 0.91)
+
+- **Clipboard and usernames are Latin-1 only.** Full Unicode (correct handling
+  of non-Latin-1 text in both directions) needs the RISC OS 5 **Iconv** module
+  linked (`HAVE_ICONV` + libiconv); the `#ifdef HAVE_ICONV` code paths already
+  exist in `rdesktop/c/rdp`. Deferred to **0.91**.
+- Scroll wheel needs a real wheel device. Under **RPCEmu** the emulated machine
+  must be set to 256MB RAM on RISC OS 5.30/5.31 for the wheel to be delivered.
+
+### Licence
+
+- 0.90.2 fixes touch `rdesktop/c/rdp`, `rdesktop/c/licence`, `c/Pointer` and
+  `c/Clipboard`; each carries a **(C) 2026 Andrew Youll** modification notice.
+
+---
+
 ## 0.90.1 — 2026-09-12
 
 Point release making the 32-bit online build run under RISC OS 5 **CPU

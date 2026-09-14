@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.90.1)
+# !RDPClient — RISC OS RDP client (32-bit, 0.90.2)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.90.1**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.90.2**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -158,6 +158,23 @@ objects, which is why a clean rebuild used to regress):
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
 
+### 0.90.2 — alignment fixed at the compiler level; xrdp / NuoRDS fixes
+
+The whole "type 20" alignment abort class — **including 8-bit (256-colour)** — is
+resolved by compiling with **`-za1`** (disable unaligned loads/stores), the
+Norcroft 5.18 flag equivalent to the old `-memaccess`. `buildapp.py` was
+compiling each file with a `cc` line that bypassed the RISC OS shared-makefile
+defaults, so alignment-safe codegen was never switched on; adding `-za1` to every
+compile fixes 24-bit and 8-bit with alignment left **ON**. The 0.90.1 source
+widenings stay in as belt-and-braces. Also fixes issues connecting to **xrdp**
+and **NuoRDS**: a NULL-username crash / corrupt login field when no user is set,
+a black square around the mouse pointer (a pointer-mask precedence bug), and
+remote → RISC OS clipboard paste (ownership handling, `CF_UNICODETEXT`
+negotiation and UTF-16LE → Latin-1 conversion; works in all display modes). Full
+detail in `docs/CHANGELOG.md`.
+
+---
+
 ### 0.90.1 — alignment fixes (RISC OS 5 CPU alignment checking)
 
 The original port was built with `-memaccess -L22-S22-L41` (see the 0.85
@@ -217,4 +234,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.90.1`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.90.2`; wheel scrolls the remote.

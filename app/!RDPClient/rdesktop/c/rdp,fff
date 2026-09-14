@@ -1637,10 +1637,17 @@ RD_BOOL
 rdp_connect(char *server, uint32 flags, char *domain, char *password,
 	    char *command, char *directory, RD_BOOL reconnect)
 {
-	if (!sec_connect(server, g_username, reconnect))
+	/* g_username is NULL when no username is set in the connection file;
+	   strlen(NULL) reads from &0 (garbage on RISC OS, not a clean abort) and a
+	   corrupt username is sent in the mstshash cookie and the logon packet -
+	   xrdp then shows an un-editable, junk-filled username field. Send an empty
+	   username instead, so the server presents a blank field to type into. */
+	char *user = g_username ? g_username : "";
+
+	if (!sec_connect(server, user, reconnect))
 		return False;
 
-	rdp_send_logon_info(flags, domain, g_username, password, command, directory);
+	rdp_send_logon_info(flags, domain, user, password, command, directory);
 	return True;
 }
 
