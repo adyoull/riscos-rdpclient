@@ -4,7 +4,7 @@ A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
 compiler, with **mouse scroll-wheel support** added. Base port 0.88 by Andrew
 Sellors; scroll-wheel work © 2026 Andrew Youll. Licensed under the **GNU GPL v2**
-(with the OpenSSL / AcornSSL linking exemption) — see `LICENSE`.
+(with the OpenSSL linking exemption) — see `LICENSE`.
 
 This repository is designed for a **100% reproducible build**: everything needed
 to reproduce the exact working binary is here, and the single source of truth is
@@ -44,7 +44,7 @@ dist_extras/           bundled with the app so a fresh install works:
     ConnectEx Licence History ReadFirst   original-distribution files
 docs/                  REBUILD_RECIPE.md, codechanges.md, DEVELOPER_addendum.md,
                        CHANGELOG.md  (see "Documentation" below)
-LICENSE                GNU GPL v2 (+ OpenSSL/AcornSSL exemption) — the app's licence
+LICENSE                GNU GPL v2 (+ OpenSSL exemption) — the app's licence
 ```
 
 Build artefacts (`build/work/`, `build/Built/`, `build/_pkg/`, `*.stale*`,
