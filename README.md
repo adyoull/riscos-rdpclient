@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.90.2)
+# !RDPClient — RISC OS RDP client (32-bit, 0.90.3)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.90.2**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.90.3**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -158,6 +158,23 @@ objects, which is why a clean rebuild used to regress):
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
 
+### 0.90.3 — clipboard paste RISC OS → server
+
+Copying text in a RISC OS application and pasting it into the remote session now
+works. When a RISC OS app holds the clipboard the client advertises both
+`CF_TEXT` and `CF_UNICODETEXT`; when the server asks for Unicode (as xrdp,
+Windows and NuoRDS do) the RISC OS text is up-converted to **UTF-16LE** with a
+single, canonical NUL terminator — an earlier *double* terminator was tolerated
+by xrdp (pasted as corrupt text) but silently rejected by NuoRDS/macOS (nothing
+pasted). The client also accepts clipboard data offered in any filetype and asks
+the app to supply text on save, so word-processor sources such as **Writer+**
+are handled when they can export plain text. This completes the two-way
+clipboard begun in 0.90.2 (which fixed the server → RISC OS direction). The
+`-Otime` speed optimisation removed in 0.90.1 is also **re-enabled** — safe now
+that `-za1` forces aligned code generation. Full detail in `docs/CHANGELOG.md`.
+
+---
+
 ### 0.90.2 — alignment fixed at the compiler level; xrdp / NuoRDS fixes
 
 The whole "type 20" alignment abort class — **including 8-bit (256-colour)** — is
@@ -234,4 +251,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.90.2`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.90.3`; wheel scrolls the remote.

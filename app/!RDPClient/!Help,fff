@@ -928,6 +928,33 @@ Any other suggestions will be gladly accepted.
 Version history:
 ~~~~~~~~~~~~~~~
 
+0.90.3 (14-Sep-2026)
+ * Pasting text from a RISC OS application into the remote session now works
+   (the RISC OS -> server clipboard direction). The client offers both CF_TEXT
+   and CF_UNICODETEXT and, when the server requests Unicode (xrdp, Windows,
+   NuoRDS), converts the RISC OS text to UTF-16LE with a single NUL terminator.
+   An earlier double terminator was accepted by xrdp but rejected by
+   NuoRDS/macOS.
+ * Clipboard data offered by a RISC OS app in any filetype is now accepted,
+   asking the app to supply text on save, so word-processor sources (e.g.
+   Writer+) are handled where they can export plain text.
+ * Re-enabled the -Otime speed optimisation (removed in 0.90.1); it is safe
+   now that -za1 forces aligned code generation.
+
+0.90.2 (14-Sep-2026)
+ * Resolved the entire "type 20" CPU-alignment abort class - including 8-bit
+   (256-colour) mode - by compiling with -za1 (disable unaligned loads/stores),
+   the Norcroft 5.18 equivalent of the old -memaccess. 24-bit and 8-bit both
+   work with CPU alignment checking left ON.
+ * Fixed a NULL-username crash / corrupt login field when connecting with no
+   username set (seen with xrdp).
+ * Fixed the black square around standard-size mouse pointers (a pointer-mask
+   precedence bug). Very large / HD cursors from some Linux desktops may still
+   be imperfect.
+ * Fixed pasting text from the remote session into RISC OS (the server ->
+   RISC OS clipboard direction: ownership handling, CF_UNICODETEXT negotiation
+   and UTF-16 -> Latin-1 conversion).
+
 0.90.1 (12-Sep-2026)
  * Fixed "type 20" data aborts that occurred with CPU alignment checking
    turned on (the default on ARMv7 machines such as the Raspberry Pi 4). The

@@ -1,3 +1,17 @@
+14-Sep-2026  0.90.3 Pasting text from a RISC OS application into the remote
+                    session now works (the RISC OS -> server clipboard
+                    direction). The client offers both CF_TEXT and
+                    CF_UNICODETEXT and converts RISC OS text to UTF-16LE with a
+                    single NUL terminator when the server asks for Unicode
+                    (xrdp / Windows / NuoRDS); an earlier double terminator was
+                    tolerated by xrdp but rejected by NuoRDS/macOS. Clipboard
+                    data offered by an app in any filetype is now accepted,
+                    requesting text on save, so word-processor sources such as
+                    Writer+ are handled where they can supply plain text.
+                    Completes the two-way clipboard begun in 0.90.2. The
+                    -Otime speed optimisation (removed in 0.90.1) is
+                    re-enabled, safe now that -za1 forces aligned code.
+
 14-Sep-2026  0.90.2 Fixed the remaining CPU-alignment ("type 20") data aborts
                     by compiling with -za1 (disable unaligned loads/stores);
                     this also fixes 8-bit (256-colour) mode, which previously

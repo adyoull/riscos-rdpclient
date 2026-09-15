@@ -100,6 +100,7 @@ static unsigned int clipboard_message_reference;
 static char clipboard_save_filename[256];
 static event_pollblock clipboard_save_event;
 static unsigned int requested_clipboard_format;
+static unsigned int server_requested_format; /* format the server asked us to supply (send direction) */
 static BOOL ignore_clipboard_holder = FALSE;
 static BOOL query_clipboard_operation = FALSE;
 static BOOL query_clipboard_send_on_empty = FALSE;
@@ -441,6 +442,11 @@ extern void ui_clip_request_data(uint32 format)
 #ifdef clipboard_DEBUG
   fprintf(stderr, "Called ui_clip_request_data(format=%li)\n", format);
 #endif
+
+  /* Remember which format the server asked for, so the send path can
+     up-convert RISC OS Latin-1 text to UTF-16LE when CF_UNICODETEXT. */
+  server_requested_format = format;
+
  /*
   * Called when past from clipboard is issued on the server
   */
@@ -651,12 +657,14 @@ static BOOL event_message_datasave(event_pollblock *event, void *reference)
   if(event->data.message.header.action != message_DATASAVE)
      return(FALSE);
 
+
   if(clipboard_message_reference == 0 ||
      (event->data.message.header.yourref != clipboard_message_reference &&
       event->data.message.header.myref != clipboard_message_reference) ||
       event->data.message.header.sender == event_taskhandle){
      return(FALSE);
   }
+
 
 #ifdef clipboard_DEBUG
   fprintf(stderr, "filetype=%03x\n", event->data.message.data.datasave.filetype);
@@ -667,25 +675,17 @@ static BOOL event_message_datasave(event_pollblock *event, void *reference)
      return(TRUE);
   }
 
-  if(event->data.message.data.datasave.filetype == filetype_TEXT){
-    /*
-     * Sent response back to client app to save clipboard data to us
-     */
-     choose_receive_method(event->data.message.data.datasave.estsize, transfer_filename);
-     clipboard_message_reference = clipboard_datasaveack(event, transfer_filename);
-  }
-  else{
-    /*
-     * Clipboard contains data that is not supported so send NULL
-     * to the server and abort the data transfer
-     */
-#ifdef clipboard_DEBUG
-     fprintf(stderr, "clipboard does not contain TEXT data, sending NULL to server\n");
-#endif
-     clipboard_message_reference = 0;
-     client_clipboard_request_active = FALSE;
-     cliprdr_send_data(NULL, 0);
-  }
+  /*
+   * Accept the holder's offer regardless of the filetype it announced.
+   * clipboard_datasaveack() requests text (filetype_TEXT), so a holder that
+   * stores styled documents (e.g. Writer+/Fireworkz, which offers its native
+   * &D01) is given the chance to convert its selection to plain text on save.
+   * The DataLoad handler still verifies the delivered data really is text
+   * (filetype &FFF) before anything is sent to the server, so a holder that
+   * ignores the request and saves its native format is rejected safely there.
+   */
+  choose_receive_method(event->data.message.data.datasave.estsize, transfer_filename);
+  clipboard_message_reference = clipboard_datasaveack(event, transfer_filename);
   
   return(TRUE);
 }
@@ -740,6 +740,7 @@ static BOOL event_message_datasaveack(event_pollblock *event, void *reference)
 
 /******************************************************************************/
 
+
 static BOOL event_message_dataload(event_pollblock *event, void *reference)
 {
   char filename[256];
@@ -792,7 +793,47 @@ static BOOL event_message_dataload(event_pollblock *event, void *reference)
         fhexdump(stderr, (uint8 *)clipboard_data, clipboard_data_size);
 #endif
         sent_clipboard_data = TRUE;
-        cliprdr_send_data((uint8 *)clipboard_data, clipboard_data_size);
+
+        if(server_requested_format == CF_UNICODETEXT){
+           /*
+            * Server asked for UTF-16LE. Up-convert the RISC OS Latin-1
+            * text: each byte becomes byte + 0x00, with a single UTF-16
+            * NUL terminator. Latin-1 0x80..0xFF map 1:1 onto U+0080..U+00FF.
+            */
+           uint32 text_len = clipboard_data_size;
+           uint32 wide_size;
+           uint8 *wide;
+
+           /* Drop any NUL(s) already at the end of the RISC OS data so we
+              emit exactly one UTF-16 terminator; a stray interior NUL upsets
+              some servers' paste (e.g. macOS / NuoRDS). */
+           while(text_len > 0 && clipboard_data[text_len - 1] == '\0')
+              text_len--;
+
+           wide_size = (text_len + 1) * 2;
+           wide = malloc(wide_size);
+
+           if(wide != NULL){
+              uint32 i;
+
+              for(i = 0; i < text_len; i++){
+                 wide[i * 2]     = (uint8)clipboard_data[i];
+                 wide[i * 2 + 1] = 0;
+              }
+              wide[text_len * 2]     = 0;
+              wide[text_len * 2 + 1] = 0;
+
+              cliprdr_send_data(wide, wide_size);
+              free(wide);
+           }
+           else{
+              /* Out of memory: fall back to raw Latin-1 bytes. */
+              cliprdr_send_data((uint8 *)clipboard_data, clipboard_data_size);
+           }
+        }
+        else{
+           cliprdr_send_data((uint8 *)clipboard_data, clipboard_data_size);
+        }
 
         free(clipboard_data);
      }
@@ -866,7 +907,19 @@ static void set_have_clipboard(BOOL state)
      fprintf(stderr, "Called cliprdr_send_text_format_announce()\n");
 #endif
      /* tell server that client machine has clipboard */
-     cliprdr_send_simple_native_format_announce(RDP_CF_TEXT);
+     {
+        /*
+         * Announce both CF_TEXT and CF_UNICODETEXT so Unicode-first
+         * servers (xrdp / Windows) request a text format they can
+         * decode. Each descriptor is 36 bytes: uint32 format id
+         * followed by a 32-byte (unused) name field.
+         */
+        uint8 format_announce[72];
+        memset(format_announce, 0, sizeof(format_announce));
+        buf_out_uint32(format_announce,      RDP_CF_TEXT);
+        buf_out_uint32(format_announce + 36, CF_UNICODETEXT);
+        cliprdr_send_native_format_announce(format_announce, sizeof(format_announce));
+     }
   }
 }
 

@@ -15,6 +15,50 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.90.3 — 2026-09-14
+
+Completes two-way clipboard support: **pasting text from a RISC OS application
+into the remote session now works.** (0.90.2 fixed the other direction,
+server → RISC OS.)
+
+### Fixed
+
+- **Clipboard, RISC OS → server (paste into the remote session).** When a RISC OS
+  application holds the clipboard, the client now announces **both** `CF_TEXT` and
+  `CF_UNICODETEXT`. When the server requests `CF_UNICODETEXT` (the norm for xrdp,
+  Windows and NuoRDS) the RISC OS Latin-1 text is up-converted to **UTF-16LE**.
+  The terminator is now a **single** UTF-16 NUL: the previous code widened a
+  trailing NUL already present in the RISC OS data *and* appended its own,
+  producing an interior NUL that xrdp tolerated (text arrived corrupted) but that
+  NuoRDS/macOS rejected outright (nothing pasted).
+- **Accept clipboard data of any filetype from the RISC OS holder.** The client
+  used to give up unless the holder offered plain text (`&FFF`); it now completes
+  the transfer whatever type is offered, requesting text on save via the
+  DataSaveAck. Word processors such as **Writer+/Fireworkz** (which offer their
+  native `&D01`) are handled when they can export text; the DataLoad handler
+  still verifies the delivered data really is text before anything is sent to the
+  server, so a holder that can only supply its native format is rejected safely.
+
+### Changed files
+
+- `app/!RDPClient/c/Clipboard` — dual-format announce; `CF_UNICODETEXT` send
+  conversion with a single canonical terminator; accept-any-offered-type on
+  DataSave.
+- `build/plan.json` — **`-Otime` re-enabled** on all compiles. 0.90.1 had
+  removed it because it encouraged the unaligned word accesses behind the
+  "type 20" aborts; `-za1` (0.90.2) now forces aligned code generation, so
+  `-Otime` is safe again and restores the speed optimisation.
+
+### Notes
+
+- Confirmed working RISC OS → NuoRDS (Andrew) once the terminator was made
+  canonical. On xrdp this should now paste clean text where 0.90.2 pasted
+  corrupted text.
+- Some styled-document apps may not supply plain text through the global
+  clipboard at all; that is an app limitation, not a client bug.
+
+---
+
 ## 0.90.2 — 2026-09-14
 
 Release that resolves the **entire** CPU-alignment fault class at the compiler
