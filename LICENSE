@@ -1,7 +1,7 @@
 This software is released under the GNU General Public License
 (reproduced below) with the additional exemption that compiling,
-linking, and/or using OpenSSL together with this software is
-allowed.
+linking, and/or using OpenSSL, and/or the RISC OS AcornSSL module,
+together with this software is allowed.
 
 ---
 

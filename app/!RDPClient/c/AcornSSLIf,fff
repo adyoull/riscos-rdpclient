@@ -1,15 +1,22 @@
 /* AcornSSL C interface for !RDPClient.
  *
  * Thin C veneers over the RISC OS AcornSSL module SWIs (TLS via mbedTLS).
- * Colin Granville's original FTPc wrapper called these SWIs with __asm inline
- * assembler; the online build service's Norcroft cc 5.18 does not accept that
- * syntax, so the veneers are re-expressed here with _kernel_swi() (the SWI-call
- * convention used elsewhere in this project). SWI numbers/constants come from
- * Castle's exported AcornSSL header (see h.AcornSSL, Castle base licence).
- * Renamed (ssl.h -> AcornSSLIf.h, acornssl.h -> AcornSSL.h) to avoid clashing
- * with rdesktop's own crypto ssl.c/ssl.h. Integrated into !RDPClient for
- * RDP-over-TLS. Integration (C) 2026 Andrew Youll; released under the same
- * terms as the rest of !RDPClient.
+ *
+ * Based on Colin Granville's AcornSSL C wrapper for FTPc:
+ *     Copyright (C) Colin Granville.
+ * The original wrapper was made freely available by its author for reuse in
+ * the RISC OS Open forum thread "Using AcornSSL from C"
+ * (riscosopen.org/forum/forums/3/topics/16381); source:
+ * http://ftpc.iconbar.com/acornssllib.zip
+ *
+ * Colin's original called the SWIs with __asm inline assembler; the online
+ * build service's Norcroft cc 5.18 does not accept that syntax, so the veneers
+ * are re-expressed here with _kernel_swi() (the SWI-call convention used
+ * elsewhere in this project). SWI numbers/constants come from Castle's exported
+ * AcornSSL header (see h.AcornSSL, Castle base licence). Renamed
+ * (ssl.h -> AcornSSLIf.h, acornssl.h -> AcornSSL.h) to avoid clashing with
+ * rdesktop's own crypto ssl.c/ssl.h, and integrated into !RDPClient for
+ * RDP-over-TLS.
  */
 #include "AcornSSLIf.h"
 #include "AcornSSL.h"

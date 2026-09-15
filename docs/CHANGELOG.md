@@ -5,7 +5,7 @@ RISC OS port of rdesktop 1.6.0 (Andrew Sellors), rebuilt 32-bit on the
 a series of fixes needed to make a Norcroft / RISC OS 5 build actually run.
 
 **Licence:** !RDPClient is free software under the **GNU General Public License
-v2** (inherited from rdesktop, with the OpenSSL linking exemption). All
+v2** (inherited from rdesktop, with the OpenSSL and AcornSSL linking exemption). All
 modifications below are released under the same GPL, and the complete
 corresponding **modified source** is distributed alongside the binary (this
 repository). Files changed for the scroll-wheel feature carry a modification
