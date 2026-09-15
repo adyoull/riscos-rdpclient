@@ -77,17 +77,38 @@ try:
     ok("Messages: src == repo version line") if a==b else bad("Messages version line","src '%s' != repo '%s'"%(a,b))
 except Exception as e: bad("Messages compare", str(e))
 
-# ---- Clipboard source identity across work / repo / both app_base.zip ----
-try:
-    work_clip = sha(P("work","c","Clipboard"))
-    repo_clip = sha(P(REPO,"app","!RDPClient","c","Clipboard,fff"))
-    ok("Clipboard: work == repo") if work_clip==repo_clip else bad("Clipboard work vs repo","sha differ")
+# ---- tracked source files: identical across work / repo / both app_base.zip ----
+SOURCES = [
+    ("work/c/Clipboard",      "app/!RDPClient/c/Clipboard,fff",      "c/Clipboard"),
+    ("work/c/Status",         "app/!RDPClient/c/Status,fff",         "c/Status"),
+    ("work/c/AcornSSLIf",     "app/!RDPClient/c/AcornSSLIf,fff",     "c/AcornSSLIf"),
+    ("work/h/AcornSSLIf",     "app/!RDPClient/h/AcornSSLIf,fff",     "h/AcornSSLIf"),
+    ("work/h/AcornSSL",       "app/!RDPClient/h/AcornSSL,fff",       "h/AcornSSL"),
+    ("work/rdesktop/c/iso",   "app/!RDPClient/rdesktop/c/iso,fff",   "rdesktop/c/iso"),
+    ("work/rdesktop/c/tcp",   "app/!RDPClient/rdesktop/c/tcp,fff",   "rdesktop/c/tcp"),
+    ("work/rdesktop/h/proto", "app/!RDPClient/rdesktop/h/proto,fff", "rdesktop/h/proto"),
+    ("work/rdesktop/c/secure", "app/!RDPClient/rdesktop/c/secure,fff", "rdesktop/c/secure"),
+    ("work/rdesktop/c/licence","app/!RDPClient/rdesktop/c/licence,fff","rdesktop/c/licence"),
+    ("work/rdesktop/c/rdp",    "app/!RDPClient/rdesktop/c/rdp,fff",    "rdesktop/c/rdp"),
+    ("work/c/Display",         "app/!RDPClient/c/Display,fff",         "c/Display"),
+]
+for wrel, rrel, member in SOURCES:
+    name = wrel.split("/")[-1]
+    try:
+        wsha = sha(P(*wrel.split("/")))
+    except Exception as e:
+        bad("source %s: work" % name, str(e)); continue
+    try:
+        rsha = sha(os.path.join(REPO, *rrel.split("/")))
+        ok("source %s: work == repo" % name) if wsha==rsha else bad("source %s: work vs repo" % name, "sha differ")
+    except Exception as e:
+        bad("source %s: repo" % name, str(e))
     for label, z in [("scratch app_base.zip", P("app_base.zip")), ("repo build/app_base.zip", P(REPO,"build","app_base.zip"))]:
         try:
-            zs=zip_member_sha(z,"c/Clipboard")
-            ok("Clipboard: %s == work"%label) if zs==work_clip else bad("Clipboard in %s"%label,"sha != work/c/Clipboard")
-        except KeyError: bad("Clipboard in %s"%label,"c/Clipboard not in zip")
-except Exception as e: bad("Clipboard identity", str(e))
+            zs = zip_member_sha(z, member)
+            ok("source %s: %s == work" % (name, label)) if zs==wsha else bad("source %s in %s" % (name, label), "sha != work")
+        except KeyError:
+            bad("source %s in %s" % (name, label), "%s not in zip" % member)
 
 # ---- app_base.zip: scratch == repo ----
 try:

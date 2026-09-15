@@ -366,6 +366,11 @@
    "cmd": "cc -c -za1 -Otime -apcs 3/32bit -IC: -throwback c.FlexShim -o o.FlexShim",
    "out": "o.FlexShim",
    "src": "c.FlexShim"
+  },
+  {
+   "cmd": "cc -c -za1 -Otime -apcs 3/32bit -Wp -DWITH_OPENSSL -DWITH_RDPSND -DGETPID_IS_MEANINGLESS -DNO_SYS_TYPES_H -DOPENSSL_NO_BIO -DOPENSSL_NO_MD2 -DOPENSSL_NO_MD4 -DOPENSSL_NO_RIPEMD -DOPENSSL_NO_DES -DOPENSSL_NO_RC2 -DOPENSSL_NO_RC5 -DOPENSSL_NO_BF -DOPENSSL_NO_CAST -DOPENSSL_NO_IDEA -DOPENSSL_NO_MDC2 -DOPENSSL_NO_AES -DCRYPTO_NO_LOCKING -throwback -I,C:,TCPIPLibs: c.AcornSSLIf -o o.AcornSSLIf",
+   "out": "o.AcornSSLIf",
+   "src": "c.AcornSSLIf"
   }
  ],
  "finals_raw": [

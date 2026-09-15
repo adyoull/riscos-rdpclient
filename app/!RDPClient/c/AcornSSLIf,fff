@@ -1,0 +1,224 @@
+/* AcornSSL C interface for !RDPClient.
+ *
+ * Thin C veneers over the RISC OS AcornSSL module SWIs (TLS via mbedTLS).
+ * Colin Granville's original FTPc wrapper called these SWIs with __asm inline
+ * assembler; the online build service's Norcroft cc 5.18 does not accept that
+ * syntax, so the veneers are re-expressed here with _kernel_swi() (the SWI-call
+ * convention used elsewhere in this project). SWI numbers/constants come from
+ * Castle's exported AcornSSL header (see h.AcornSSL, Castle base licence).
+ * Renamed (ssl.h -> AcornSSLIf.h, acornssl.h -> AcornSSL.h) to avoid clashing
+ * with rdesktop's own crypto ssl.c/ssl.h. Integrated into !RDPClient for
+ * RDP-over-TLS. Integration (C) 2026 Andrew Youll; released under the same
+ * terms as the rest of !RDPClient.
+ */
+#include "AcornSSLIf.h"
+#include "AcornSSL.h"
+#include "sys/errno.h"
+#include "sys/dcistructs.h"
+#include <stdarg.h>
+#include <stdio.h>
+
+/* Error-returning (X) form of the SWIs, so a failure returns an error block
+   rather than aborting. On error we map the DCI4 error number to errno and
+   return -1, matching the BSD-socket contract of the original wrapper. */
+#ifndef XOS_Bit
+#define XOS_Bit 0x20000
+#endif
+
+int ssl_connect(int sslhandle, const struct sockaddr *name, int namelen)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)name;
+    r.r[2] = namelen;
+    err = _kernel_swi(AcornSSL_Connect | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_getpeername(int sslhandle, struct sockaddr *name, int *namelen)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)name;
+    r.r[2] = (int)namelen;
+    err = _kernel_swi(AcornSSL_Getpeername | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_getsockname(int sslhandle, struct sockaddr *name, int *namelen)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)name;
+    r.r[2] = (int)namelen;
+    err = _kernel_swi(AcornSSL_Getsockname | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_getsockopt(int sslhandle, int level, int optname, void *optval, int *optlen)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = level;
+    r.r[2] = optname;
+    r.r[3] = (int)optval;
+    r.r[4] = (int)optlen;
+    err = _kernel_swi(AcornSSL_Getsockopt | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_recv(int sslhandle, void *buf, size_t len, int flags)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)buf;
+    r.r[2] = (int)len;
+    r.r[3] = flags;
+    err = _kernel_swi(AcornSSL_Recv | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}
+
+int ssl_send(int sslhandle, const void *msg, size_t len, int flags)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)msg;
+    r.r[2] = (int)len;
+    r.r[3] = flags;
+    err = _kernel_swi(AcornSSL_Send | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}
+
+int ssl_setsockopt(int sslhandle, int level, int optname, const void *optval, int optlen)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = level;
+    r.r[2] = optname;
+    r.r[3] = (int)optval;
+    r.r[4] = optlen;
+    err = _kernel_swi(AcornSSL_Setsockopt | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_shutdown(int sslhandle, int how)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = how;
+    err = _kernel_swi(AcornSSL_Shutdown | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_socketclose(int sslhandle)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    err = _kernel_swi(AcornSSL_Close | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_socket(int domain, int type, int protocol)        /* returns sslhandle (or -1 on error) */
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = domain;
+    r.r[1] = type;
+    r.r[2] = protocol;
+    err = _kernel_swi(AcornSSL_Creat | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}
+
+int ssl_socketstat(int sslhandle, struct stat *buf)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)buf;
+    err = _kernel_swi(AcornSSL_Stat | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_socketioctl(int sslhandle, unsigned long cmd, ...)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    va_list args;
+    int data;
+
+    va_start(args, cmd);
+    data = va_arg(args, int);
+    va_end(args);
+
+    r.r[0] = sslhandle;
+    r.r[1] = (int)cmd;
+    r.r[2] = data;
+    err = _kernel_swi(AcornSSL_Ioctl | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return 0;
+}
+
+int ssl_socketread(int sslhandle, void *buf, unsigned int len)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)buf;
+    r.r[2] = (int)len;
+    err = _kernel_swi(AcornSSL_Read | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}
+
+int ssl_socketwrite(int sslhandle, const void *buf, unsigned int len)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = sslhandle;
+    r.r[1] = (int)buf;
+    r.r[2] = (int)len;
+    err = _kernel_swi(AcornSSL_Write | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}
+
+int ssl_socketversion(void)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    err = _kernel_swi(AcornSSL_Version | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}
+
+int ssl_createsession(int socket, int reason_code, int reuse_sslhandle)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *err;
+    r.r[0] = socket;
+    r.r[1] = reason_code;
+    r.r[2] = reuse_sslhandle;
+    err = _kernel_swi(AcornSSL_CreateSession | XOS_Bit, &r, &r);
+    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    return r.r[0];
+}

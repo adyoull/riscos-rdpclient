@@ -20,6 +20,7 @@
 #include "rdesktop.h"
 #include "ssl.h"
 
+
 extern char *g_username;
 extern char g_hostname[16];
 
@@ -299,6 +300,9 @@ licence_process(STREAM s)
 
 	in_uint8(s, tag);
 	in_uint8s(s, 3);	/* version, length */
+#ifdef TLS_NEG_DEBUG
+	warning("NEG: licence PDU tag 0x%x\n", tag);
+#endif
 
 	switch (tag)
 	{
@@ -316,6 +320,15 @@ licence_process(STREAM s)
 
 		case LICENCE_TAG_REISSUE:
 		case LICENCE_TAG_RESULT:
+			/* Licensing complete (e.g. ERROR_ALERT / valid client,
+			   tag 0xff). Mark it issued so the security layer stops
+			   expecting a basic security header on the PDUs that follow --
+			   essential under Enhanced (TLS) Security, where post-licence
+			   PDUs carry no security header. */
+			g_licence_issued = True;
+#ifdef TLS_NEG_DEBUG
+			warning("NEG: licence result -- licensing complete\n");
+#endif
 			break;
 
 		default:

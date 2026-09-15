@@ -19,6 +19,15 @@
 
 #include "rdesktop.h"
 
+/* RDP Negotiation (MS-RDPBCGR 2.2.1.1.1 request / 2.2.1.2.1 response) */
+#define TYPE_RDP_NEG_REQ      0x01
+#define TYPE_RDP_NEG_RSP      0x02
+#define TYPE_RDP_NEG_FAILURE  0x03
+#define PROTOCOL_RDP          0x00000000
+#define PROTOCOL_SSL          0x00000001
+#define PROTOCOL_HYBRID       0x00000002
+
+
 /* Send a self-contained ISO PDU */
 static void
 iso_send_msg(uint8 code)
@@ -45,7 +54,15 @@ static void
 iso_send_connection_request(char *username)
 {
 	STREAM s;
-	int length = 30 + strlen(username);
+	RD_BOOL offer_ssl = tcp_tls_available();
+	int neg_len = offer_ssl ? 8 : 0;
+	int length = 30 + strlen(username) + neg_len;
+
+#ifdef TLS_NEG_DEBUG
+	warning("NEG: AcornSSL %s -- %s TLS in RDP negotiation\n",
+	        offer_ssl ? "present" : "NOT present",
+	        offer_ssl ? "offering" : "not offering");
+#endif
 
 	s = tcp_init(length);
 
@@ -64,6 +81,17 @@ iso_send_connection_request(char *username)
 
 	out_uint8(s, 0x0d);	/* Unknown */
 	out_uint8(s, 0x0a);	/* Unknown */
+
+	if (offer_ssl)
+	{
+		/* RDP Negotiation Request: offer TLS. RDP standard security (0) is
+		   implicit, so a server that will not do TLS still selects it and we
+		   stay on the plaintext path. Only sent when AcornSSL is present. */
+		out_uint8(s, TYPE_RDP_NEG_REQ);	/* type */
+		out_uint8(s, 0);		/* flags */
+		out_uint16_le(s, 8);		/* length */
+		out_uint32_le(s, PROTOCOL_SSL);	/* requestedProtocols */
+	}
 
 	s_mark_end(s);
 	tcp_send(s);
@@ -176,6 +204,7 @@ RD_BOOL
 iso_connect(char *server, char *username, RD_BOOL reconnect)
 {
 	uint8 code = 0;
+	STREAM s;
 
 	if (!tcp_connect(server))
 		return False;
@@ -189,7 +218,8 @@ iso_connect(char *server, char *username, RD_BOOL reconnect)
 		iso_send_connection_request(username);
 	}
 
-	if (iso_recv_msg(&code, NULL) == NULL)
+	s = iso_recv_msg(&code, NULL);
+	if (s == NULL)
 		return False;
 
 	if (code != ISO_PDU_CC)
@@ -198,6 +228,56 @@ iso_connect(char *server, char *username, RD_BOOL reconnect)
 		tcp_disconnect();
 		return False;
 	}
+
+	/* Optional RDP Negotiation Response follows the X.224 CC. If the server
+	   selected TLS, upgrade the connection now, before any MCS traffic. */
+	if (!reconnect && s_check_rem(s, 8))
+	{
+		uint8 neg_type;
+		uint32 selected;
+
+		in_uint8(s, neg_type);
+		in_uint8s(s, 3);		/* flags (1) + length (2) */
+		in_uint32_le(s, selected);
+
+#ifdef TLS_NEG_DEBUG
+		warning("NEG: server response type=%u selectedProtocol=%u\n",
+		        (unsigned) neg_type, (unsigned) selected);
+#endif
+
+		if (neg_type == TYPE_RDP_NEG_FAILURE)
+		{
+			error("server refused RDP negotiation (failure code %u)\n", (unsigned) selected);
+			tcp_disconnect();
+			return False;
+		}
+
+		if (neg_type == TYPE_RDP_NEG_RSP && selected == PROTOCOL_SSL)
+		{
+			if (!tcp_tls_connect())
+			{
+				tcp_disconnect();
+				return False;
+			}
+#ifdef TLS_NEG_DEBUG
+			warning("NEG: TLS session is now ACTIVE\n");
+#endif
+		}
+		else if (neg_type == TYPE_RDP_NEG_RSP && selected == PROTOCOL_HYBRID)
+		{
+			error("server requires NLA/CredSSP, which this client does not support\n");
+			tcp_disconnect();
+			return False;
+		}
+#ifdef TLS_NEG_DEBUG
+		else
+			warning("NEG: server selected standard RDP security (plaintext)\n");
+#endif
+	}
+#ifdef TLS_NEG_DEBUG
+	else if (!reconnect)
+		warning("NEG: no negotiation response -- plaintext standard RDP\n");
+#endif
 
 	return True;
 }

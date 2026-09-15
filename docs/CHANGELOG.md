@@ -15,6 +15,59 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.91 — 2026-09-15
+
+Adds **RDP-over-TLS** (Enhanced RDP Security) via the RISC OS **AcornSSL**
+module, so the client can connect to servers that require TLS — including modern
+Windows and TLS-configured xrdp / NuoRDS — not only legacy Standard RDP Security.
+
+### Added
+
+- **TLS transport via AcornSSL.** When the AcornSSL module is present the client
+  advertises TLS in the RDP negotiation (X.224 Connection Request). If the server
+  selects TLS, the connection is upgraded to a TLS session with
+  `AcornSSL_CreateSession` before any MCS traffic, and all RDP data then flows
+  through `ssl_send`/`ssl_recv`. Auto-negotiated: a server that only does standard
+  security selects plain RDP and the client stays on the existing plaintext path,
+  so nothing regresses.
+- **AcornSSL C veneer** (`c/AcornSSLIf`, `h/AcornSSLIf`, `h/AcornSSL`) — Colin
+  Granville's FTPc wrapper, re-expressed with `_kernel_swi` (the online Norcroft
+  5.18 rejects the original `__asm` inline assembler).
+- **Status window shows "TLS"** in the encryption field while a TLS session is
+  active (new `statcon.encrypt3` message), instead of the RDP-layer
+  None/Login only/All data, which is meaningless under TLS.
+
+### Notes / limitations
+
+- **Requires the AcornSSL module** on the RISC OS machine. Without it the client
+  behaves exactly as before (standard security only) — the TLS offer is not sent.
+- **The server certificate is presented for approval.** AcornSSL shows a
+  dialogue for the user to accept or reject the certificate, so a self-signed
+  cert can be accepted interactively (a certificate accepted with "Always" is
+  remembered by AcornSSL).
+- **TLS only, not NLA/CredSSP.** A server that *requires* NLA is refused with a
+  clear message; set such servers to "TLS, NLA not required", or use xrdp/NuoRDS.
+
+### Fixed
+
+- **Null-pointer crash in `Display_Poll`.** The display poller dereferenced
+  `displayblock` without a NULL check, so the client could take a data abort
+  when the socket poll loop ran while no display window was allocated (a dropped
+  connection, or a reconnect). Guarded to match the sibling display routines — a
+  pre-existing latent bug, surfaced during TLS testing and fixed here.
+
+### Changed files
+
+- New `app/!RDPClient/c/AcornSSLIf` + `h/AcornSSLIf` + `h/AcornSSL`;
+  `rdesktop/c/iso` (negotiation), `rdesktop/c/tcp` (TLS transport),
+  `rdesktop/c/secure` (Enhanced Security — no RDP-layer encryption under TLS),
+  `rdesktop/c/licence` (mark licensing complete on the server's licence result),
+  `rdesktop/h/proto`, `c/Status` (+ `Messages` `statcon.encrypt3`),
+  `c/Display` (Display_Poll NULL guard); `build/plan.json` (+1 compile) and
+  `build/app_base.zip`.
+
+---
+
 ## 0.90.3 — 2026-09-14
 
 Completes two-way clipboard support: **pasting text from a RISC OS application

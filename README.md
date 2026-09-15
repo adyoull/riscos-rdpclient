@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.90.3)
+# !RDPClient — RISC OS RDP client (32-bit, 0.91)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.90.3**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.91**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -158,6 +158,25 @@ objects, which is why a clean rebuild used to regress):
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
 
+### 0.91 — RDP-over-TLS (AcornSSL)
+
+Adds **Enhanced RDP Security (TLS)** using the RISC OS **AcornSSL** module, so
+!RDPClient can connect to servers that require TLS — modern Windows, and
+TLS-configured xrdp / NuoRDS — as well as the legacy Standard RDP Security it
+already supported. When AcornSSL is present the client offers TLS in the RDP
+negotiation; if the server selects it, the socket is upgraded to a TLS session
+(`AcornSSL_CreateSession`) before login and all RDP traffic runs through it. It
+is auto-negotiated — a standard-security server still selects plain RDP and
+connects exactly as before, and on a machine without AcornSSL the TLS offer is
+never sent, so nothing changes there. The Status window shows **"TLS"** while a
+TLS session is active. **Limitations:** this is TLS encryption only, not TLS/NLA — NLA/CredSSP is
+not supported (a server that *requires* NLA is refused). When the server
+presents its certificate, AcornSSL shows a dialogue for you to accept or
+reject it, so a self-signed certificate can be accepted interactively. Full
+detail in `docs/CHANGELOG.md`.
+
+---
+
 ### 0.90.3 — clipboard paste RISC OS → server
 
 Copying text in a RISC OS application and pasting it into the remote session now
@@ -251,4 +270,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.90.3`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.91`; wheel scrolls the remote.

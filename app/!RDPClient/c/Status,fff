@@ -159,6 +159,8 @@ extern BOOL g_packet_encryption;
 extern BOOL g_encryption;
 static BOOL status_packet_encryption = FALSE;
 static BOOL status_encyption = FALSE;
+extern int tcp_tls_active(void);
+static BOOL status_tls = FALSE;
 
 extern BOOL g_use_rdp5;
 static BOOL status_use_rdp5 = FALSE;
@@ -709,9 +711,12 @@ static void update_status(BOOL force)
 
 
      if(force || g_packet_encryption != status_packet_encryption ||
-                 g_encryption != status_encyption){
+                 g_encryption != status_encyption ||
+                 tcp_tls_active() != status_tls){
 
-        if(g_packet_encryption && g_encryption)
+        if(tcp_tls_active())
+           value = 3;
+        else if(g_packet_encryption && g_encryption)
            value = 2;
         else if(!g_packet_encryption && !g_encryption)
            value = 1;
@@ -724,6 +729,7 @@ static void update_status(BOOL force)
 
         status_packet_encryption = g_packet_encryption;
         status_encyption = g_encryption;
+        status_tls = tcp_tls_active();
      }
 
      if(force || g_use_rdp5 != status_use_rdp5){

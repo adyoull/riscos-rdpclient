@@ -1,3 +1,22 @@
+15-Sep-2026  0.91   Added RDP-over-TLS support using the RISC OS AcornSSL
+                    module. When AcornSSL is present the client offers TLS in
+                    the RDP negotiation and, if the server selects it, upgrades
+                    the connection to a TLS session before login - so it can
+                    now connect to servers that require TLS (modern Windows,
+                    and TLS-configured xrdp / NuoRDS). A server that only does
+                    standard RDP security still connects as before, and without
+                    the AcornSSL module the client is unchanged. The Status
+                    window shows "TLS" while a TLS session is active. This
+                    is TLS encryption only, not TLS/NLA: Network Level
+                    Authentication (CredSSP) is not supported. When the
+                    server presents its certificate AcornSSL shows a
+                    dialogue asking the user to accept or reject it, so
+                    a self-signed certificate can be accepted
+                    interactively. It also fixes a null-pointer crash in
+                    the display poller that could abort the client when a
+                    connection dropped or was re-established while the
+                    socket poll loop was still running.
+
 14-Sep-2026  0.90.3 Pasting text from a RISC OS application into the remote
                     session now works (the RISC OS -> server clipboard
                     direction). The client offers both CF_TEXT and

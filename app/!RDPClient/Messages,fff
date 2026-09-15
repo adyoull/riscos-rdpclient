@@ -4,7 +4,7 @@
 app.name: RDPClient
 
 # version text for info box
-info.version: 0.90.3 (14-Sep-2026)
+info.version: 0.91 (15-Sep-2026)
 info.rversion: 1.6.0 (CSV 01-Mar-2010)
 info.rdpclurl: http://www.orac2.demon.co.uk/software/rdpclient/rdpclient.html
 info.rdeskurl: http://www.rdesktop.org/
@@ -27,6 +27,7 @@ statcon.compres2: RDP
 statcon.encrypt0: None
 statcon.encrypt1: Login only
 statcon.encrypt2: All data
+statcon.encrypt3: TLS
 statcon.protoco0: RDP4
 statcon.protoco1: RDP5
 statcon.clip0: Off

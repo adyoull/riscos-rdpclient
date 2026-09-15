@@ -1,0 +1,66 @@
+/* This source code in this file is licensed to You by Castle Technology
+ * Limited ("Castle") and its licensors on contractual terms and conditions
+ * ("Licence") which entitle you freely to modify and/or to distribute this
+ * source code subject to Your compliance with the terms of the Licence.
+ * 
+ * This source code has been made available to You without any warranties
+ * whatsoever. Consequently, Your use, modification and distribution of this
+ * source code is entirely at Your own risk and neither Castle, its licensors
+ * nor any other person who has contributed to this source code shall be
+ * liable to You for any loss or damage which You may suffer as a result of
+ * Your use, modification or distribution of this source code.
+ * 
+ * Full details of Your rights and obligations are set out in the Licence.
+ * You should have received a copy of the Licence with this source code file.
+ * If You have not received a copy, the text of the Licence is available
+ * online at www.castle-technology.co.uk/riscosbaselicence.htm
+ */
+/* Created by Hdr2H.  Do not edit.*/
+#ifndef EXPORT_APCS_32_C_INTERFACE_ACORNSSL_H
+#define EXPORT_APCS_32_C_INTERFACE_ACORNSSL_H
+
+#pragma force_top_level
+#pragma include_only_once
+
+#define CreateSession_New                        (0)
+#define CreateSession_ReuseAuth                  (1)
+#define CreateSession_CmdMask                    (0xff)
+#define CreateSession_CmdShift                   (0)
+#define CreateSession_FlagMask                   (0xffffff)
+#define CreateSession_FlagShift                  (8)
+#define SO_ACORNSSL_HOSTNAME                     (0x11e0)
+#define SO_ACORNSSL_PROMPTTIME                   (0x11e1)
+#define CertTag_ListEnd                          (0)
+#define CertTag_Issuer                           (1)
+#define CertTag_Subject                          (2)
+#define CertTag_ValidFrom                        (3)
+#define CertTag_ValidTo                          (4)
+#define CertTag_Serial                           (5)
+#define CertTag_Version                          (6)
+#define CertTag_Signature                        (7)
+#define CertTag_X509                             (8)
+#define CertTagType_String                       (0)
+#define CertTagType_Integer                      (1)
+#define CertTagType_Cardinal                     (2)
+#define CertTagType_UnixTime                     (3)
+#define CertTagType_Pointer                      (4)
+#endif
+#ifndef AcornSSL_Creat
+#define AcornSSL_Creat                  0x050f80
+#define AcornSSL_Ioctl                  0x050f81
+#define AcornSSL_Connect                0x050f82
+#define AcornSSL_Shutdown               0x050f83
+#define AcornSSL_Close                  0x050f84
+#define AcornSSL_Getsockopt             0x050f85
+#define AcornSSL_Write                  0x050f86
+#define AcornSSL_Recv                   0x050f87
+#define AcornSSL_CreateSession          0x050f88
+#define AcornSSL_Getpeername            0x050f89
+#define AcornSSL_Getsockname            0x050f8a
+#define AcornSSL_Setsockopt             0x050f8b
+#define AcornSSL_Stat                   0x050f8c
+#define AcornSSL_Version                0x050f8d
+#define AcornSSL_Read                   0x050f8e
+#define AcornSSL_Send                   0x050f8f
+#define AcornSSL_Session                0x050f90
+#endif

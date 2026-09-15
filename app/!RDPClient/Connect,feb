@@ -11,6 +11,10 @@ RMEnsure FPEmulator 4.03 Error 0 This application requires FPEmulator 4.03 or la
 RMEnsure SharedCLibrary 5.34 RMLoad System:Modules.CLib
 RMEnsure SharedCLibrary 5.34 Error 0 This application requires SharedCLibrary 5.34 or later.
 
+| Load AcornSSL if it is installed, so RDP-over-TLS is available. Optional:
+| if AcornSSL is not present the client falls back to standard RDP security.
+IfThere System:Modules.Network.URL.AcornSSL Then RMEnsure AcornSSL 0.00 RMLoad System:Modules.Network.URL.AcornSSL
+
 RMEnsure DeepKeys 2.04 Error 0 This application requires DeepKeys 2.04 or later to be installed in !Boot.
 
 | Alternate location of cache directories.

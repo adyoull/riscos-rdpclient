@@ -219,6 +219,9 @@ RD_BOOL serial_get_timeout(RD_NTHANDLE handle, uint32 length, uint32 * timeout,
 /* tcp.c */
 STREAM tcp_init(uint32 maxlen);
 void tcp_send(STREAM s);
+RD_BOOL tcp_tls_connect(void);
+RD_BOOL tcp_tls_available(void);
+RD_BOOL tcp_tls_active(void);
 STREAM tcp_recv(STREAM s, uint32 length);
 RD_BOOL tcp_connect(char *server);
 void tcp_disconnect(void);

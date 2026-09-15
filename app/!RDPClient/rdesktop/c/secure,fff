@@ -16,12 +16,10 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-/* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
-   under the same licence as the rest of !RDPClient (GPL), preserving the
-   copyright of the original authors. */
 
 #include "rdesktop.h"
 #include "ssl.h"
+
 
 extern char g_hostname[16];
 extern int g_width;
@@ -52,7 +50,7 @@ static uint8 g_sec_decrypt_update_key[16];
 static uint8 g_sec_encrypt_update_key[16];
 static uint8 g_sec_crypted_random[SEC_MAX_MODULUS_SIZE];
 
-/* widened from uint16 to a full word. Same Norcroft
+/* (C) 2026 Andrew Youll -- widened from uint16 to a full word. Same Norcroft
  * 5.18 unaligned-word-load-of-a-16-bit-global codegen bug as g_mcs_userid (see
  * rdesktop/c/mcs): the read at rdp_send_logon_info() compiled to an unaligned
  * LDR and aborts ("abort on data transfer ... in function rdp_send_logon_info
@@ -863,6 +861,20 @@ sec_connect(char *server, char *username, RD_BOOL reconnect)
 
 	if (!mcs_connect(server, &mcs_data, username, reconnect))
 		return False;
+
+	/* Enhanced RDP Security: when the transport negotiated TLS, the RDP
+	   security layer runs unencrypted -- TLS provides confidentiality, the
+	   server sends no certificate or server-random, and no client-random is
+	   exchanged. Disabling g_encryption here (after the handshake, so
+	   tcp_tls_active() is reliable) skips sec_establish_key() and stops
+	   sec_send()/sec_recv() applying RC4, matching the server. */
+	if (tcp_tls_active())
+	{
+		g_encryption = False;
+#ifdef TLS_NEG_DEBUG
+		warning("NEG: TLS active -- RDP security layer set to no encryption (Enhanced Security)\n");
+#endif
+	}
 
 	/*      sec_process_mcs_data(&mcs_data); */
 	if (g_encryption)

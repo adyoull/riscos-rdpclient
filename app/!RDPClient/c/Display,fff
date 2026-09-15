@@ -1174,6 +1174,8 @@ extern void Display_Poll(void)
  /*
   * Called frequently
   */
+  if(displayblock == NULL)
+     return;		/* no display yet (e.g. during connect / reconnect) */
   if(displayblock->singletask)
      return;
 
