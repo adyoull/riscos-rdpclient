@@ -15,6 +15,63 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.91.1 — 2026-09-16
+
+Fixes RDP-over-TLS against Microsoft Windows hosts, which dropped the connection
+during setup in 0.91. Adds an optional protocol trace for field diagnostics,
+clearer TLS error reporting, and a source-attribution tidy-up.
+
+### Fixed
+
+- **RDP-over-TLS with Windows servers (Windows 10 and 11).** Modern Windows
+  enforces two Enhanced (TLS) RDP Security requirements in the client's MCS
+  Connect Initial that 0.91 did not meet, and dropped the connection when they
+  were wrong. Non-Windows TLS servers (xrdp, NuoRDS) do not enforce them, which
+  is why only Windows was affected — it was never a TLS-version issue.
+
+  1. **serverSelectedProtocol — anti-MITM / anti-downgrade** (`clientCoreData`,
+     MS-RDPBCGR 2.2.1.3.2). The client must echo back the security protocol the
+     server selected during negotiation (here PROTOCOL_SSL). Windows uses this
+     as a man-in-the-middle guard: it confirms client and server agree on the
+     negotiated protocol, so a MITM cannot silently downgrade the security. The
+     2010-era rdesktop core omitted the field, so hardened Windows saw an
+     unverifiable connection and reset it on the first PDU. This was the
+     decisive missing piece.
+  2. **encryptionMethods = 0 under TLS** (MS-RDPBCGR 2.2.1.3.3). Under an
+     external security protocol the RDP layer carries no encryption of its own,
+     so the advertised RC4 methods must be 0; the client was still sending
+     40/128-bit RC4.
+
+  Both fields are built before the TLS negotiation runs, so `mcs_connect()` now
+  finalises them via `sec_finalise_mcs_data_for_tls()` once `tcp_tls_active()`
+  reports TLS is up — setting serverSelectedProtocol and zeroing
+  encryptionMethods — immediately before the connect PDU is sent. The non-TLS
+  path is unchanged.
+
+### Added
+
+- **Protocol trace (`-v` / `RDPClient$Debug`).** A runtime trace of the RDP
+  connection sequence (MCS setup, licensing, logon, capability exchange), off by
+  default. Enable it with the `-v` command-line option or by setting the system
+  variable `RDPClient$Debug` (e.g. `Set RDPClient$Debug 1` in a connection Obey
+  file) to diagnose connection failures without a rebuild.
+
+### Changed
+
+- **Real TLS error messages.** AcornSSL failures now surface the module's own
+  error text (`ssl_last_errmess()`) instead of the meaningless `errno` that
+  `GETDCI4ERRNO()` yields for handshake errors.
+- **SNI left off deliberately.** Setting the TLS server name via AcornSSL also
+  switches on mbedTLS certificate CN/SAN verification, which makes the
+  self-signed certificate Windows RDP uses by default (CN = the host's own name)
+  fail the handshake when connecting by IP or a non-matching name. RDP servers
+  do not select their certificate by SNI, so it is disabled (behind a build-time
+  `RDP_TLS_SNI`).
+- **Source attribution.** `c/AcornSSLIf` credits Colin Granville's original
+  AcornSSL C wrapper and drops the integration copyright line.
+
+---
+
 ## 0.91 — 2026-09-15
 
 Adds **RDP-over-TLS** (Enhanced RDP Security) via the RISC OS **AcornSSL**

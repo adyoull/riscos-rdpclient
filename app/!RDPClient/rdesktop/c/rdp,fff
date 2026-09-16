@@ -345,6 +345,7 @@ rdp_send_logon_info(uint32 flags, char *domain, char *user,
 	time_t t = time(NULL);
 	time_t tzone;
 
+	RDP_TRACE(("LOGON: rdp5=%d srvver=%d perfflags=0x%x (%s)\n", g_use_rdp5, g_server_rdp_version, g_rdp5_performanceflags, (!g_use_rdp5 || 1 == g_server_rdp_version) ? "RDP4-NO-PERF" : "RDP5"));
 	if (!g_use_rdp5 || 1 == g_server_rdp_version)
 	{
 		DEBUG_RDP5(("Sending RDP4-style Logon packet\n"));
@@ -1046,6 +1047,7 @@ process_demand_active(STREAM s)
 	uint8 type;
 	uint16 len_src_descriptor, len_combined_caps;
 
+	RDP_TRACE(("RDP: <- Demand Active (licensing done, entering caps)\n"));
 	in_uint32_le(s, g_rdp_shareid);
 	in_uint16_le(s, len_src_descriptor);
 	in_uint16_le(s, len_combined_caps);
@@ -1648,6 +1650,7 @@ rdp_connect(char *server, uint32 flags, char *domain, char *password,
 		return False;
 
 	rdp_send_logon_info(flags, domain, user, password, command, directory);
+	RDP_TRACE(("RDP: -> logon / Client Info sent\n"));
 	return True;
 }
 

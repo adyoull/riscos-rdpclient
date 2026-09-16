@@ -147,6 +147,7 @@ licence_process_demand(STREAM s)
 
 	/* Retrieve the server random from the incoming packet */
 	in_uint8p(s, server_random, SEC_RANDOM_SIZE);
+	RDP_TRACE(("LIC: <- DEMAND (server random received)\n"));
 
 	/* We currently use null client keys. This is a bit naughty but, hey,
 	   the security of licence negotiation isn't exactly paramount. */
@@ -164,11 +165,13 @@ licence_process_demand(STREAM s)
 		ssl_rc4_set_key(&crypt_key, g_licence_key, 16);
 		ssl_rc4_crypt(&crypt_key, hwid, hwid, sizeof(hwid));
 
+		RDP_TRACE(("LIC: -> PRESENT (saved licence)\n"));
 		licence_present(null_data, null_data, licence_data, licence_size, hwid, signature);
 		xfree(licence_data);
 		return;
 	}
 
+	RDP_TRACE(("LIC: -> NEW_REQUEST\n"));
 	licence_send_request(null_data, null_data, g_username ? g_username : "", g_hostname);
 }
 
@@ -300,9 +303,7 @@ licence_process(STREAM s)
 
 	in_uint8(s, tag);
 	in_uint8s(s, 3);	/* version, length */
-#ifdef TLS_NEG_DEBUG
-	warning("NEG: licence PDU tag 0x%x\n", tag);
-#endif
+	RDP_TRACE(("LIC: <- PDU tag 0x%02x\n", tag));
 
 	switch (tag)
 	{
@@ -326,9 +327,7 @@ licence_process(STREAM s)
 			   essential under Enhanced (TLS) Security, where post-licence
 			   PDUs carry no security header. */
 			g_licence_issued = True;
-#ifdef TLS_NEG_DEBUG
-			warning("NEG: licence result -- licensing complete\n");
-#endif
+			RDP_TRACE(("LIC: complete (result/reissue)\n"));
 			break;
 
 		default:

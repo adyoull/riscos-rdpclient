@@ -46,6 +46,8 @@ extern int ssl_send(int sslhandle, const void *msg, unsigned int len, int flags)
 extern int ssl_recv(int sslhandle, void *buf, unsigned int len, int flags);
 extern int ssl_socketclose(int sslhandle);
 extern int ssl_socketversion(void);
+extern int ssl_setsockopt(int sslhandle, int level, int optname, const void *optval, int optlen);
+extern const char *ssl_last_errmess(void);
 
 /* One-shot WIMP poll (Wimp_PollIdle + Event_Process), returns immediately.
    Used to keep the desktop -- and AcornSSL's certificate-confirmation
@@ -90,6 +92,7 @@ extern int RDPClient_PollNull(void);
 
 static int g_sock;
 static int g_ssl = -1;	/* AcornSSL handle when a TLS session is active, else -1 */
+static char g_tls_hostname[128] = "";	/* connection hostname, for TLS SNI */
 static struct stream g_in;
 static struct stream g_out[STREAM_COUNT];
 int g_tcp_port_rdp = TCP_PORT_RDP;
@@ -161,7 +164,7 @@ tcp_tls_connect(void)
 	g_ssl = ssl_createsession(g_sock, CreateSession_New, 0);
 	if (g_ssl < 0)
 	{
-		error("AcornSSL: CreateSession failed (%X) %s\n", errno, _inet_err());
+		error("AcornSSL: CreateSession failed: %s\n", ssl_last_errmess());
 		return False;
 	}
 	/* Non-blocking steady-state I/O: tcp_recv() drains AcornSSL's buffered
@@ -172,6 +175,35 @@ tcp_tls_connect(void)
 		int nonblock = 1;
 		ssl_socketioctl(g_ssl, FIONBIO, &nonblock);
 	}
+	/* SNI is intentionally disabled (define RDP_TLS_SNI to re-enable -- but note
+	   the caveat). AcornSSL's SO_ACORNSSL_HOSTNAME maps to
+	   mbedtls_ssl_set_hostname(), which sends SNI *and* switches on mbedTLS
+	   certificate CN/SAN verification against that name. RDP servers routinely
+	   present a self-signed certificate whose CN is the machine's own host name,
+	   so connecting by IP -- or by a short name that does not match the CN --
+	   then fails the handshake with X509_CERT_VERIFY_FAILED (mbedTLS 0x2700)
+	   instead of offering the accept/reject dialogue. SNI gives no benefit for
+	   RDP (servers do not select their RDP certificate by SNI), so it is left
+	   off to preserve interactive certificate confirmation. */
+#ifdef RDP_TLS_SNI
+	if (g_tls_hostname[0])
+	{
+		const char *q;
+		RD_BOOL is_name = False;
+		for (q = g_tls_hostname; *q; q++)
+			if ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z'))
+			{
+				is_name = True;
+				break;
+			}
+		if (is_name)
+		{
+			const char *name = g_tls_hostname;
+			ssl_setsockopt(g_ssl, SOL_SOCKET, SO_ACORNSSL_HOSTNAME,
+			               (const void *) name, sizeof(const char *));
+		}
+	}
+#endif
 #ifdef TLS_NEG_DEBUG
 	warning("NEG: AcornSSL_CreateSession OK -- TLS handle %d\n", g_ssl);
 #endif
@@ -220,7 +252,10 @@ tcp_send(STREAM s)
 			{
 /* *** START *** AJS 25/10/2005 *** */
 /*				error("send: %s\n", TCP_STRERROR); */
-				error("send: (%X) %s\n", errno, _inet_err());
+				if (g_ssl >= 0)
+					error("send: AcornSSL: %s\n", ssl_last_errmess());
+				else
+					error("send: (%X) %s\n", errno, _inet_err());
 /* *** END *** AJS 25/10/2005 *** */
 				return;
 			}
@@ -297,7 +332,7 @@ tcp_recv(STREAM s, uint32 length)
 				}
 				else
 				{
-					error("recv: (%X) %s\n", errno, _inet_err());
+					error("recv: AcornSSL: %s\n", ssl_last_errmess());
 					return NULL;
 				}
 			}
@@ -398,6 +433,9 @@ tcp_connect(char *server)
 
 #else /* no IPv6 support */
 
+
+	strncpy(g_tls_hostname, server, sizeof(g_tls_hostname) - 1);
+	g_tls_hostname[sizeof(g_tls_hostname) - 1] = '\0';
 
 	if ((nslookup = gethostbyname(server)) != NULL)
 	{

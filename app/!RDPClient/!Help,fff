@@ -928,6 +928,21 @@ Any other suggestions will be gladly accepted.
 Version history:
 ~~~~~~~~~~~~~~~
 
+0.91.1 (16-Sep-2026)
+  * Fixed connecting to Microsoft Windows servers over TLS. Modern Windows
+    enforces two Enhanced RDP Security requirements the client was not meeting
+    and dropped the connection during setup. The decisive one is an anti-man-
+    in-the-middle check: the client must echo back the security protocol the
+    server selected during negotiation, so a middle-man cannot silently
+    downgrade the security. The client now sends this, and also advertises no
+    RDP-layer encryption under TLS, as required. Non-Windows TLS servers (xrdp,
+    NuoRDS) were never affected.
+  * TLS errors now report the underlying AcornSSL message instead of a bare
+    error number.
+  * Added a protocol trace for diagnosing connection problems: off by default,
+    enabled with the -v command-line option or by setting the system variable
+    RDPClient$Debug (e.g. "Set RDPClient$Debug 1" in a connection Obey file).
+
 0.91 (15-Sep-2026)
  * Added RDP-over-TLS support via the RISC OS AcornSSL module. When AcornSSL is
    present the client offers TLS in the RDP negotiation and upgrades the

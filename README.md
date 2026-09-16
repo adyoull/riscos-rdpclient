@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.91)
+# !RDPClient — RISC OS RDP client (32-bit, 0.91.1)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.91**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.91.1**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -157,6 +157,37 @@ objects, which is why a clean rebuild used to regress):
    **DeskLib source** and is baked into the prebuilt `build/DeskLib32`.
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
+
+### 0.91.1 — Windows RDP-over-TLS fix (anti-MITM) + protocol trace
+
+Fixes connecting to **modern Microsoft Windows** hosts over RDP-with-TLS, which
+0.91 could not do — it reset during connection setup. Windows enforces two
+Enhanced (TLS) RDP Security requirements in the client's MCS Connect Initial
+that the 2010-era rdesktop core did not meet:
+
+- **serverSelectedProtocol** (`clientCoreData`, MS-RDPBCGR 2.2.1.3.2) — the
+  client must echo back the security protocol the server selected during the RDP
+  negotiation. This is Windows' **anti-man-in-the-middle / anti-downgrade**
+  check: it confirms client and server agree on the negotiated protocol, so a
+  MITM cannot silently downgrade the security. The client omitted the field, so
+  hardened Windows treated the connection as unverifiable and dropped it. This
+  was the decisive fix.
+- **encryptionMethods = 0 under TLS** (MS-RDPBCGR 2.2.1.3.3) — under an
+  external security protocol the RDP layer adds no encryption of its own, so the
+  advertised RC4 methods must be zero.
+
+Both are patched into the connect data once TLS is confirmed
+(`sec_finalise_mcs_data_for_tls()`). Non-Windows TLS servers (xrdp, NuoRDS) do
+not enforce either check, which is why they worked from 0.91.
+
+This release also adds a **protocol trace** for diagnosing connection problems
+in the field — the MCS / licensing / logon / capability sequence — off by
+default. Enable it with the `-v` command-line option, or by setting the system
+variable `RDPClient$Debug` (e.g. `Set RDPClient$Debug 1` in a connection Obey
+file). TLS errors now also report AcornSSL's own message instead of a bare
+`errno`. Note that **SNI is deliberately not sent**: it would switch on mbedTLS
+certificate name-checking, which breaks the self-signed certificates Windows RDP
+uses by default when connecting by IP or a non-matching name.
 
 ### 0.91 — RDP-over-TLS (AcornSSL)
 

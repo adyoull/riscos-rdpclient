@@ -39,6 +39,14 @@ extern unsigned int g_num_channels;
  * sec_recv() can reload the real value; this workaround is retained in source. */
 volatile int g_diag_mcs_chan = 0;
 
+/* Enhanced (TLS) Security requires two things in the MCS connect data that are
+   built before the TLS negotiation runs: encryptionMethods == 0
+   (MS-RDPBCGR 2.2.1.3.3) and serverSelectedProtocol == the negotiated protocol
+   (2.2.1.3.2, an anti-downgrade check Windows enforces). mcs_connect() patches
+   both via sec_finalise_mcs_data_for_tls() once tcp_tls_active() is up. */
+extern RD_BOOL tcp_tls_active(void);
+extern void sec_finalise_mcs_data_for_tls(STREAM mcs_data);
+
 /* Parse an ASN.1 BER header */
 static RD_BOOL
 ber_parse_header(STREAM s, int tagval, int *length)
@@ -409,24 +417,38 @@ mcs_connect(char *server, STREAM mcs_data, char *username, RD_BOOL reconnect)
 	if (!iso_connect(server, username, reconnect))
 		return False;
 
+	/* Enhanced (TLS) Security: the negotiation has now run, so if TLS was
+	   selected, finalise the already-built connect data for TLS -- zero the
+	   advertised encryptionMethods AND set serverSelectedProtocol to the
+	   negotiated protocol -- before sending it. Windows rejects the MCS Connect
+	   Initial otherwise (xrdp/NuoRDS are more lenient). */
+	if (tcp_tls_active())
+		sec_finalise_mcs_data_for_tls(mcs_data);
+
+	RDP_TRACE(("MCS: nego ok -> sending Connect Initial\n"));
 	mcs_send_connect_initial(mcs_data);
 	if (!mcs_recv_connect_response(mcs_data))
 		goto error;
+	RDP_TRACE(("MCS: Connect Response received\n"));
 
 	mcs_send_edrq();
+	RDP_TRACE(("MCS: Erect Domain sent\n"));
 
 	mcs_send_aurq();
 	if (!mcs_recv_aucf(&g_mcs_userid))
 		goto error;
+	RDP_TRACE(("MCS: Attach User confirmed (userid=%d)\n", g_mcs_userid));
 
 	mcs_send_cjrq(g_mcs_userid + MCS_USERCHANNEL_BASE);
 
 	if (!mcs_recv_cjcf())
 		goto error;
+	RDP_TRACE(("MCS: user channel joined\n"));
 
 	mcs_send_cjrq(MCS_GLOBAL_CHANNEL);
 	if (!mcs_recv_cjcf())
 		goto error;
+	RDP_TRACE(("MCS: global channel joined (%u extra)\n", g_num_channels));
 
 	for (i = 0; i < g_num_channels; i++)
 	{
@@ -434,6 +456,7 @@ mcs_connect(char *server, STREAM mcs_data, char *username, RD_BOOL reconnect)
 		if (!mcs_recv_cjcf())
 			goto error;
 	}
+	RDP_TRACE(("MCS: all channels joined -- complete\n"));
 	return True;
 
       error:

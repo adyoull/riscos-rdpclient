@@ -370,12 +370,46 @@ sec_establish_key(void)
 	sec_send(s, flags);
 }
 
+/* Offset, within the MCS connect-data stream, of the clientSecurityData
+   encryptionMethods word (recorded by sec_out_mcs_data). The connect data is
+   built before the TLS negotiation runs, so mcs_connect() calls
+   sec_clear_mcs_encryption() to force this word to 0 once TLS is known to be
+   active -- Enhanced (TLS) Security requires encryptionMethods == 0
+   (MS-RDPBCGR 2.2.1.3.3). */
+static unsigned int g_sec_crypt_offset = 0;
+static unsigned int g_sec_selproto_offset = 0;	/* serverSelectedProtocol offset (set to PROTOCOL_SSL under TLS) */
+
+/* Force the advertised encryptionMethods to 0 for Enhanced (TLS) Security.
+   Under an external security protocol (TLS) the RDP security layer carries no
+   encryption of its own, so the field must be 0. Called from mcs_connect()
+   after the handshake, before the MCS Connect Initial is sent. Windows RDP
+   resets the connection when this is non-zero under TLS; xrdp and NuoRDS
+   tolerate it, which is why only Windows was affected. */
+void
+sec_finalise_mcs_data_for_tls(STREAM s)
+{
+	/* encryptionMethods MUST be 0 under Enhanced (TLS) Security. */
+	if (g_sec_crypt_offset != 0)
+	{
+		uint8 *p = s->data + g_sec_crypt_offset;
+		p[0] = p[1] = p[2] = p[3] = 0;
+	}
+	/* serverSelectedProtocol MUST echo the negotiated protocol (PROTOCOL_SSL == 1)
+	   or Windows drops the MCS Connect Initial as a downgrade (MS-RDPBCGR
+	   2.2.1.3.2). Set the little-endian word to 1. */
+	if (g_sec_selproto_offset != 0)
+	{
+		uint8 *p = s->data + g_sec_selproto_offset;
+		p[0] = 0x01; p[1] = p[2] = p[3] = 0;
+	}
+}
+
 /* Output connect initial data blob */
 static void
 sec_out_mcs_data(STREAM s)
 {
 	int hostlen = 2 * strlen(g_hostname);
-	int length = 158 + 76 + 12 + 4;
+	int length = 158 + 76 + 12 + 4 + 4;	/* trailing +4: serverSelectedProtocol */
 	unsigned int i;
 
 	if (g_num_channels > 0)
@@ -403,7 +437,7 @@ sec_out_mcs_data(STREAM s)
 
 	/* Client information */
 	out_uint16_le(s, SEC_TAG_CLI_INFO);
-	out_uint16_le(s, 212);	/* length */
+	out_uint16_le(s, 216);	/* length (212 + 4 for serverSelectedProtocol) */
 	out_uint16_le(s, g_use_rdp5 ? 4 : 1);	/* RDP version. 1 == RDP4, 4 == RDP5. */
 	out_uint16_le(s, 8);
 	out_uint16_le(s, g_width);
@@ -433,6 +467,9 @@ sec_out_mcs_data(STREAM s)
 	out_uint32_le(s, 1);
 	out_uint8s(s, 64);	/* End of client info */
 
+	g_sec_selproto_offset = s->p - s->data;
+	out_uint32_le(s, 0);	/* serverSelectedProtocol -- patched to PROTOCOL_SSL under TLS */
+
 	out_uint16_le(s, SEC_TAG_CLI_4);
 	out_uint16_le(s, 12);
 	out_uint32_le(s, g_console_session ? 0xb : 9);
@@ -441,7 +478,8 @@ sec_out_mcs_data(STREAM s)
 	/* Client encryption settings */
 	out_uint16_le(s, SEC_TAG_CLI_CRYPT);
 	out_uint16_le(s, 12);	/* length */
-	out_uint32_le(s, g_encryption ? 0x3 : 0);	/* encryption supported, 128-bit supported */
+	g_sec_crypt_offset = s->p - s->data;	/* encryptionMethods offset (forced to 0 under TLS) */
+	out_uint32_le(s, g_encryption ? 0x3 : 0);	/* encryptionMethods (40/128-bit RC4) */
 	out_uint32(s, 0);	/* Unknown */
 
 	DEBUG_RDP5(("g_num_channels is %d\n", g_num_channels));

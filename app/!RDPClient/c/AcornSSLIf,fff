@@ -24,6 +24,7 @@
 #include "sys/dcistructs.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Error-returning (X) form of the SWIs, so a failure returns an error block
    rather than aborting. On error we map the DCI4 error number to errno and
@@ -31,6 +32,26 @@
 #ifndef XOS_Bit
 #define XOS_Bit 0x20000
 #endif
+
+/* Most recent AcornSSL error message, captured on any failing veneer so the
+   caller can report the real reason (e.g. a TLS handshake / mbedTLS error)
+   instead of the meaningless errno that GETDCI4ERRNO() yields for non-socket
+   errors. */
+static char g_ssl_errmess[252] = "";
+
+const char *ssl_last_errmess(void)
+{
+    return g_ssl_errmess;
+}
+
+static void ssl_capture_err(_kernel_oserror *err)
+{
+    if (err != NULL && err->errmess[0] != '\0')
+    {
+        strncpy(g_ssl_errmess, err->errmess, sizeof(g_ssl_errmess) - 1);
+        g_ssl_errmess[sizeof(g_ssl_errmess) - 1] = '\0';
+    }
+}
 
 int ssl_connect(int sslhandle, const struct sockaddr *name, int namelen)
 {
@@ -40,7 +61,7 @@ int ssl_connect(int sslhandle, const struct sockaddr *name, int namelen)
     r.r[1] = (int)name;
     r.r[2] = namelen;
     err = _kernel_swi(AcornSSL_Connect | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -52,7 +73,7 @@ int ssl_getpeername(int sslhandle, struct sockaddr *name, int *namelen)
     r.r[1] = (int)name;
     r.r[2] = (int)namelen;
     err = _kernel_swi(AcornSSL_Getpeername | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -64,7 +85,7 @@ int ssl_getsockname(int sslhandle, struct sockaddr *name, int *namelen)
     r.r[1] = (int)name;
     r.r[2] = (int)namelen;
     err = _kernel_swi(AcornSSL_Getsockname | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -78,7 +99,7 @@ int ssl_getsockopt(int sslhandle, int level, int optname, void *optval, int *opt
     r.r[3] = (int)optval;
     r.r[4] = (int)optlen;
     err = _kernel_swi(AcornSSL_Getsockopt | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -91,7 +112,7 @@ int ssl_recv(int sslhandle, void *buf, size_t len, int flags)
     r.r[2] = (int)len;
     r.r[3] = flags;
     err = _kernel_swi(AcornSSL_Recv | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }
 
@@ -104,7 +125,7 @@ int ssl_send(int sslhandle, const void *msg, size_t len, int flags)
     r.r[2] = (int)len;
     r.r[3] = flags;
     err = _kernel_swi(AcornSSL_Send | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }
 
@@ -118,7 +139,7 @@ int ssl_setsockopt(int sslhandle, int level, int optname, const void *optval, in
     r.r[3] = (int)optval;
     r.r[4] = optlen;
     err = _kernel_swi(AcornSSL_Setsockopt | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -129,7 +150,7 @@ int ssl_shutdown(int sslhandle, int how)
     r.r[0] = sslhandle;
     r.r[1] = how;
     err = _kernel_swi(AcornSSL_Shutdown | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -139,7 +160,7 @@ int ssl_socketclose(int sslhandle)
     _kernel_oserror *err;
     r.r[0] = sslhandle;
     err = _kernel_swi(AcornSSL_Close | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -151,7 +172,7 @@ int ssl_socket(int domain, int type, int protocol)        /* returns sslhandle (
     r.r[1] = type;
     r.r[2] = protocol;
     err = _kernel_swi(AcornSSL_Creat | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }
 
@@ -162,7 +183,7 @@ int ssl_socketstat(int sslhandle, struct stat *buf)
     r.r[0] = sslhandle;
     r.r[1] = (int)buf;
     err = _kernel_swi(AcornSSL_Stat | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -181,7 +202,7 @@ int ssl_socketioctl(int sslhandle, unsigned long cmd, ...)
     r.r[1] = (int)cmd;
     r.r[2] = data;
     err = _kernel_swi(AcornSSL_Ioctl | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return 0;
 }
 
@@ -193,7 +214,7 @@ int ssl_socketread(int sslhandle, void *buf, unsigned int len)
     r.r[1] = (int)buf;
     r.r[2] = (int)len;
     err = _kernel_swi(AcornSSL_Read | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }
 
@@ -205,7 +226,7 @@ int ssl_socketwrite(int sslhandle, const void *buf, unsigned int len)
     r.r[1] = (int)buf;
     r.r[2] = (int)len;
     err = _kernel_swi(AcornSSL_Write | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }
 
@@ -214,7 +235,7 @@ int ssl_socketversion(void)
     _kernel_swi_regs r;
     _kernel_oserror *err;
     err = _kernel_swi(AcornSSL_Version | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }
 
@@ -226,6 +247,6 @@ int ssl_createsession(int socket, int reason_code, int reuse_sslhandle)
     r.r[1] = reason_code;
     r.r[2] = reuse_sslhandle;
     err = _kernel_swi(AcornSSL_CreateSession | XOS_Bit, &r, &r);
-    if (err) { errno = GETDCI4ERRNO(err->errnum); return -1; }
+    if (err) { errno = GETDCI4ERRNO(err->errnum); ssl_capture_err(err); return -1; }
     return r.r[0];
 }

@@ -86,6 +86,7 @@ SOURCES = [
     ("work/h/AcornSSL",       "app/!RDPClient/h/AcornSSL,fff",       "h/AcornSSL"),
     ("work/rdesktop/c/iso",   "app/!RDPClient/rdesktop/c/iso,fff",   "rdesktop/c/iso"),
     ("work/rdesktop/c/tcp",   "app/!RDPClient/rdesktop/c/tcp,fff",   "rdesktop/c/tcp"),
+    ("work/rdesktop/c/mcs",   "app/!RDPClient/rdesktop/c/mcs,fff",   "rdesktop/c/mcs"),
     ("work/rdesktop/h/proto", "app/!RDPClient/rdesktop/h/proto,fff", "rdesktop/h/proto"),
     ("work/rdesktop/c/secure", "app/!RDPClient/rdesktop/c/secure,fff", "rdesktop/c/secure"),
     ("work/rdesktop/c/licence","app/!RDPClient/rdesktop/c/licence,fff","rdesktop/c/licence"),

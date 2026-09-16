@@ -72,6 +72,7 @@ RD_BOOL g_fullscreen = False; /* not used in RISC OS */
 RD_BOOL g_grab_keyboard = True;
 RD_BOOL g_hide_decorations = False;
 RD_BOOL g_use_rdp5 = True;
+int g_debug_trace = False; /* -v or RDPClient$Debug: runtime protocol trace */
 RD_BOOL g_rdpclip = False; /* RISC OS default is off! */
 RD_BOOL g_console_session = False;
 RD_BOOL g_numlock_sync = True; /* We always want to sync on RISC OS */
@@ -81,7 +82,8 @@ RD_BOOL g_ownbackstore = True; /* We can't rely on external BackingStore */
 RD_BOOL g_seamless_rdp = False; /* not used in RISC OS */
 RD_BOOL g_user_quit = False;
 uint32 g_rdp5_performanceflags = RDP5_NO_WALLPAPER | RDP5_NO_FULLWINDOWDRAG |
-                                 RDP5_NO_MENUANIMATIONS;
+                                 RDP5_NO_MENUANIMATIONS | RDP5_NO_THEMING |
+                                 RDP5_NO_CURSOR_SHADOW;
 /* Session Directory redirection */
 RD_BOOL g_redirect = False;
 char g_redirect_server[64];
@@ -186,13 +188,17 @@ extern int RDesktop_Main(int argc, char *argv[])
   
   optind = 0;
 
+  /* Enable protocol trace from a system variable too (Obey: Set RDPClient$Debug 1) */
+  if(getenv("RDPClient$Debug") != NULL)
+     g_debug_trace = True;
+
   ScreenMode_ReadCurrentResBpp(&screen_x, &screen_y, &screen_bpp);
 
  /*
   * Original options
   * "u:d:s:c:p:n:k:g:fbeEmCDKS:T:Na:r:045h?"
   */
-  while((c = Utils_GetOptions(argc, argv, "C:u:d:D:s:c:p:n:k:g:ft:beEm:a:x:r:045h?qAizPM",
+  while((c = Utils_GetOptions(argc, argv, "C:u:d:D:s:c:p:n:k:g:ft:beEm:a:x:r:045h?qAizPMv",
                               &optarg, &optind)) != 0){
      switch (c)
      {
@@ -332,6 +338,10 @@ extern int RDesktop_Main(int argc, char *argv[])
            DEBUG(("rdp compression enabled\n"));
            flags |= (RDP_LOGON_COMPRESSION | RDP_LOGON_COMPRESSION2);
            Status_SetRDPCompression(TRUE);
+           break;
+
+        case 'v':
+           g_debug_trace = True;
            break;
 
         case 'x':

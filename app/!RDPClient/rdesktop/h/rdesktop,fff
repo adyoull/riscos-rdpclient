@@ -148,6 +148,13 @@
 #define DEBUG_SOUND(args)
 #endif
 
+/* Runtime protocol trace. Off by default; enabled by the -v command-line
+   option or the RDPClient$Debug system variable (see RDesktop_Main). Lets the
+   MCS/licensing/logon connection sequence be traced in the field to diagnose
+   protocol failures without a rebuild. */
+extern int g_debug_trace;	/* RD_BOOL/int; declared here, before types.h */
+#define RDP_TRACE(args) do { if (g_debug_trace) warning args; } while (0)
+
 #ifdef WITH_DEBUG_CHANNEL
 #define DEBUG_CHANNEL(args) printf args;
 #else
