@@ -20,6 +20,7 @@
 #include "DeskLib:Handler.h"           /* Default/example event handlers  */
 #include "DeskLib:Hourglass.h"         /* Hourglass module interfaces     */
 #include "DeskLib:Icon.h"              /* Icon handling automation        */
+#include "DeskLib:KeyCodes.h"          /* keycode_TAB etc.                */
 #include "DeskLib:Menu.h"              /* Menu create & show support      */
 #include "DeskLib:Msgs.h"              /* Message translation code        */
 #include "DeskLib:Resource.h"          /* Handles finding resource files  */
@@ -34,6 +35,7 @@
 #include "DeskLib:Debug.h"
 #include "DeskLib:Url.h"
 #include "DeskLib:Save.h"
+#include "ConnEdit.h"                 /* connection editor / manager UI  */
 
 
 #include <signal.h>
@@ -101,6 +103,7 @@ static dialog2_block *dialog2_proginfo = NULL;
 static window_handle save_window = NULL;
 static save_saveblock *saveblock = NULL;
 
+
 /* Defines for the positions at which items appear on the menus. */
 #define mainmenu_INFO        0
 #define mainmenu_WINDOW      1
@@ -110,7 +113,8 @@ static save_saveblock *saveblock = NULL;
 #define mainmenu_VIEWLOG     5
 #define mainmenu_STATUS      6
 #define mainmenu_SCROLL      7   /* (C) 2026 Andrew Youll -- scroll settings  */
-#define mainmenu_QUIT        8
+#define mainmenu_CONNECT     8   /* (C) 2026 Andrew Youll -- connection editor */
+#define mainmenu_QUIT        9
 
 /* Scroll submenu item positions (C) 2026 Andrew Youll */
 #define scrollmenu_INVERT    0
@@ -128,6 +132,7 @@ static save_saveblock *saveblock = NULL;
 #define icon_SAVE_FILENAME      1
 #define icon_SAVE_OK            2
 #define icon_SAVE_CANCEL        3
+
 
 /* default Wimp_PollIdle time */
 #define idle_TIME 40
@@ -503,6 +508,7 @@ static BOOL Click_baricon(event_pollblock *event, void *reference)
      if(scrollmenu != NULL)
         Menu_SetFlags(scrollmenu, scrollmenu_INVERT,
                       (Mouse_GetWheelInvert() ? 1 : 0), 0);
+     ConnEdit_RebuildMenu(mainmenu, mainmenu_CONNECT);
      Menu_Show(mainmenu, event->data.mouse.pos.x,-1);
   }
 
@@ -626,6 +632,10 @@ static BOOL MenuChoice_mainmenu(event_pollblock *event, void *reference)
           Mouse_WheelSpeedFaster();
           break;
       }
+      break;
+
+    case mainmenu_CONNECT:
+      ConnEdit_MenuSelect(event->data.selection);
       break;
 
     case mainmenu_QUIT:
@@ -924,6 +934,8 @@ static void setup_save_window(void)
   * Make sure that the Save library receives the messages
   */
   Wimp_AddMessages(save_message_list);
+
+  ConnEdit_Init();
 }
 
 /******************************************************************************/

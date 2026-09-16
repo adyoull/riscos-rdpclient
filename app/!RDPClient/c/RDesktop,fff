@@ -1300,6 +1300,7 @@ static void usage(char *program)
 */  
   messagetext("    -4: use RDP version 4");
   messagetext("    -0: attach to console");
+  messagetext("    -v: log the RDP protocol trace (or set RDPClient$Debug)");
   messagetext("                 default is 16 KB, 0 indicates no limit");
   messagetext("                 datalimit specifies maximum data transfer in KB");
 /*
@@ -1344,8 +1345,11 @@ static void usage(char *program)
   messagetext("    -C: connection name (for window title)");
   messagetext("  Run <RDPClient$Dir>.Connect [options] server[:port]");
   messagetext("Usage:");
-  messagetext("See http://www.orac2.demon.co.uk/ for more information.");
   messagetext("Version %s", version);
+  messagetext("See https://github.com/adyoull/riscos-rdpclient");
+  messagetext("32-bit RISC OS 5 update (C) 2026 Andrew Youll.");
+  messagetext("See http://www.orac2.demon.co.uk/ for more information.");
+  messagetext("RISC OS port (C) 2004-2010 Andrew Sellors.");
   messagetext("%s: RISC OS port by Andrew Sellors.", event_taskname);
   messagetext("See http://www.rdesktop.org/ for more information.");
   messagetext("Version " VERSION ". Copyright (C) 1999-2007 Matt Chapman.");

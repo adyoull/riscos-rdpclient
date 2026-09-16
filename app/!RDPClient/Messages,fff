@@ -4,14 +4,14 @@
 app.name: RDPClient
 
 # version text for info box
-info.version: 0.91.1 (16-Sep-2026)
+info.version: 0.92.0 (16-Sep-2026)
 info.rversion: 1.6.0 (CSV 01-Mar-2010)
 info.rdpclurl: http://www.orac2.demon.co.uk/software/rdpclient/rdpclient.html
 info.rdeskurl: http://www.rdesktop.org/
 
 # iconbar menu definition
 title.main: RDPClient
-menu.main: >Info|Window,Full window,Full screen|>Save,View logå,Statuså,Scroll,Quit
+menu.main: >Info|Window,Full window,Full screen|>Save,View logå,Statuså,Scroll,Connections,Quit
 
 # network status window
 statnet.status0: Not connected

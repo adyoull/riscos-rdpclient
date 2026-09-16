@@ -1,0 +1,82 @@
+/************************************************************************
+ *                                                                      *
+ *        File: ConnMgr.h                                               *
+ *                                                                      *
+ *     Purpose: Saved-connection records and their storage as runnable  *
+ *              Obey files (the connection-manager data model).         *
+ *                                                                      *
+ *   RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll,      *
+ *   released under the same licence as the rest of !RDPClient (GPL).   *
+ *                                                                      *
+ ************************************************************************/
+
+#ifndef __ConnMgr_h
+#define __ConnMgr_h
+
+#include "DeskLib:Core.h"      /* BOOL */
+
+#define connmgr_STRLEN   256
+#define connmgr_OBEYSIZE 1024
+
+/* Where saved connections live, and how many the manager will list. */
+#define connmgr_CONNDIR  "<Choices$Write>.RDPClient.Connections"
+#define connmgr_MAXCONN  64
+
+/* Display mode for a saved connection. */
+typedef enum {
+   connmgr_display_FULLWINDOW = 0,   /* default: a resizable window            */
+   connmgr_display_WINDOW,           /* -D window                              */
+   connmgr_display_FULLSCREEN        /* -f (full screen)                       */
+} connmgr_display;
+
+/* Connection "experience" -> RDP5 performance flags (-x). */
+typedef enum {
+   connmgr_exp_LAN = 0,              /* -x lan       : everything on           */
+   connmgr_exp_BROADBAND,            /* -x broadband : wallpaper off           */
+   connmgr_exp_MODEM                 /* -x modem     : wallpaper/drag/anim/theme*/
+} connmgr_experience;
+
+/* A saved RDP connection. Round-trips to a runnable Obey file that calls the
+   !RDPClient 'Connect' launcher with the equivalent command-line arguments,
+   so each saved connection stays a standalone, double-clickable launcher. */
+typedef struct {
+   char name[connmgr_STRLEN];       /* -C, and the Obey file's leaf name       */
+   char server[connmgr_STRLEN];     /* host name / IP (the trailing argument)  */
+   int  port;                       /* 0 => default (3389); else host:port     */
+   char username[connmgr_STRLEN];   /* -u  (empty => not written)              */
+   char password[connmgr_STRLEN];   /* -p  (empty => not written; stored plain)*/
+   char domain[connmgr_STRLEN];     /* -d  (empty => not written)              */
+   int  width;                      /* -g WxH; 0 => not set                    */
+   int  height;
+   int  depth;                      /* -a bpp; 0 => not set                     */
+   connmgr_display    display;
+   connmgr_experience experience;
+   BOOL compression;                /* -z                                      */
+   BOOL sound;                      /* -r sound                                */
+   BOOL clipboard;                 /* -r clipboard:active                     */
+   int  clipsize;                  /* clipboard KB limit; -1 = unspecified    */
+   BOOL rdp4;                       /* -4 (else RDP5, the default)             */
+} connmgr_connection;
+
+/* Fill a record with sensible defaults. */
+extern void ConnMgr_InitRecord(connmgr_connection *conn);
+
+/* Build the Obey-file text that launches this connection into 'obey'
+   (at most 'size' bytes including the terminating NUL). */
+extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int size);
+
+/* Parse the text of a connection Obey file back into a record. Returns TRUE
+   if a launch line was found and a server extracted. */
+extern BOOL ConnMgr_ParseObey(const char *obey, connmgr_connection *conn);
+
+/* Save a connection to 'filepath' as a runnable Obey file. TRUE on success. */
+extern BOOL ConnMgr_Save(const connmgr_connection *conn, const char *filepath);
+
+/* Load and parse a connection Obey file. TRUE on success. */
+extern BOOL ConnMgr_Load(const char *filepath, connmgr_connection *conn);
+
+/* Enumerate the saved connections.  Fills up to 'maxnames' leaf names into
+   'names' and returns how many were found (0 if the directory is absent). */
+extern int ConnMgr_List(char names[][connmgr_STRLEN], int maxnames);
+
+#endif

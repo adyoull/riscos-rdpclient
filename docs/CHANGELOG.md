@@ -15,6 +15,45 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.92.0 — 2026-09-16
+
+Adds a connection manager — create, edit, run and delete saved RDP connections
+from the desktop, instead of hand-writing connection Obey files.
+
+### Added
+
+- **Connection manager.** The iconbar menu's **Connections** entry is a submenu
+  listing every saved connection, with **New connection…** at the top. Selecting
+  a connection connects to it; each also has a **Connect / Edit / Delete**
+  submenu, and Delete asks for confirmation. Saved connections are stored as
+  runnable Obey files in `<Choices$Write>.RDPClient.Connections`, so they stay
+  standalone, double-clickable launchers. A new module `ConnMgr` (`c/ConnMgr`,
+  `h/ConnMgr`) holds the connection record, its Obey build/parse/save/load and
+  the directory enumeration.
+- **Connection editor.** A dialog (new `ConnEdit` window template, wired in
+  `c/RDPClient`) for the common settings: name, server, port, user, password,
+  domain, resolution, colour depth, display mode, speed, and toggles for sound,
+  clipboard (with an optional KB size limit), compression and old-server (RDP4). Resolution, colour, display mode
+  and speed are chosen from pop-up menus; Tab / Return / cursor keys move between
+  the writable fields. **Save** writes the connection; **Connect** launches it.
+- **Password field** with on-screen masking, passed as `-p` for auto-login. The
+  editor shows a note that the password is stored as plain text in the
+  connection's Obey file (as RDP command-line authentication requires).
+- **“Same as RISC OS”** for resolution (`-g screen`) and colour depth
+  (`-a screen`), matching the current RISC OS screen mode.
+- **Startup banner** now credits the original RISC OS port (Andrew Sellors,
+  2004–2010) and the 32-bit update (Andrew Youll, 2026, with the GitHub
+  repository), and lists the `-v` protocol-trace option.
+
+### Fixed
+
+- **Full-screen display mode.** A saved connection set to full screen now goes
+  full screen. The display mode is emitted as `-D window` / `-D fullwindow` /
+  `-D fullscreen`; the earlier `-f` only set the “bring window to front on
+  keypress” behaviour and never changed the display mode.
+
+---
+
 ## 0.91.1 — 2026-09-16
 
 Fixes RDP-over-TLS against Microsoft Windows hosts, which dropped the connection

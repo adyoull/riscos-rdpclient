@@ -135,6 +135,12 @@ A convenient way to make a connection to a Remote Desktop server is to set up
 an Obey file with the relevant options. An example 'ConnectEx' Obey file is
 supplied in this archive.
 
+From version 0.92.0 you can also use the built-in connection manager instead
+of writing Obey files by hand: choose 'Connections' on the iconbar menu, then
+'New connection' to open an editor for the server, login details, screen size
+and options. Saved connections appear on the same menu, where they can be
+connected to, edited or deleted.
+
 The syntax for calling !RDPClient is as follows:
 
   Run <RDPClient$Dir>.Connect [options] server[:port]
@@ -514,6 +520,19 @@ The full list of available options is as follows:
      -r clipboard:active,32   (clipboard is redirected with a 32 KB limit)
 
 
+ -v: log the RDP protocol trace
+     (Optional)
+
+     Logs a trace of the RDP connection sequence (MCS setup, licensing,
+     logon, capability exchange) to the message log, to help diagnose
+     connection problems. Equivalent to setting the system variable
+     RDPClient$Debug (e.g. in a connection Obey file). Off by default.
+
+     e.g.
+
+     -v                       (log the protocol trace)
+
+
  -0: attach to console
      (Optional)
 
@@ -714,6 +733,8 @@ Iconbar menu:
    | Save      ‰ | ‰ opens the 'Save' window to save the display as a Sprite
    | View log... | opens the 'RDPClient message log' window
    | Status...   | opens the 'RDPClient Status' window
+   | Scroll    ‰ | ‰ scroll-wheel settings (invert / slower / faster)
+   | Connections‰| ‰ create / edit / run / delete saved connections
    | Quit        | Quits program
    +=============+
 
@@ -927,6 +948,22 @@ Any other suggestions will be gladly accepted.
 
 Version history:
 ~~~~~~~~~~~~~~~
+
+0.92.0 (16-Sep-2026)
+  * Added a connection manager. The iconbar 'Connections' menu now lists your
+    saved connections, with 'New connection' at the top; each can be connected
+    to, edited or deleted (delete asks first). A new editor sets the server,
+    port, user, password, domain, screen size, colours, display mode and
+    speed, so you no longer need to hand-write a connection Obey file. Saved
+    connections are stored as Obey files in Choices:RDPClient.Connections.
+  * Resolution and colours can be set to "Same as RISC OS" to match the
+    current screen mode.
+  * Added a password field, masked on screen. Note the password is saved as
+    plain text in the connection file, as RDP command-line login requires.
+  * Fixed full-screen mode: a saved connection set to full screen now honours
+    it (the display mode was not being sent correctly before).
+  * The startup banner now credits both the original author (Andrew Sellors)
+    and the 32-bit update (Andrew Youll), and lists the -v trace option.
 
 0.91.1 (16-Sep-2026)
   * Fixed connecting to Microsoft Windows servers over TLS. Modern Windows

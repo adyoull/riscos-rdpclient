@@ -140,3 +140,54 @@ so it is unaffected.)
 - Author-field credit in the Info box — implemented then **reverted** at user
   request (RDPClient.c `icon_AUTHOR`/`Popup_proginfo` change and the
   `info.author` Messages line removed). Author line stays "Andrew Sellors".
+
+
+---
+
+## 0.92.0 — Connection manager
+
+New module **`ConnMgr`** (`c/ConnMgr`, `h/ConnMgr`): the saved-connection data
+model. A `connmgr_connection` record (name, server, port, user, password,
+domain, width/height, depth, display mode, experience/speed, and the sound /
+clipboard / compression / RDP4 flags) round-trips to a runnable Obey file that
+calls the `Connect` launcher with the equivalent command-line options.
+`ConnMgr_BuildObey` / `ConnMgr_ParseObey` build and parse that line;
+`ConnMgr_Save` / `ConnMgr_Load` read and write it (filetype Obey &FEB);
+`ConnMgr_List` enumerates `<Choices$Write>.RDPClient.Connections` with OS_GBPB.
+Sentinels: `width == -1` -> `-g screen`, `depth == -1` -> `-a screen`
+("Same as RISC OS"). The plan gains one compile (`o.ConnMgr`) and the linkvia
+gains `o.ConnMgr`.
+
+New window template **`ConnEdit`** added to `Templates` (generated binary, not
+hand-edited): labelled writable fields (name, server, port, user, password,
+domain), pop-up-menu display fields (resolution, colour, display mode, speed)
+each with a `gright` menu button, option buttons (sound, clipboard, compression,
+old-server) as Wimp radio icons (button type 11), Cancel/Save/Connect action
+buttons, and a red plain-text-password note. The password field uses the `D*`
+validation for on-screen masking.
+
+**`c/ConnEdit`** (`c/ConnEdit` + `h/ConnEdit`) — the editor and manager UI, its
+own compile unit (`o.ConnEdit`, added to plan.json and linkvia). It exposes
+`ConnEdit_Init` / `ConnEdit_RebuildMenu(mainmenu, item)` / `ConnEdit_MenuSelect`;
+`c/RDPClient` keeps only those three hooks (init in setup, rebuild on iconbar
+menu open, dispatch in the menu handler):
+- `connedit_*` — create the `ConnEdit` window, populate it from / read it back
+  into a record, four pop-up menus (resolution/colour/display/speed) handled in
+  `connedit_menuchoice`, a key handler (`connedit_key`) giving Tab / Shift-Tab /
+  Return / cursor navigation between the writable fields, and Save/Connect.
+- `connmenu_*` — the dynamic **Connections** iconbar submenu, rebuilt on each
+  menu open from `ConnMgr_List`, with **New connection…** plus a shared
+  **Connect / Edit / Delete** submenu per connection; Delete confirms via
+  `Wimp_ReportError` (OK/Cancel). Iconbar `menu.main` gains a `Connections`
+  entry (submenu).
+
+*(Originally these lived in `c/RDPClient` to keep UI iterations incremental; moved
+out into `c/ConnEdit` for 0.92.0 once the feature was stable — a pure code move,
+no behaviour change.)*
+
+**`c/RDesktop`** — display-mode fix and banner: the display mode is now emitted
+as `-D window` / `-D fullwindow` / `-D fullscreen` (the old `-f` only set
+bring-to-front and never changed the mode). The startup `usage()` banner credits
+the original RISC OS port (Andrew Sellors, 2004-2010, orac2.demon.co.uk) and the
+32-bit update (Andrew Youll, 2026, github.com/adyoull/riscos-rdpclient), and
+documents the `-v` protocol-trace option.

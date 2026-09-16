@@ -1,3 +1,16 @@
+16-Sep-2026  0.92.0 Added a connection manager. The iconbar Connections menu
+                    now lists your saved connections, with 'New connection' at
+                    the top; each can be connected to, edited or deleted, and
+                    a delete asks first. A new editor sets the server, port,
+                    user, password, domain, screen size, colours, display mode
+                    and speed, so you no longer have to hand-write a connection
+                    Obey file. Resolution and colours can be set to match the
+                    RISC OS screen. Passwords are masked on screen, but are
+                    saved as plain text in the connection file. Tab moves
+                    between fields. Also fixes full-screen mode, which a saved
+                    connection now honours, and the startup banner now credits
+                    both authors and lists the -v trace option.
+
 16-Sep-2026  0.91.1 Fixed connecting to Microsoft Windows servers over TLS.
                     Modern Windows enforces two RDP security requirements the
                     client was not meeting and dropped the connection during

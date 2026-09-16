@@ -1,0 +1,21 @@
+/************************************************************************
+ *        File: ConnEdit.h  --  connection editor / manager UI            *
+ *   (C) 2026 Andrew Youll, GPL (same licence as the rest of !RDPClient). *
+ ************************************************************************/
+
+#ifndef __ConnEdit_h
+#define __ConnEdit_h
+
+#include "DeskLib:Menu.h"      /* menu_ptr */
+
+/* Create the editor window + pop-up menus (call once, after templates load). */
+extern void ConnEdit_Init(void);
+
+/* Rebuild the dynamic "Connections" submenu and attach it to the given main
+   menu entry (call each time the iconbar menu is about to open). */
+extern void ConnEdit_RebuildMenu(menu_ptr mainmenu, int connect_item);
+
+/* Handle a selection under the "Connections" main-menu entry. */
+extern void ConnEdit_MenuSelect(int *selection);
+
+#endif

@@ -1,0 +1,506 @@
+/************************************************************************
+ *                                                                      *
+ *        File: ConnEdit.c                                              *
+ *                                                                      *
+ *     Purpose: Connection editor and the dynamic "Connections" iconbar *
+ *              submenu (create / edit / run / delete saved RDP          *
+ *              connections).  The data model lives in ConnMgr.          *
+ *                                                                      *
+ *   RISC OS 5 / 32-bit build additions (C) 2026 Andrew Youll, released  *
+ *   under the same licence as the rest of !RDPClient (GPL).             *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:WimpSWIs.h"
+#include "DeskLib:Window.h"
+#include "DeskLib:Core.h"
+#include "DeskLib:Error.h"
+#include "DeskLib:Event.h"
+#include "DeskLib:Icon.h"
+#include "DeskLib:KeyCodes.h"
+#include "DeskLib:Menu.h"
+#include "DeskLib:Sound.h"
+#include "DeskLib:Template.h"
+#include "DeskLib:SWI.h"          /* SWI_XOS_Bit */
+
+#include "kernel.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "ConnMgr.h"
+#include "ConnEdit.h"
+
+/* Connection editor (ConnEdit template) icon handles (C) 2026 Andrew Youll */
+#define connedit_NAME            1
+#define connedit_SERVER          3
+#define connedit_PORT            5
+#define connedit_USER            7
+#define connedit_PASS            9
+#define connedit_DOMAIN          11
+#define connedit_RES_DISP        13
+#define connedit_RES_MENU        14
+#define connedit_COL_DISP        16
+#define connedit_COL_MENU        17
+#define connedit_DISP_DISP       19
+#define connedit_DISP_MENU       20
+#define connedit_SPD_DISP        22
+#define connedit_SPD_MENU        23
+#define connedit_OPT_SOUND       24
+#define connedit_OPT_CLIP        25
+#define connedit_OPT_COMPRESS    26
+#define connedit_OPT_RDP4        27
+#define connedit_CANCEL          28
+#define connedit_SAVE            29
+#define connedit_CONNECT         30
+#define connedit_CLIPSIZE        33   /* clipboard KB limit field */
+
+/* connection editor (ConnEdit template) (C) 2026 Andrew Youll */
+static window_handle       connedit_window     = NULL;
+static connmgr_connection  connedit_rec;                 /* editor working state */
+static menu_ptr            connedit_menu_res   = NULL;
+static menu_ptr            connedit_menu_col   = NULL;
+static menu_ptr            connedit_menu_disp  = NULL;
+static menu_ptr            connedit_menu_speed = NULL;
+
+/* connection manager: dynamic "Connections" submenu (C) 2026 Andrew Youll */
+static menu_ptr            connmenu        = NULL;   /* rebuilt on each menu open */
+static menu_ptr            connmenu_action = NULL;   /* shared Connect/Edit/Delete */
+static char                connmenu_names[connmgr_MAXCONN][connmgr_STRLEN];
+static int                 connmenu_count  = 0;
+
+/* Connection editor (ConnEdit) (C) 2026 Andrew Youll */
+static BOOL connedit_click(event_pollblock *event, void *reference);
+static BOOL connedit_menuchoice(event_pollblock *event, void *reference);
+static BOOL connedit_key(event_pollblock *event, void *reference);
+static void connedit_populate(const connmgr_connection *c);
+static void connedit_read_fields(void);
+static void connedit_do_save(const connmgr_connection *c);
+static void connedit_do_connect(const connmgr_connection *c);
+static void ConnEdit_OpenNew(void);
+static void ConnEdit_OpenEdit(const connmgr_connection *c);
+static void connmgr_do_action(const char *name, int action);
+
+/******************************************************************************
+ *  Connection editor   (C) 2026 Andrew Youll                                 *
+ *                                                                            *
+ *  A small editor for a saved RDP connection, built on the "ConnEdit"        *
+ *  window template.  The text fields (Name/Server/Port/User/Domain) are read *
+ *  straight from their writable icons; Resolution, Colours, Display mode and *
+ *  Speed are chosen from pop-up menus and held in connedit_rec; Sound,       *
+ *  Clipboard, Compression and Old server are Wimp radio icons.  "Save"       *
+ *  writes a runnable Obey file into <Choices$Write>.RDPClient.Connections,   *
+ *  and "Connect" launches the same command straight away with Wimp_StartTask.*
+ ******************************************************************************/
+
+/* Resolutions offered by the Resolution pop-up (index 0 = "Default"). */
+static const struct { int w, h; } connedit_res_tab[] = {
+  {  -1,  -1},   /* "Same as RISC OS" -> -g screen */
+  { 800, 600}, {1024, 768}, {1152, 864}, {1280, 720},
+  {1280,1024}, {1440, 900}, {1680,1050}, {1920,1080}
+};
+#define connedit_res_COUNT (sizeof(connedit_res_tab) / sizeof(connedit_res_tab[0]))
+
+/* Colour depths offered by the Colours pop-up (index 0 = "Default"). */
+static const int connedit_col_tab[] = { -1, 8, 16, 24, 32 };
+#define connedit_col_COUNT (sizeof(connedit_col_tab) / sizeof(connedit_col_tab[0]))
+
+/* --- refresh the four pop-up display fields from connedit_rec --- */
+
+static void connedit_show_res(void)
+{
+  char text[32];
+
+  if(connedit_rec.width == -1)
+     strcpy(text, "Same as RISC OS");
+  else if(connedit_rec.width > 0 && connedit_rec.height > 0)
+     sprintf(text, "%d x %d", connedit_rec.width, connedit_rec.height);
+  else
+     strcpy(text, "Default");
+
+  Icon_SetText(connedit_window, connedit_RES_DISP, text);
+}
+
+static void connedit_show_col(void)
+{
+  char *text;
+
+  switch(connedit_rec.depth){
+    case -1: text = "Same as RISC OS"; break;
+    case  8: text = "256 colours";     break;
+    case 16: text = "Thousands";       break;
+    case 24: text = "Millions";        break;
+    case 32: text = "Millions+";       break;
+    default: text = "Default";         break;
+  }
+  Icon_SetText(connedit_window, connedit_COL_DISP, text);
+}
+
+static void connedit_show_disp(void)
+{
+  char *text;
+
+  switch(connedit_rec.display){
+    case connmgr_display_WINDOW:     text = "Window";      break;
+    case connmgr_display_FULLSCREEN: text = "Full screen"; break;
+    default:                         text = "Full window"; break;
+  }
+  Icon_SetText(connedit_window, connedit_DISP_DISP, text);
+}
+
+static void connedit_show_speed(void)
+{
+  char *text;
+
+  switch(connedit_rec.experience){
+    case connmgr_exp_MODEM:     text = "Modem";     break;
+    case connmgr_exp_BROADBAND: text = "Broadband"; break;
+    default:                    text = "LAN";       break;
+  }
+  Icon_SetText(connedit_window, connedit_SPD_DISP, text);
+}
+
+/* Fill the editor's icons from a record. */
+static void connedit_populate(const connmgr_connection *c)
+{
+  connedit_rec = *c;
+
+  Icon_SetText(connedit_window, connedit_NAME,   c->name);
+  Icon_SetText(connedit_window, connedit_SERVER, c->server);
+  Icon_SetText(connedit_window, connedit_USER,   c->username);
+  Icon_SetText(connedit_window, connedit_PASS,   c->password);
+  Icon_SetText(connedit_window, connedit_DOMAIN, c->domain);
+  Icon_SetInteger(connedit_window, connedit_PORT, (c->port > 0) ? c->port : 3389);
+
+  connedit_show_res();
+  connedit_show_col();
+  connedit_show_disp();
+  connedit_show_speed();
+
+  Icon_SetSelect(connedit_window, connedit_OPT_SOUND,    c->sound       ? 1 : 0);
+  Icon_SetSelect(connedit_window, connedit_OPT_CLIP,     c->clipboard   ? 1 : 0);
+  if(c->clipsize >= 0) Icon_SetInteger(connedit_window, connedit_CLIPSIZE, c->clipsize);
+  else                 Icon_SetText   (connedit_window, connedit_CLIPSIZE, "");
+  Icon_SetSelect(connedit_window, connedit_OPT_COMPRESS, c->compression ? 1 : 0);
+  Icon_SetSelect(connedit_window, connedit_OPT_RDP4,     c->rdp4        ? 1 : 0);
+}
+
+/* Read the writable fields and radio icons back into connedit_rec.  The pop-up
+   choices (resolution/colours/display/speed) are already stored there. */
+static void connedit_read_fields(void)
+{
+  int port;
+
+  Icon_GetText(connedit_window, connedit_NAME,   connedit_rec.name);
+  Icon_GetText(connedit_window, connedit_SERVER, connedit_rec.server);
+  Icon_GetText(connedit_window, connedit_USER,   connedit_rec.username);
+  Icon_GetText(connedit_window, connedit_PASS,   connedit_rec.password);
+  Icon_GetText(connedit_window, connedit_DOMAIN, connedit_rec.domain);
+
+  port = Icon_GetInteger(connedit_window, connedit_PORT);
+  connedit_rec.port = (port == 3389) ? 0 : port;   /* 3389 is the default */
+
+  connedit_rec.sound       = Icon_GetSelect(connedit_window, connedit_OPT_SOUND)    ? TRUE : FALSE;
+  connedit_rec.clipboard   = Icon_GetSelect(connedit_window, connedit_OPT_CLIP)     ? TRUE : FALSE;
+  {
+    char cbuf[16];
+    Icon_GetText(connedit_window, connedit_CLIPSIZE, cbuf);
+    connedit_rec.clipsize = (cbuf[0] == '\0') ? -1 : atoi(cbuf);
+  }
+  connedit_rec.compression = Icon_GetSelect(connedit_window, connedit_OPT_COMPRESS) ? TRUE : FALSE;
+  connedit_rec.rdp4        = Icon_GetSelect(connedit_window, connedit_OPT_RDP4)     ? TRUE : FALSE;
+}
+
+/* Save connedit_rec as a runnable Obey file, reporting the outcome. */
+static void connedit_do_save(const connmgr_connection *c)
+{
+  char path[connmgr_STRLEN + 64];
+
+  if(c->name[0] == '\0'){
+     Error_Report(0, "Please give this connection a Name before saving.");
+     return;
+  }
+
+  _kernel_oscli("CDir <Choices$Write>.RDPClient");
+  _kernel_oscli("CDir " connmgr_CONNDIR);
+
+  sprintf(path, "%s.%s", connmgr_CONNDIR, c->name);
+
+  if(ConnMgr_Save(c, path))
+     Error_Report(0, "Saved connection '%s'.", c->name);
+  else
+     Error_Report(0, "Could not save the connection to '%s'.", path);
+}
+
+/* Build the launch command line and start it as a new task. */
+static void connedit_do_connect(const connmgr_connection *c)
+{
+  char  obey[connmgr_OBEYSIZE];
+  char *nl;
+
+  if(c->server[0] == '\0'){
+     Error_Report(0, "Please enter a Server to connect to.");
+     return;
+  }
+
+  ConnMgr_BuildObey(c, obey, sizeof(obey));
+  nl = strchr(obey, '\n');
+  if(nl != NULL) *nl = '\0';
+
+  Wimp_StartTask(obey);
+}
+
+/* Handle clicks: the pop-up fields open their menus, the buttons act. */
+static BOOL connedit_click(event_pollblock *event, void *reference)
+{
+  int x = event->data.mouse.pos.x;
+  int y = event->data.mouse.pos.y;
+
+  switch(event->data.mouse.icon)
+  {
+    case connedit_RES_DISP:  case connedit_RES_MENU:
+      Menu_Show(connedit_menu_res, x, y);   break;
+    case connedit_COL_DISP:  case connedit_COL_MENU:
+      Menu_Show(connedit_menu_col, x, y);   break;
+    case connedit_DISP_DISP: case connedit_DISP_MENU:
+      Menu_Show(connedit_menu_disp, x, y);  break;
+    case connedit_SPD_DISP:  case connedit_SPD_MENU:
+      Menu_Show(connedit_menu_speed, x, y); break;
+
+    case connedit_CANCEL:
+      Window_Hide(connedit_window);
+      break;
+
+    case connedit_SAVE:
+      connedit_read_fields();
+      connedit_do_save(&connedit_rec);
+      break;
+
+    case connedit_CONNECT:
+      connedit_read_fields();
+      connedit_do_connect(&connedit_rec);
+      Window_Hide(connedit_window);
+      break;
+  }
+
+  return(TRUE);
+}
+
+/* Handle a selection from one of the editor's pop-up menus. */
+static BOOL connedit_menuchoice(event_pollblock *event, void *reference)
+{
+  int sel = event->data.selection[0];
+
+  if(menu_currentopen == connedit_menu_res){
+     if(sel >= 0 && sel < (int) connedit_res_COUNT){
+        connedit_rec.width  = connedit_res_tab[sel].w;
+        connedit_rec.height = connedit_res_tab[sel].h;
+        connedit_show_res();
+     }
+  }
+  else if(menu_currentopen == connedit_menu_col){
+     if(sel >= 0 && sel < (int) connedit_col_COUNT){
+        connedit_rec.depth = connedit_col_tab[sel];
+        connedit_show_col();
+     }
+  }
+  else if(menu_currentopen == connedit_menu_disp){
+     if(sel == 0)      connedit_rec.display = connmgr_display_WINDOW;
+     else if(sel == 1) connedit_rec.display = connmgr_display_FULLWINDOW;
+     else              connedit_rec.display = connmgr_display_FULLSCREEN;
+     connedit_show_disp();
+  }
+  else if(menu_currentopen == connedit_menu_speed){
+     if(sel == 0)      connedit_rec.experience = connmgr_exp_LAN;
+     else if(sel == 1) connedit_rec.experience = connmgr_exp_BROADBAND;
+     else              connedit_rec.experience = connmgr_exp_MODEM;
+     connedit_show_speed();
+  }
+  else
+     return(FALSE);         /* not one of ours */
+
+  {                         /* keep the menu open if ADJUST was used */
+    mouse_block ptr;
+    Wimp_GetPointerInfo(&ptr);
+    if(ptr.button.data.adjust)
+       Menu_ShowLast();
+  }
+
+  return(TRUE);
+}
+
+/* Tab / Shift-Tab / Return / cursor up-down move the caret between the
+   writable text fields; every other key is handled normally by the Wimp. */
+static BOOL connedit_key(event_pollblock *event, void *reference)
+{
+  static const int order[] = { connedit_NAME, connedit_SERVER, connedit_PORT,
+                               connedit_USER, connedit_PASS, connedit_DOMAIN };
+  int         key = event->data.key.code;
+  caret_block caret;
+  int         i, cur;
+
+  if(key != keycode_TAB && key != keycode_SHIFT_TAB && key != keycode_RETURN &&
+     key != keycode_CURSORUP && key != keycode_CURSORDOWN)
+  {
+     Wimp_ProcessKey(key);          /* normal editing / character entry */
+     return(TRUE);
+  }
+
+  Wimp_GetCaretPosition(&caret);
+  cur = 0;
+  for(i = 0; i < 6; i++)
+     if(order[i] == caret.icon){ cur = i; break; }
+
+  if(key == keycode_SHIFT_TAB || key == keycode_CURSORUP)
+     cur = (cur + 6 - 1) % 6;
+  else
+     cur = (cur + 1) % 6;
+
+  Icon_SetCaret(connedit_window, order[cur]);
+  return(TRUE);
+}
+
+/* Open the editor for a new connection, pre-filled with sensible defaults. */
+static void ConnEdit_OpenNew(void)
+{
+  connmgr_connection conn;
+
+  ConnMgr_InitRecord(&conn);
+  conn.width  = 1024;              /* pre-fill common values so fields aren't blank */
+  conn.height = 768;
+  conn.depth  = 16;
+
+  connedit_populate(&conn);
+  Window_Show(connedit_window, open_CENTERED);
+  Icon_SetCaret(connedit_window, connedit_SERVER);
+}
+
+/* Open the editor populated from an existing connection (Edit). */
+static void ConnEdit_OpenEdit(const connmgr_connection *c)
+{
+  connedit_populate(c);
+  Window_Show(connedit_window, open_CENTERED);
+  Icon_SetCaret(connedit_window, connedit_NAME);
+}
+
+/* Ask an OK/Cancel question in a Wimp error box.  Returns TRUE for OK. */
+#define SWI_Wimp_ReportError 0x400DF
+static BOOL connmgr_confirm(const char *msg)
+{
+  _kernel_swi_regs r;
+  struct { int errnum; char text[240]; } errblk;
+
+  errblk.errnum = 0;
+  strncpy(errblk.text, msg, sizeof(errblk.text) - 1);
+  errblk.text[sizeof(errblk.text) - 1] = '\0';
+
+  r.r[0] = (int) &errblk;
+  r.r[1] = 0x1 | 0x2 | 0x8;      /* OK + Cancel buttons, no error beep */
+  r.r[2] = (int) "RDPClient";
+  if(_kernel_swi(SWI_XOS_Bit | SWI_Wimp_ReportError, &r, &r) != NULL)
+     return FALSE;              /* on failure, treat as cancelled */
+
+  return (r.r[1] == 1);         /* 1 = OK, 2 = Cancel */
+}
+
+/* Connect (0), Edit (1) or Delete (2) a saved connection by leaf name. */
+static void connmgr_do_action(const char *name, int action)
+{
+  connmgr_connection conn;
+  char path[connmgr_STRLEN + 64];
+
+  sprintf(path, "%s.%s", connmgr_CONNDIR, name);
+
+  switch(action)
+  {
+    case 1:   /* Edit */
+      if(ConnMgr_Load(path, &conn)) ConnEdit_OpenEdit(&conn);
+      else Error_Report(0, "Could not read connection '%s'.", name);
+      break;
+
+    case 2:   /* Delete */
+    {
+      char q[connmgr_STRLEN + 64];
+      sprintf(q, "Delete the saved connection '%s'?", name);
+      if(!connmgr_confirm(q)) break;
+      if(remove(path) == 0) Error_Report(0, "Deleted connection '%s'.", name);
+      else Error_Report(0, "Could not delete connection '%s'.", name);
+      break;
+    }
+
+    default:  /* Connect (also a plain click on the name) */
+      if(ConnMgr_Load(path, &conn)) connedit_do_connect(&conn);
+      else Error_Report(0, "Could not read connection '%s'.", name);
+      break;
+  }
+}
+
+/* Rebuild the dynamic "Connections" submenu from the saved-connection files. */
+extern void ConnEdit_RebuildMenu(menu_ptr mainmenu, int connect_item)
+{
+  char desc[2048];
+  int  i, len;
+
+  if(connmenu != NULL){ Menu_FullDispose(connmenu); connmenu = NULL; }
+
+  connmenu_count = ConnMgr_List(connmenu_names, connmgr_MAXCONN);
+
+  strcpy(desc, "New connection\x8c");     /* 0x8c = the RISC OS ellipsis */
+  len = strlen(desc);
+
+  for(i = 0; i < connmenu_count; i++)
+  {
+     const char *nm = connmenu_names[i];
+     int j;
+
+     desc[len++] = (i == 0) ? '|' : ',';   /* dotted line before the first */
+     for(j = 0; nm[j] != '\0' && len < (int) sizeof(desc) - 2; j++)
+     {
+        char ch = nm[j];
+        if(ch == ',' || ch == '|' || ch == '>') ch = ' ';  /* keep menu syntax */
+        desc[len++] = ch;
+     }
+     if(len >= (int) sizeof(desc) - 2) break;
+  }
+  desc[len] = '\0';
+
+  connmenu = Menu_New("Connections", desc);
+  if(connmenu != NULL)
+  {
+     for(i = 0; i < connmenu_count; i++)
+        Menu_AddSubMenu(connmenu, 1 + i, connmenu_action);   /* item 0 = New */
+     Menu_AddSubMenu(mainmenu, connect_item, connmenu);
+  }
+}
+
+
+/* Create the editor window and its pop-up menus, and claim their events. */
+extern void ConnEdit_Init(void)
+{
+  connedit_window = Window_Create("ConnEdit", template_TITLEMIN);
+  connedit_menu_res   = Menu_New("Resolution",
+     "Same as RISC OS|800 x 600,1024 x 768,1152 x 864,1280 x 720,1280 x 1024,1440 x 900,1680 x 1050,1920 x 1080");
+  connedit_menu_col   = Menu_New("Colours", "Same as RISC OS|256 colours,Thousands,Millions,Millions+");
+  connedit_menu_disp  = Menu_New("Display", "Window,Full window,Full screen");
+  connedit_menu_speed = Menu_New("Speed", "LAN,Broadband,Modem");
+  connmenu_action     = Menu_New("Connection", "Connect,Edit,Delete");
+  Event_Claim(event_CLICK, connedit_window, event_ANY, connedit_click, NULL);
+  Event_Claim(event_KEY,   connedit_window, event_ANY, connedit_key, NULL);
+  Event_Claim(event_MENU,  event_ANY, event_ANY, connedit_menuchoice, NULL);
+}
+
+/* Dispatch a selection from the Connections submenu (item 0 = New; otherwise
+   a saved connection with Connect/Edit/Delete in selection[2]). */
+extern void ConnEdit_MenuSelect(int *selection)
+{
+  int item = selection[1];
+  if(item <= 0)
+     ConnEdit_OpenNew();
+  else
+  {
+     int ci     = item - 1;
+     int action = selection[2];        /* -1 if the name was clicked directly */
+     if(ci >= 0 && ci < connmenu_count)
+        connmgr_do_action(connmenu_names[ci], action);
+  }
+}

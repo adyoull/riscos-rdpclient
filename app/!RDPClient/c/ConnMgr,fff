@@ -1,0 +1,370 @@
+/************************************************************************
+ *                                                                      *
+ *        File: ConnMgr.c                                               *
+ *                                                                      *
+ *     Purpose: Saved RDP connections and their storage as runnable     *
+ *              Obey files. A connection Obey file calls the !RDPClient  *
+ *              'Connect' launcher with the equivalent command-line      *
+ *              arguments, so every saved connection stays a standalone, *
+ *              double-clickable launcher and the Filer is the manager.  *
+ *                                                                      *
+ *   RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll,      *
+ *   released under the same licence as the rest of !RDPClient (GPL).   *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:Core.h"      /* BOOL, TRUE, FALSE                       */
+#include "DeskLib:File.h"      /* File_SetType                            */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"     /* _kernel_swi (OS_GBPB directory read)     */
+
+#include "ConnMgr.h"
+
+#define filetype_OBEY 0xFEB
+
+/* ---- small bounded-string helpers ------------------------------------ */
+
+static void connmgr_append(char *buf, int size, const char *s)
+{
+   int used = (int) strlen(buf);
+   int room = size - used - 1;               /* keep space for the NUL */
+   if(room > 0)
+      strncat(buf, s, room);
+}
+
+/* Append a string option and its value, the value double-quoted so that
+   spaces survive the command-line split. */
+static void connmgr_append_arg(char *buf, int size, const char *opt,
+                               const char *value)
+{
+   connmgr_append(buf, size, opt);
+   connmgr_append(buf, size, " \"");
+   connmgr_append(buf, size, value);
+   connmgr_append(buf, size, "\"");
+}
+
+/* Copy the next whitespace-separated token (honouring "double quotes")
+   into 'out'; return a pointer past it, or NULL at end of string. */
+static const char *connmgr_next_token(const char *p, char *out, int outsize)
+{
+   int n = 0;
+
+   while(*p == ' ' || *p == '\t')
+      p++;
+   if(*p == '\0' || *p == '\n' || *p == '\r')
+      return NULL;
+
+   if(*p == '\"')
+   {
+      p++;
+      while(*p != '\0' && *p != '\"')
+      {
+         if(n < outsize - 1) out[n++] = *p;
+         p++;
+      }
+      if(*p == '\"') p++;
+   }
+   else
+   {
+      while(*p != '\0' && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+      {
+         if(n < outsize - 1) out[n++] = *p;
+         p++;
+      }
+   }
+   out[n] = '\0';
+   return p;
+}
+
+/* ---- public ---------------------------------------------------------- */
+
+extern void ConnMgr_InitRecord(connmgr_connection *conn)
+{
+   memset(conn, 0, sizeof(*conn));
+   conn->port        = 0;             /* default RDP port (3389) */
+   conn->width       = 0;             /* not set */
+   conn->height      = 0;
+   conn->depth       = 0;             /* not set */
+   conn->display     = connmgr_display_FULLWINDOW;
+   conn->experience  = connmgr_exp_LAN;
+   conn->compression = FALSE;
+   conn->sound       = FALSE;
+   conn->clipboard   = FALSE;
+   conn->clipsize    = -1;            /* unspecified */
+   conn->rdp4        = FALSE;         /* RDP5 by default */
+}
+
+extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int size)
+{
+   char tmp[64];
+
+   obey[0] = '\0';
+   connmgr_append(obey, size, "Run <RDPClient$Dir>.Connect");
+
+   if(conn->name[0] != '\0')
+      connmgr_append_arg(obey, size, " -C", conn->name);
+   if(conn->username[0] != '\0')
+      connmgr_append_arg(obey, size, " -u", conn->username);
+   if(conn->password[0] != '\0')
+      connmgr_append_arg(obey, size, " -p", conn->password);
+   if(conn->domain[0] != '\0')
+      connmgr_append_arg(obey, size, " -d", conn->domain);
+
+   if(conn->width == -1)
+   {
+      connmgr_append(obey, size, " -g screen");   /* same as the RISC OS screen */
+   }
+   else if(conn->width > 0 && conn->height > 0)
+   {
+      sprintf(tmp, " -g %dx%d", conn->width, conn->height);
+      connmgr_append(obey, size, tmp);
+   }
+   if(conn->depth == -1)
+   {
+      connmgr_append(obey, size, " -a screen");   /* same as the RISC OS screen */
+   }
+   else if(conn->depth > 0)
+   {
+      sprintf(tmp, " -a %d", conn->depth);
+      connmgr_append(obey, size, tmp);
+   }
+
+   switch(conn->display)
+   {
+      case connmgr_display_WINDOW:     connmgr_append(obey, size, " -D window");     break;
+      case connmgr_display_FULLSCREEN: connmgr_append(obey, size, " -D fullscreen"); break;
+      default:                         connmgr_append(obey, size, " -D fullwindow"); break;
+   }
+
+   switch(conn->experience)
+   {
+      case connmgr_exp_MODEM:     connmgr_append(obey, size, " -x modem");     break;
+      case connmgr_exp_BROADBAND: connmgr_append(obey, size, " -x broadband"); break;
+      default:                    connmgr_append(obey, size, " -x lan");       break;
+   }
+
+   if(conn->compression)
+      connmgr_append(obey, size, " -z");
+   if(conn->sound)
+      connmgr_append(obey, size, " -r sound");
+   if(conn->clipboard)
+   {
+      connmgr_append(obey, size, " -r clipboard:active");
+      if(conn->clipsize >= 0)
+      {
+         sprintf(tmp, ",%d", conn->clipsize);
+         connmgr_append(obey, size, tmp);
+      }
+   }
+   if(conn->rdp4)
+      connmgr_append(obey, size, " -4");
+
+   /* the server (with optional :port) is the trailing argument */
+   connmgr_append(obey, size, " ");
+   connmgr_append(obey, size, conn->server);
+   if(conn->port > 0)
+   {
+      sprintf(tmp, ":%d", conn->port);
+      connmgr_append(obey, size, tmp);
+   }
+   connmgr_append(obey, size, "\n");
+}
+
+extern BOOL ConnMgr_ParseObey(const char *obey, connmgr_connection *conn)
+{
+   const char *p, *line;
+   char tok[connmgr_STRLEN];
+   char server[connmgr_STRLEN];
+
+   ConnMgr_InitRecord(conn);
+   server[0] = '\0';
+
+   /* the launch line is 'Run <...>.Connect <args> <server>' */
+   line = strstr(obey, ".Connect");
+   if(line == NULL)
+      return FALSE;
+   p = line + strlen(".Connect");
+
+   while((p = connmgr_next_token(p, tok, sizeof(tok))) != NULL)
+   {
+      if(tok[0] == '-')
+      {
+         if(strcmp(tok, "-C") == 0)
+         {
+            if((p = connmgr_next_token(p, conn->name, sizeof(conn->name))) == NULL) break;
+         }
+         else if(strcmp(tok, "-u") == 0)
+         {
+            if((p = connmgr_next_token(p, conn->username, sizeof(conn->username))) == NULL) break;
+         }
+         else if(strcmp(tok, "-d") == 0)
+         {
+            if((p = connmgr_next_token(p, conn->domain, sizeof(conn->domain))) == NULL) break;
+         }
+         else if(strcmp(tok, "-p") == 0)
+         {
+            if((p = connmgr_next_token(p, conn->password, sizeof(conn->password))) == NULL) break;
+         }
+         else if(strcmp(tok, "-g") == 0)
+         {
+            char geo[connmgr_STRLEN];
+            char *x;
+            if((p = connmgr_next_token(p, geo, sizeof(geo))) == NULL) break;
+            if(strncmp(geo, "screen", 6) == 0)
+            {
+               conn->width  = -1;
+               conn->height = -1;
+            }
+            else if((x = strchr(geo, 'x')) != NULL)
+            {
+               *x = '\0';
+               conn->width  = atoi(geo);
+               conn->height = atoi(x + 1);
+            }
+         }
+         else if(strcmp(tok, "-a") == 0)
+         {
+            char dep[connmgr_STRLEN];
+            if((p = connmgr_next_token(p, dep, sizeof(dep))) == NULL) break;
+            if(strncmp(dep, "screen", 6) == 0) conn->depth = -1;
+            else                               conn->depth = atoi(dep);
+         }
+         else if(strcmp(tok, "-x") == 0)
+         {
+            char exp[connmgr_STRLEN];
+            if((p = connmgr_next_token(p, exp, sizeof(exp))) == NULL) break;
+            if(strncmp(exp, "modem", 1) == 0)          conn->experience = connmgr_exp_MODEM;
+            else if(strncmp(exp, "broadband", 1) == 0) conn->experience = connmgr_exp_BROADBAND;
+            else                                       conn->experience = connmgr_exp_LAN;
+         }
+         else if(strcmp(tok, "-D") == 0)
+         {
+            char mode[connmgr_STRLEN];
+            if((p = connmgr_next_token(p, mode, sizeof(mode))) == NULL) break;
+            if(strncmp(mode, "fullscreen", 10) == 0)      conn->display = connmgr_display_FULLSCREEN;
+            else if(strncmp(mode, "fullwindow", 10) == 0) conn->display = connmgr_display_FULLWINDOW;
+            else                                          conn->display = connmgr_display_WINDOW;
+         }
+         else if(strcmp(tok, "-r") == 0)
+         {
+            char red[connmgr_STRLEN];
+            if((p = connmgr_next_token(p, red, sizeof(red))) == NULL) break;
+            if(strncmp(red, "sound", 5) == 0) conn->sound = TRUE;
+            else if(strncmp(red, "clipboard", 9) == 0)
+            {
+               char *colon = strchr(red, ':');
+               char *comma;
+               if(colon != NULL && strncmp(colon + 1, "off", 3) == 0)
+                  conn->clipboard = FALSE;
+               else
+                  conn->clipboard = TRUE;
+               comma = strchr(red, ',');
+               if(comma != NULL && *(comma + 1) != '\0')
+                  conn->clipsize = atoi(comma + 1);
+            }
+         }
+         else if(strcmp(tok, "-z") == 0) conn->compression = TRUE;
+         else if(strcmp(tok, "-4") == 0) conn->rdp4 = TRUE;
+         else if(strcmp(tok, "-5") == 0) conn->rdp4 = FALSE;
+         /* unknown options are ignored */
+      }
+      else
+      {
+         /* a bare token is the server (the last one wins) */
+         strncpy(server, tok, sizeof(server) - 1);
+         server[sizeof(server) - 1] = '\0';
+      }
+   }
+
+   if(server[0] != '\0')
+   {
+      char *colon = strrchr(server, ':');
+      if(colon != NULL)
+      {
+         *colon = '\0';
+         conn->port = atoi(colon + 1);
+      }
+      strncpy(conn->server, server, sizeof(conn->server) - 1);
+      conn->server[sizeof(conn->server) - 1] = '\0';
+   }
+
+   return (conn->server[0] != '\0') ? TRUE : FALSE;
+}
+
+extern BOOL ConnMgr_Save(const connmgr_connection *conn, const char *filepath)
+{
+   FILE *f;
+   char obey[connmgr_OBEYSIZE];
+
+   ConnMgr_BuildObey(conn, obey, sizeof(obey));
+
+   f = fopen(filepath, "w");
+   if(f == NULL)
+      return FALSE;
+   fputs(obey, f);
+   fclose(f);
+
+   File_SetType((char *) filepath, filetype_OBEY);
+   return TRUE;
+}
+
+extern BOOL ConnMgr_Load(const char *filepath, connmgr_connection *conn)
+{
+   FILE *f;
+   char buf[connmgr_OBEYSIZE];
+   int n;
+
+   f = fopen(filepath, "r");
+   if(f == NULL)
+      return FALSE;
+   n = (int) fread(buf, 1, sizeof(buf) - 1, f);
+   fclose(f);
+   if(n < 0) n = 0;
+   buf[n] = '\0';
+
+   return ConnMgr_ParseObey(buf, conn);
+}
+
+extern int ConnMgr_List(char names[][connmgr_STRLEN], int maxnames)
+{
+   _kernel_swi_regs r;
+   char buffer[1024];
+   int  count  = 0;
+   int  offset = 0;
+
+   do
+   {
+      int   i, readnum;
+      char *p;
+
+      r.r[0] = 9;                        /* OS_GBPB 9: read directory names   */
+      r.r[1] = (int) connmgr_CONNDIR;
+      r.r[2] = (int) buffer;
+      r.r[3] = 16;                       /* read up to 16 names per call       */
+      r.r[4] = offset;                   /* 0 to start; -1 out => finished     */
+      r.r[5] = (int) sizeof(buffer);
+      r.r[6] = 0;                        /* no wildcard => match all           */
+
+      if(_kernel_swi(0x0C, &r, &r) != NULL)   /* OS_GBPB */
+         break;
+
+      readnum = r.r[3];
+      offset  = r.r[4];
+
+      p = buffer;
+      for(i = 0; i < readnum && count < maxnames; i++)
+      {
+         strncpy(names[count], p, connmgr_STRLEN - 1);
+         names[count][connmgr_STRLEN - 1] = '\0';
+         count++;
+         p += strlen(p) + 1;
+      }
+   }
+   while(offset != -1 && count < maxnames);
+
+   return count;
+}
