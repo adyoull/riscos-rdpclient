@@ -158,6 +158,30 @@ objects, which is why a clean rebuild used to regress):
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
 
+### 0.92.0 — connection manager
+
+Adds a **connection manager** so you no longer have to hand-write connection
+Obey files. The iconbar menu's **Connections** entry lists your saved
+connections, with **New connection…** at the top; selecting one connects to it,
+and each carries a **Connect / Edit / Delete** submenu (Delete asks first).
+Saved connections are ordinary runnable Obey files in
+`Choices:RDPClient.Connections`, so they stay standalone launchers.
+
+The **editor** covers the common settings — name, server, port, user, password,
+domain, resolution, colour depth, display mode, speed, and toggles for sound,
+clipboard (with an optional KB size limit), compression and old-server (RDP4).
+Resolution, colour, display mode and speed are pop-up menus; the password is
+masked on screen (though, as the editor notes, it is stored as plain text in the
+connection file, as RDP command-line login requires); and resolution and colour
+can be set to **“Same as RISC OS”** to match the current screen mode. Tab,
+Return and the cursor keys move between the text fields.
+
+Also **fixes full-screen mode** for a saved connection — the display mode is now
+sent correctly (previously full screen never actually engaged) — and the startup
+banner now credits both the original RISC OS port (Andrew Sellors, 2004–2010)
+and the 32-bit update (Andrew Youll, 2026), and lists the `-v` trace option.
+The connection manager lives in its own `ConnMgr` / `ConnEdit` source modules.
+
 ### 0.91.1 — Windows RDP-over-TLS fix (anti-MITM) + protocol trace
 
 Fixes connecting to **modern Microsoft Windows** hosts over RDP-with-TLS, which
@@ -301,4 +325,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.91`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.92`; wheel scrolls the remote.
