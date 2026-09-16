@@ -15,6 +15,37 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.92.1 — 2026-09-16
+
+Connects to more servers: automatically falls back to Standard RDP Security when a
+server refuses TLS, adds an explicit “standard security only” option, and makes
+the RDP negotiation trace visible at runtime.
+
+### Added
+
+- **“Standard security only (no TLS)” option** (`-S`, plus a checkbox in the
+  connection editor). Suppresses the TLS offer so the client connects with
+  Standard (legacy) RDP Security — useful for probing whether an old server still
+  supports it, or on a trusted LAN.
+
+### Fixed
+
+- **Connecting to servers configured for Standard RDP Security only.** A server
+  set to “RDP Security Layer” refuses the TLS offer with `SSL_NOT_ALLOWED_BY_SERVER`
+  (RDP negotiation failure code 2); 0.92.0 failed with “server refused RDP
+  negotiation (failure code 2)”. The client now retries automatically with
+  Standard security and connects. This fallback fires only on that explicit
+  server refusal, never on a *failed* TLS handshake, so it is not a
+  downgrade-attack vector.
+
+### Changed
+
+- **RDP negotiation trace under `-v`.** The `NEG:` trace (TLS offer, server
+  response, selected protocol) now shows with `-v` / `RDPClient$Debug`; it was
+  previously behind a compile-time switch and never visible in released builds.
+
+---
+
 ## 0.92.0 — 2026-09-16
 
 Adds a connection manager — create, edit, run and delete saved RDP connections

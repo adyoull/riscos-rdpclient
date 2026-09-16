@@ -54,6 +54,7 @@
 #define connedit_SAVE            29
 #define connedit_CONNECT         30
 #define connedit_CLIPSIZE        33   /* clipboard KB limit field */
+#define connedit_OPT_STD         35   /* force standard security (no TLS) */
 
 /* connection editor (ConnEdit template) (C) 2026 Andrew Youll */
 static window_handle       connedit_window     = NULL;
@@ -183,6 +184,7 @@ static void connedit_populate(const connmgr_connection *c)
   else                 Icon_SetText   (connedit_window, connedit_CLIPSIZE, "");
   Icon_SetSelect(connedit_window, connedit_OPT_COMPRESS, c->compression ? 1 : 0);
   Icon_SetSelect(connedit_window, connedit_OPT_RDP4,     c->rdp4        ? 1 : 0);
+  Icon_SetSelect(connedit_window, connedit_OPT_STD,      c->force_standard ? 1 : 0);
 }
 
 /* Read the writable fields and radio icons back into connedit_rec.  The pop-up
@@ -209,6 +211,7 @@ static void connedit_read_fields(void)
   }
   connedit_rec.compression = Icon_GetSelect(connedit_window, connedit_OPT_COMPRESS) ? TRUE : FALSE;
   connedit_rec.rdp4        = Icon_GetSelect(connedit_window, connedit_OPT_RDP4)     ? TRUE : FALSE;
+  connedit_rec.force_standard = Icon_GetSelect(connedit_window, connedit_OPT_STD)   ? TRUE : FALSE;
 }
 
 /* Save connedit_rec as a runnable Obey file, reporting the outcome. */

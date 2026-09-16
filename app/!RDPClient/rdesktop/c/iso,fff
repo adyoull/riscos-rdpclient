@@ -20,11 +20,14 @@
 #include "rdesktop.h"
 
 /* RDP Negotiation (MS-RDPBCGR 2.2.1.1.1 request / 2.2.1.2.1 response) */
+extern RD_BOOL g_force_standard;   /* -S: force standard security, no TLS offer */
+extern RD_BOOL g_neg_ssl_not_allowed;  /* set on NEG_FAILURE code 2 (SSL_NOT_ALLOWED) */
 #define TYPE_RDP_NEG_REQ      0x01
 #define TYPE_RDP_NEG_RSP      0x02
 #define TYPE_RDP_NEG_FAILURE  0x03
 #define PROTOCOL_RDP          0x00000000
 #define PROTOCOL_SSL          0x00000001
+#define NEG_FAILURE_SSL_NOT_ALLOWED 0x00000002  /* server: Standard RDP Security only */
 #define PROTOCOL_HYBRID       0x00000002
 
 
@@ -54,15 +57,15 @@ static void
 iso_send_connection_request(char *username)
 {
 	STREAM s;
-	RD_BOOL offer_ssl = tcp_tls_available();
+	RD_BOOL offer_ssl = tcp_tls_available() && !g_force_standard;
 	int neg_len = offer_ssl ? 8 : 0;
 	int length = 30 + strlen(username) + neg_len;
 
-#ifdef TLS_NEG_DEBUG
-	warning("NEG: AcornSSL %s -- %s TLS in RDP negotiation\n",
-	        offer_ssl ? "present" : "NOT present",
-	        offer_ssl ? "offering" : "not offering");
-#endif
+	g_neg_ssl_not_allowed = False;   /* reset; set only if the server refuses TLS (code 2) */
+
+	RDP_TRACE(("NEG: AcornSSL %s -- %s TLS in RDP negotiation\n",
+	           offer_ssl ? "present" : "NOT present",
+	           offer_ssl ? "offering" : "not offering"));
 
 	s = tcp_init(length);
 
@@ -240,14 +243,14 @@ iso_connect(char *server, char *username, RD_BOOL reconnect)
 		in_uint8s(s, 3);		/* flags (1) + length (2) */
 		in_uint32_le(s, selected);
 
-#ifdef TLS_NEG_DEBUG
-		warning("NEG: server response type=%u selectedProtocol=%u\n",
-		        (unsigned) neg_type, (unsigned) selected);
-#endif
+		RDP_TRACE(("NEG: server response type=%u selectedProtocol=%u\n",
+		           (unsigned) neg_type, (unsigned) selected));
 
 		if (neg_type == TYPE_RDP_NEG_FAILURE)
 		{
 			error("server refused RDP negotiation (failure code %u)\n", (unsigned) selected);
+			if (selected == NEG_FAILURE_SSL_NOT_ALLOWED)
+				g_neg_ssl_not_allowed = True;   /* server does Standard RDP Security only */
 			tcp_disconnect();
 			return False;
 		}
@@ -259,9 +262,7 @@ iso_connect(char *server, char *username, RD_BOOL reconnect)
 				tcp_disconnect();
 				return False;
 			}
-#ifdef TLS_NEG_DEBUG
-			warning("NEG: TLS session is now ACTIVE\n");
-#endif
+			RDP_TRACE(("NEG: TLS session is now ACTIVE\n"));
 		}
 		else if (neg_type == TYPE_RDP_NEG_RSP && selected == PROTOCOL_HYBRID)
 		{
@@ -269,15 +270,11 @@ iso_connect(char *server, char *username, RD_BOOL reconnect)
 			tcp_disconnect();
 			return False;
 		}
-#ifdef TLS_NEG_DEBUG
 		else
-			warning("NEG: server selected standard RDP security (plaintext)\n");
-#endif
+			RDP_TRACE(("NEG: server selected standard RDP security (plaintext)\n"));
 	}
-#ifdef TLS_NEG_DEBUG
 	else if (!reconnect)
-		warning("NEG: no negotiation response -- plaintext standard RDP\n");
-#endif
+		RDP_TRACE(("NEG: no negotiation response -- plaintext standard RDP\n"));
 
 	return True;
 }

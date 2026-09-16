@@ -96,6 +96,7 @@ extern void ConnMgr_InitRecord(connmgr_connection *conn)
    conn->clipboard   = FALSE;
    conn->clipsize    = -1;            /* unspecified */
    conn->rdp4        = FALSE;         /* RDP5 by default */
+   conn->force_standard = FALSE;
 }
 
 extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int size)
@@ -162,6 +163,8 @@ extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int si
    }
    if(conn->rdp4)
       connmgr_append(obey, size, " -4");
+   if(conn->force_standard)
+      connmgr_append(obey, size, " -S");
 
    /* the server (with optional :port) is the trailing argument */
    connmgr_append(obey, size, " ");
@@ -269,6 +272,7 @@ extern BOOL ConnMgr_ParseObey(const char *obey, connmgr_connection *conn)
          }
          else if(strcmp(tok, "-z") == 0) conn->compression = TRUE;
          else if(strcmp(tok, "-4") == 0) conn->rdp4 = TRUE;
+         else if(strcmp(tok, "-S") == 0) conn->force_standard = TRUE;
          else if(strcmp(tok, "-5") == 0) conn->rdp4 = FALSE;
          /* unknown options are ignored */
       }

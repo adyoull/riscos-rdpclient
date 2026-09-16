@@ -74,6 +74,8 @@ RD_BOOL g_hide_decorations = False;
 RD_BOOL g_use_rdp5 = True;
 int g_debug_trace = False; /* -v or RDPClient$Debug: runtime protocol trace */
 RD_BOOL g_rdpclip = False; /* RISC OS default is off! */
+RD_BOOL g_force_standard = False; /* -S: force standard RDP security (no TLS offer) */
+RD_BOOL g_neg_ssl_not_allowed = False; /* server refused TLS with NEG code 2 */
 RD_BOOL g_console_session = False;
 RD_BOOL g_numlock_sync = True; /* We always want to sync on RISC OS */
 RD_BOOL g_lspci_enabled = False;
@@ -198,7 +200,7 @@ extern int RDesktop_Main(int argc, char *argv[])
   * Original options
   * "u:d:s:c:p:n:k:g:fbeEmCDKS:T:Na:r:045h?"
   */
-  while((c = Utils_GetOptions(argc, argv, "C:u:d:D:s:c:p:n:k:g:ft:beEm:a:x:r:045h?qAizPMv",
+  while((c = Utils_GetOptions(argc, argv, "C:u:d:D:s:c:p:n:k:g:ft:beEm:a:x:r:045h?qAizPMvS",
                               &optarg, &optind)) != 0){
      switch (c)
      {
@@ -493,6 +495,10 @@ extern int RDesktop_Main(int argc, char *argv[])
            use_dynamic_areas = FALSE;
            break;
 
+        case 'S':
+           g_force_standard = True;   /* do not offer TLS; standard RDP security only */
+           break;
+
         case 'i':
            SpriteLib_SetIyonix15bppColourSwap(TRUE);
            break;
@@ -664,8 +670,25 @@ extern int RDesktop_Main(int argc, char *argv[])
      ui_init_connection();
 
      if(!rdp_connect(server, flags, domain, password, shell, directory, g_redirect)){
-        Log_OpenWindowIfAnyQuitOnClose();
-        return(1);
+        RD_BOOL connected = False;
+
+        /* Auto-fallback: the server refused the TLS offer with
+         * SSL_NOT_ALLOWED_BY_SERVER (RDP negotiation failure code 2) -- it does
+         * Standard RDP Security only. Retry once without offering TLS instead of
+         * failing.  (C) 2026 Andrew Youll */
+        if(g_neg_ssl_not_allowed && !g_force_standard){
+           warning("Server does not allow TLS; retrying with standard RDP security.\n");
+           g_force_standard = True;
+           g_neg_ssl_not_allowed = False;
+           rdesktop_reset_state();
+           ui_init_connection();
+           connected = rdp_connect(server, flags, domain, password, shell, directory, g_redirect);
+        }
+
+        if(!connected){
+           Log_OpenWindowIfAnyQuitOnClose();
+           return(1);
+        }
      }
 
 
@@ -1299,6 +1322,7 @@ static void usage(char *program)
   messagetext("    -5: use RDP version 5 (default)");
 */  
   messagetext("    -4: use RDP version 4");
+  messagetext("    -S: force standard RDP security (do not offer TLS)");
   messagetext("    -0: attach to console");
   messagetext("    -v: log the RDP protocol trace (or set RDPClient$Debug)");
   messagetext("                 default is 16 KB, 0 indicates no limit");

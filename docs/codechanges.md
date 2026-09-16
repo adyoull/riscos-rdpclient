@@ -191,3 +191,26 @@ bring-to-front and never changed the mode). The startup `usage()` banner credits
 the original RISC OS port (Andrew Sellors, 2004-2010, orac2.demon.co.uk) and the
 32-bit update (Andrew Youll, 2026, github.com/adyoull/riscos-rdpclient), and
 documents the `-v` protocol-trace option.
+
+
+---
+
+## 0.92.1 — standard-security fallback + toggle
+
+**`rdesktop/c/iso`** — a new `-S` flag and `g_force_standard` gate the TLS offer
+in `iso_send_connection_request()`
+(`offer_ssl = tcp_tls_available() && !g_force_standard`). `iso_connect` sets
+`g_neg_ssl_not_allowed` when the negotiation response is TYPE_RDP_NEG_FAILURE with
+failure code 2 (`SSL_NOT_ALLOWED_BY_SERVER`). The five `NEG:` negotiation traces
+moved from compile-time `#ifdef TLS_NEG_DEBUG` to runtime `RDP_TRACE(...)` (gated
+on `-v` / `g_debug_trace`).
+
+**`c/RDesktop`** — the connect loop in `RDesktop_Main` now retries the connection
+once with `force_standard` set when `g_neg_ssl_not_allowed` is flagged, so a
+server configured for Standard RDP Security only connects instead of failing.
+The retry fires only on that explicit negotiation refusal, never on a *failed*
+TLS handshake (no downgrade-attack vector). `-S` is documented in `usage()`.
+
+**`c/ConnMgr` / `h/ConnMgr`** — `force_standard` record field, emitted and parsed
+as `-S`. **`c/ConnEdit`** + the `ConnEdit` template — a "Standard security only
+(no TLS)" checkbox (`connedit_OPT_STD`), round-tripped through the Obey.

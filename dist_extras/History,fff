@@ -1,3 +1,14 @@
+16-Sep-2026  0.92.1 Connects to more servers. A server set to Standard (legacy)
+                    RDP Security only refuses the TLS offer (negotiation failure
+                    code 2); instead of failing, the client now retries
+                    automatically with Standard security and connects. A new
+                    'Standard security only (no TLS)' option (the -S flag, and a
+                    checkbox in the connection editor) lets you force that. The
+                    RDP negotiation trace is now shown by the -v option, so
+                    connection problems are easier to diagnose. The fallback
+                    only happens when the server explicitly refuses TLS, never
+                    on a failed TLS handshake.
+
 16-Sep-2026  0.92.0 Added a connection manager. The iconbar Connections menu
                     now lists your saved connections, with 'New connection' at
                     the top; each can be connected to, edited or deleted, and

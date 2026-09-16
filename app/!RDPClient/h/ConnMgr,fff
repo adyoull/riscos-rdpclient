@@ -56,6 +56,7 @@ typedef struct {
    BOOL clipboard;                 /* -r clipboard:active                     */
    int  clipsize;                  /* clipboard KB limit; -1 = unspecified    */
    BOOL rdp4;                       /* -4 (else RDP5, the default)             */
+   BOOL force_standard;           /* -S: force standard security, no TLS     */
 } connmgr_connection;
 
 /* Fill a record with sensible defaults. */

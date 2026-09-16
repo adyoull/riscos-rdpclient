@@ -520,6 +520,20 @@ The full list of available options is as follows:
      -r clipboard:active,32   (clipboard is redirected with a 32 KB limit)
 
 
+ -S: force standard RDP security (do not offer TLS)
+     (Optional)
+
+     Connect using Standard (legacy) RDP Security only, without offering TLS.
+     Use this to connect to a server that does not support TLS, or to check
+     whether an old server still accepts Standard security. Note the client
+     already falls back to Standard security automatically if the server
+     refuses the TLS offer, so this flag is only needed to force it.
+
+     e.g.
+
+     -S                       (standard security only, no TLS)
+
+
  -v: log the RDP protocol trace
      (Optional)
 
@@ -948,6 +962,19 @@ Any other suggestions will be gladly accepted.
 
 Version history:
 ~~~~~~~~~~~~~~~
+
+0.92.1 (16-Sep-2026)
+  * Connects to more servers. A server configured for Standard (legacy) RDP
+    Security only refuses the TLS offer (RDP negotiation failure code 2,
+    'SSL not allowed by server'); instead of failing, the client now retries
+    automatically with Standard security and connects.
+  * Added a 'Standard security only (no TLS)' option -- the -S flag, and a
+    checkbox in the connection editor -- to force Standard security (e.g. to
+    probe an old server, or on a trusted LAN).
+  * The RDP negotiation trace is now shown by the -v option / RDPClient$Debug
+    (previously it was only in debug builds), to help diagnose connection
+    problems. The Standard-security fallback only happens when the server
+    explicitly refuses TLS, never on a failed TLS handshake.
 
 0.92.0 (16-Sep-2026)
   * Added a connection manager. The iconbar 'Connections' menu now lists your

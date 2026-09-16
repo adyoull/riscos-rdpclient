@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.92.0)
+# !RDPClient — RISC OS RDP client (32-bit, 0.92.1)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.92.0**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.92.1**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -157,6 +157,22 @@ objects, which is why a clean rebuild used to regress):
    **DeskLib source** and is baked into the prebuilt `build/DeskLib32`.
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
+
+### 0.92.1 — connect to more servers (standard-security fallback)
+
+Some RDP servers are configured for **Standard (legacy) RDP Security only** (the
+“RDP Security Layer” setting). Such a server refuses the client's TLS offer with
+`SSL_NOT_ALLOWED_BY_SERVER` (RDP negotiation failure code 2), and 0.92.0 failed
+with “server refused RDP negotiation (failure code 2)”. The client now **retries
+automatically with Standard security** and connects. This fallback only fires on
+that explicit server refusal — never on a *failed* TLS handshake — so it is not a
+downgrade-attack vector.
+
+There is also a new **“Standard security only (no TLS)”** option — the `-S` flag
+and a checkbox in the connection editor — to force Standard security explicitly
+(useful for probing an old server, or on a trusted LAN). And the RDP negotiation
+trace (the TLS offer and the server's selected protocol) is now shown by the
+`-v` option / `RDPClient$Debug`, having previously been compile-time only.
 
 ### 0.92.0 — connection manager
 
