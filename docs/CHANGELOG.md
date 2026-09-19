@@ -5,13 +5,96 @@ RISC OS port of rdesktop 1.6.0 (Andrew Sellors), rebuilt 32-bit on the
 a series of fixes needed to make a Norcroft / RISC OS 5 build actually run.
 
 **Licence:** !RDPClient is free software under the **GNU General Public License
-v2** (inherited from rdesktop, with the OpenSSL linking exemption). All
+v3** (inherited from the rdesktop 1.6.0 base, with the OpenSSL linking
+exemption). All
 modifications below are released under the same GPL, and the complete
 corresponding **modified source** is distributed alongside the binary (this
 repository). Files changed for the scroll-wheel feature carry a modification
 copyright notice: **scroll-wheel modifications (C) 2026 Andrew Youll**.
 
 Dates are ISO (YYYY-MM-DD).
+
+---
+
+## 0.92.2 — 2026-09-19
+
+Security hardening, a **Display** submenu grouping the window-mode entries, a
+build-time guard against the C99 `snprintf` launch-crash, and the licence
+corrected to GPL v3.
+
+### Hardened
+
+- **Connection input hardening (security).** Defence-in-depth for the saved-
+  connection files, closing latent injection / path-traversal issues before any
+  future “import a connection file” feature could make them remotely
+  triggerable (findings 4–6 of the September 2026 security audit):
+  - The connection **Name** is validated on save and restricted to letters,
+    digits, space, hyphen and underscore, so it cannot contain RISC OS path
+    metacharacters (`. : $ & @ % \ ^ # *`) and cannot write its Obey outside the
+    Connections directory (`c/ConnEdit`).
+  - All field **values** written into the launch Obey now have control
+    characters (newline / CR / tab, DEL) and the grouping double-quote stripped,
+    and the trailing server field additionally has spaces stripped, so a crafted
+    value cannot break out of its quoted argument or inject a second Obey command
+    (`c/ConnMgr`).
+  - Fixed-buffer `sprintf` calls in the Obey / editor formatting converted to
+    a bounded C89-only `vsprintf` wrapper (`cm_snprintf` / `ce_snprintf`, not C99 `snprintf`) — pure hygiene, the inputs were
+    already bounded. No behaviour change.
+- **rdesktop core parser hardening (security).** Two clearly-wrong reads of
+  server-controlled lengths in the inherited rdesktop 1.6.0 core are now
+  bounds-checked (finding 1 of the audit — reduces exposure to a malicious or
+  MITM'd server):
+  - **Server redirection PDU** (`rdesktop/c/rdp`, `process_redirect_pdu`): the
+    redirected-username copy passed `strlen()` of a freshly `xmalloc`'d (i.e.
+    uninitialised) buffer as its destination size; it now passes the real
+    buffer size (`len + 1`), matching the sibling server / domain / password
+    reads.
+  - **X.509 certificate lengths** (`rdesktop/c/secure`, `sec_parse_crypt_info`):
+    the ignored-cert, CA-cert and server-cert lengths were read from the server
+    and used to read / advance the stream with no bounds check; each is now
+    rejected if it exceeds the bytes remaining, before the certificate is read.
+  Not a full parser audit — the broader bitmap / channels / rdpdr bounds pass
+  is a separate, test-heavy effort — but it closes the two unambiguous holes.
+
+### Added
+
+- **Display ▸ submenu.** The three window-mode entries (Window, Full window,
+  Full screen) are grouped under a single **Display** submenu on the iconbar
+  menu, instead of three separate top-level entries (`c/RDPClient`, `Messages`).
+
+### Build / internal
+
+- **Chunk-5 build guard.** `buildapp.py` now scans the linked objects after the
+  link and **fails the build** if any imports the C99 `snprintf` / `vsnprintf`
+  symbol. That symbol pulls a SharedCLibrary stub chunk the target ROM C library
+  (5.34) cannot initialise, which was the cause of an earlier "SWI &5DC34"
+  launch crash; all formatting must instead go through the bounded `vsprintf`
+  wrapper. The guard makes that regression impossible to ship silently.
+- **Server-fingerprint (known-hosts) groundwork, disabled.** A `KnownHosts`
+  module and a code-built manager window are present in the tree but parked and
+  unhooked: the shipping AcornSSL exposes no client API to read the server's
+  TLS certificate, so the connect-time capture cannot be implemented yet
+  (awaiting an AcornSSL enhancement). No user-visible feature; kept in the tree
+  so it need not be rebuilt from scratch later.
+
+### Changed
+
+- **Source headers state GPL v3 explicitly.** The per-file modification notices
+  on the RISC OS additions that previously read "(GPL)" now read "(GPL v3)"
+  (`c/ConnMgr`, `c/ConnEdit`, `c/Display`, `c/Mouse` and their headers), matching
+  the corrected licence. Comment-only — no code change.
+- **GPL v3 licence — compliance correction (long-standing).** !RDPClient's code
+  has been licensed under the GNU GPL v3, or (at your option) any later version,
+  since the original RISC OS port (0.88, 2010) — inherited from rdesktop 1.6.0
+  (Matthew Chapman et al.), whose headers carry the GPL v3-or-later notice, and
+  not established by the 32-bit rebuild or the scroll-wheel work. Every package
+  from that original 2010 distribution onward, however, bundled a stale copy of
+  the GPL *v2* licence **text** by mistake: the wrong full-licence file shipped
+  alongside GPL v3 code. This release corrects that long-standing
+  documentation / compliance defect — the repository `LICENSE`, the bundled
+  `Licence` files, the README and this changelog now carry the correct GPL v3
+  text with the OpenSSL linking exception. It corrects the shipped licence file
+  only; it is not a relicensing, and the licence of the code is unchanged.
 
 ---
 

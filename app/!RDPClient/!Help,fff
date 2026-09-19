@@ -963,6 +963,20 @@ Any other suggestions will be gladly accepted.
 Version history:
 ~~~~~~~~~~~~~~~
 
+0.92.2 (19-Sep-2026)
+  * Security hardening. Saved-connection input is validated and sanitised: the
+    connection Name is restricted to safe characters, and field values are
+    stripped of control characters and quotes, so a crafted connection cannot
+    write outside its directory or inject a command into its launch Obey. Two
+    server-controlled length reads in the core RDP / certificate parsing are
+    now bounds-checked.
+  * The display-mode entries (Window, Full window, Full screen) are grouped
+    under a single 'Display' submenu on the iconbar menu.
+  * Licence: a long-standing GPL compliance correction. The code has been GPL
+    v3 since the original 2010 port (inherited from rdesktop 1.6.0); every
+    earlier package bundled the wrong GPL v2 licence text by mistake. Corrected
+    here -- the shipped licence file only, not a relicensing.
+
 0.92.1 (16-Sep-2026)
   * Connects to more servers. A server configured for Standard (legacy) RDP
     Security only refuses the TLS offer (RDP negotiation failure code 2,

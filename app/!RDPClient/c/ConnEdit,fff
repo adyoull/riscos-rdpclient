@@ -7,7 +7,7 @@
  *              connections).  The data model lives in ConnMgr.          *
  *                                                                      *
  *   RISC OS 5 / 32-bit build additions (C) 2026 Andrew Youll, released  *
- *   under the same licence as the rest of !RDPClient (GPL).             *
+ *   under the same licence as the rest of !RDPClient (GPL v3).             *
  *                                                                      *
  ************************************************************************/
 
@@ -27,9 +27,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "ConnMgr.h"
 #include "ConnEdit.h"
+/* --- PARKED 2026-09-19: known-hosts feature (see project doc
+   rdpclient-knownhosts-tls-capture-research.md). AcornSSL exposes no client
+   API to read the TLS cert, so connect-time capture can't be done yet; the
+   whole feature is disabled but the code (c/KnownHosts) is kept intact. --- */
+/* #include "KnownHosts.h" */
 
 /* Connection editor (ConnEdit template) icon handles (C) 2026 Andrew Youll */
 #define connedit_NAME            1
@@ -214,6 +220,44 @@ static void connedit_read_fields(void)
   connedit_rec.force_standard = Icon_GetSelect(connedit_window, connedit_OPT_STD)   ? TRUE : FALSE;
 }
 
+/* Bounded formatter used instead of the C99 snprintf().  snprintf pulls in an
+   extra SharedCLibrary stub chunk the ROM shared C library cannot initialise on
+   some machines (aborts at launch); vsprintf is in an already-linked chunk.
+   Formats into a scratch buffer, then copies at most size-1 bytes.
+   (C) 2026 Andrew Youll. */
+static void ce_snprintf(char *buf, int size, const char *fmt, ...)
+{
+   char tmp[512];
+   va_list ap;
+   int n;
+   if(size <= 0) return;
+   va_start(ap, fmt);
+   n = vsprintf(tmp, fmt, ap);
+   va_end(ap);
+   if(n < 0){ buf[0] = '\0'; return; }
+   if(n > size - 1) n = size - 1;
+   memcpy(buf, tmp, (unsigned) n);
+   buf[n] = '\0';
+}
+
+/* A saved connection's name becomes part of a filing-system path and an Obey
+   argument, so restrict it to a safe, portable set: letters, digits, space,
+   underscore and hyphen.  This blocks '.', ':', '$', '"', control characters
+   and other RISC OS path / command metacharacters. */
+static BOOL connedit_name_ok(const char *name)
+{
+  const char *p = name;
+  while(*p)
+  {
+     unsigned char ch = (unsigned char) *p++;
+     if((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9') || ch == ' ' || ch == '_' || ch == '-')
+        continue;
+     return FALSE;
+  }
+  return TRUE;
+}
+
 /* Save connedit_rec as a runnable Obey file, reporting the outcome. */
 static void connedit_do_save(const connmgr_connection *c)
 {
@@ -224,10 +268,16 @@ static void connedit_do_save(const connmgr_connection *c)
      return;
   }
 
+  if(!connedit_name_ok(c->name)){
+     Error_Report(0, "A connection Name may only contain letters, digits, "
+                     "spaces, '-' and '_'.");
+     return;
+  }
+
   _kernel_oscli("CDir <Choices$Write>.RDPClient");
   _kernel_oscli("CDir " connmgr_CONNDIR);
 
-  sprintf(path, "%s.%s", connmgr_CONNDIR, c->name);
+  ce_snprintf(path, sizeof path, "%s.%s", connmgr_CONNDIR, c->name);
 
   if(ConnMgr_Save(c, path))
      Error_Report(0, "Saved connection '%s'.", c->name);
@@ -412,7 +462,7 @@ static void connmgr_do_action(const char *name, int action)
   connmgr_connection conn;
   char path[connmgr_STRLEN + 64];
 
-  sprintf(path, "%s.%s", connmgr_CONNDIR, name);
+  ce_snprintf(path, sizeof path, "%s.%s", connmgr_CONNDIR, name);
 
   switch(action)
   {
@@ -424,7 +474,7 @@ static void connmgr_do_action(const char *name, int action)
     case 2:   /* Delete */
     {
       char q[connmgr_STRLEN + 64];
-      sprintf(q, "Delete the saved connection '%s'?", name);
+      ce_snprintf(q, sizeof q, "Delete the saved connection '%s'?", name);
       if(!connmgr_confirm(q)) break;
       if(remove(path) == 0) Error_Report(0, "Deleted connection '%s'.", name);
       else Error_Report(0, "Could not delete connection '%s'.", name);
@@ -465,6 +515,18 @@ extern void ConnEdit_RebuildMenu(menu_ptr mainmenu, int connect_item)
      }
      if(len >= (int) sizeof(desc) - 2) break;
   }
+
+  /* PARKED 2026-09-19: known-hosts menu entry disabled (feature parked). */
+#if 0
+  /* (C) 2026 Andrew Youll -- append the Known hosts manager after a dotted
+     separator, so it sits at menu item (connmenu_count + 1). */
+  {
+     const char *kh = "|Known hosts\x8c";   /* 0x8c = the RISC OS ellipsis */
+     int k;
+     for(k = 0; kh[k] != '\0' && len < (int) sizeof(desc) - 1; k++)
+        desc[len++] = kh[k];
+  }
+#endif
   desc[len] = '\0';
 
   connmenu = Menu_New("Connections", desc);
@@ -490,6 +552,7 @@ extern void ConnEdit_Init(void)
   Event_Claim(event_CLICK, connedit_window, event_ANY, connedit_click, NULL);
   Event_Claim(event_KEY,   connedit_window, event_ANY, connedit_key, NULL);
   Event_Claim(event_MENU,  event_ANY, event_ANY, connedit_menuchoice, NULL);
+  /* PARKED 2026-09-19: KnownHostsUI_Init(); */
 }
 
 /* Dispatch a selection from the Connections submenu (item 0 = New; otherwise
@@ -499,6 +562,10 @@ extern void ConnEdit_MenuSelect(int *selection)
   int item = selection[1];
   if(item <= 0)
      ConnEdit_OpenNew();
+  /* PARKED 2026-09-19: known-hosts dispatch disabled (feature parked).
+  else if(item == connmenu_count + 1)
+     KnownHostsUI_Open();
+  */
   else
   {
      int ci     = item - 1;

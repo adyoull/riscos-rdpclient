@@ -9,7 +9,7 @@
  *              double-clickable launcher and the Filer is the manager.  *
  *                                                                      *
  *   RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll,      *
- *   released under the same licence as the rest of !RDPClient (GPL).   *
+ *   released under the same licence as the rest of !RDPClient (GPL v3).   *
  *                                                                      *
  ************************************************************************/
 
@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "kernel.h"     /* _kernel_swi (OS_GBPB directory read)     */
 
@@ -36,6 +37,47 @@ static void connmgr_append(char *buf, int size, const char *s)
       strncat(buf, s, room);
 }
 
+/* Bounded formatter used instead of the C99 snprintf().  snprintf pulls in an
+   extra SharedCLibrary stub chunk the ROM shared C library cannot initialise on
+   some machines (aborts at launch); vsprintf is in an already-linked chunk.
+   Formats into a scratch buffer, then copies at most size-1 bytes.
+   (C) 2026 Andrew Youll. */
+static void cm_snprintf(char *buf, int size, const char *fmt, ...)
+{
+   char tmp[256];
+   va_list ap;
+   int n;
+   if(size <= 0) return;
+   va_start(ap, fmt);
+   n = vsprintf(tmp, fmt, ap);
+   va_end(ap);
+   if(n < 0){ buf[0] = '\0'; return; }
+   if(n > size - 1) n = size - 1;
+   memcpy(buf, tmp, (unsigned) n);
+   buf[n] = '\0';
+}
+
+/* Append 's' but drop control characters (< 0x20 and 0x7f) and the double
+   quote so a crafted connection field cannot inject extra Obey commands or
+   break out of the quoted argument.  When drop_spaces is set, spaces are
+   removed too (used for the bare server token, which must not split). */
+static void connmgr_append_clean(char *buf, int size, const char *s,
+                                 int drop_spaces)
+{
+   char c[2];
+   c[1] = '\0';
+   while(*s)
+   {
+      unsigned char ch = (unsigned char) *s++;
+      if(ch < 0x20 || ch == 0x7f || ch == '"')
+         continue;
+      if(drop_spaces && ch == ' ')
+         continue;
+      c[0] = (char) ch;
+      connmgr_append(buf, size, c);
+   }
+}
+
 /* Append a string option and its value, the value double-quoted so that
    spaces survive the command-line split. */
 static void connmgr_append_arg(char *buf, int size, const char *opt,
@@ -43,7 +85,7 @@ static void connmgr_append_arg(char *buf, int size, const char *opt,
 {
    connmgr_append(buf, size, opt);
    connmgr_append(buf, size, " \"");
-   connmgr_append(buf, size, value);
+   connmgr_append_clean(buf, size, value, 0);
    connmgr_append(buf, size, "\"");
 }
 
@@ -121,7 +163,7 @@ extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int si
    }
    else if(conn->width > 0 && conn->height > 0)
    {
-      sprintf(tmp, " -g %dx%d", conn->width, conn->height);
+      cm_snprintf(tmp, sizeof tmp, " -g %dx%d", conn->width, conn->height);
       connmgr_append(obey, size, tmp);
    }
    if(conn->depth == -1)
@@ -130,7 +172,7 @@ extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int si
    }
    else if(conn->depth > 0)
    {
-      sprintf(tmp, " -a %d", conn->depth);
+      cm_snprintf(tmp, sizeof tmp, " -a %d", conn->depth);
       connmgr_append(obey, size, tmp);
    }
 
@@ -157,7 +199,7 @@ extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int si
       connmgr_append(obey, size, " -r clipboard:active");
       if(conn->clipsize >= 0)
       {
-         sprintf(tmp, ",%d", conn->clipsize);
+         cm_snprintf(tmp, sizeof tmp, ",%d", conn->clipsize);
          connmgr_append(obey, size, tmp);
       }
    }
@@ -168,10 +210,10 @@ extern void ConnMgr_BuildObey(const connmgr_connection *conn, char *obey, int si
 
    /* the server (with optional :port) is the trailing argument */
    connmgr_append(obey, size, " ");
-   connmgr_append(obey, size, conn->server);
+   connmgr_append_clean(obey, size, conn->server, 1);
    if(conn->port > 0)
    {
-      sprintf(tmp, ":%d", conn->port);
+      cm_snprintf(tmp, sizeof tmp, ":%d", conn->port);
       connmgr_append(obey, size, tmp);
    }
    connmgr_append(obey, size, "\n");

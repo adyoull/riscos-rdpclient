@@ -89,7 +89,11 @@ def fresh_work():
     # builddesklib.py as ./DeskLib32), use it in place of the one shipped in
     # app_base.zip. Lets the DeskLib rebuild and the app build stay decoupled.
     dl32 = os.path.join(HERE, "DeskLib32")
-    if os.path.exists(dl32):
+    if os.path.isdir(dl32):
+        # Case-insensitive FS: the bare name resolves to the desklib32/ repo
+        # dir; the actual prebuilt library file lives inside it.
+        dl32 = os.path.join(dl32, "DeskLib32")
+    if os.path.isfile(dl32):
         dst = os.path.join(WORK, "desklib", "o", "DeskLib")
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(dl32, dst)
@@ -106,6 +110,52 @@ def built_objs():
             continue
         out.add("o." + n)
     return out
+
+
+# --- chunk-5 guard -------------------------------------------------------
+# The C99 printf-family (snprintf/vsnprintf) lives in a SharedCLibrary stub
+# chunk (chunk 5) that the Pi's ROM shared C library (5.34) cannot initialise:
+# linking an object that imports one produces a garbage LibInit at launch and
+# the "SWI &5DC34" crash. Our code must format via a bounded vsprintf wrapper
+# (cm_snprintf / ce_snprintf / kh_snprintf) instead. This guard scans the
+# locally-built objects that go into the link and FAILS the build if any imports
+# such a symbol -- as a whole symbol, so the wrapper names (which merely contain
+# "snprintf" as a substring, e.g. kh_snprintf) do not trip it.
+_CHUNK5_SYMS = (b"snprintf", b"vsnprintf")
+
+def _obj_imports_c99(data):
+    hits = set()
+    for sym in _CHUNK5_SYMS:
+        for m in re.finditer(re.escape(sym) + b"\x00", data):
+            i = m.start()
+            prev = data[i - 1] if i > 0 else 0
+            if not (chr(prev).isalnum() or prev == 0x5f):   # 0x5f = '_'
+                hits.add(sym.decode())
+    return sorted(hits)
+
+def chunk5_guard():
+    """List of (object_name, [symbols]) for local link-set objects that import a
+    chunk-5 C99 symbol. Empty == clean."""
+    odir = os.path.join(WORK, "o")
+    linkvia = os.path.join(WORK, "linkvia")
+    names = []
+    if os.path.isfile(linkvia):
+        for ln in open(linkvia):
+            ln = ln.strip()
+            # local objects look like "o.Name"; skip C:/DeskLib:/TCPIPLibs:/OpenSSLLib: libs
+            if ln.startswith("o.") and ":" not in ln:
+                names.append(ln[2:])
+    if not names:                       # fallback: scan every real object present
+        names = [n for n in os.listdir(odir)
+                 if n != ".keep" and ".stale" not in n and ".bak" not in n]
+    bad = []
+    for n in names:
+        fp = os.path.join(odir, n)
+        if os.path.isfile(fp):
+            syms = _obj_imports_c99(open(fp, "rb").read())
+            if syms:
+                bad.append((n, syms))
+    return bad
 
 
 def write_yaml(script_lines, artifact):
@@ -316,20 +366,10 @@ def make_riscos_zip(src_dir, zip_path):
             if fn == ".DS_Store" or ".bak" in fn:
                 continue
             arc = os.path.relpath(full, src_dir).replace(os.sep, "/")
-            # A ,xxx RISC OS type suffix on the source is authoritative: strip it
-            # from the archive name and use it for the embedded filetype. Files
-            # with no suffix (e.g. the linked RDPClient binary) fall back to the
-            # filename->type map.
-            m = re.search(r',([0-9A-Fa-f]{3})$', arc)
-            if m:
-                ftype = int(m.group(1), 16)
-                arc = arc[:m.start()]
-            else:
-                ftype = _riscos_filetype(arc)
             zi = zipfile.ZipInfo(arc)
             zi.compress_type = zipfile.ZIP_DEFLATED
             zi.external_attr = 0o644 << 16
-            zi.extra = _riscos_extra(ftype)
+            zi.extra = _riscos_extra(_riscos_filetype(arc))
             with open(full, "rb") as fh:
                 zf.writestr(zi, fh.read())
     zf.close()
@@ -342,7 +382,7 @@ def assemble_built(outp):
     """Assemble a ready-to-run application in ./Built/!RDPClient.
 
     WHY: the app's resources (Messages, Templates, sprites, DeepKeys, ...) live
-    in the source !RDPClient, not here in the build folder. Copying only the
+    in the source !RDPClient, not here in "Claude outputs". Copying only the
     linked binary to the Pi leaves those stale (old menu text, old version).
     This step produces one self-contained folder to copy across.
 
@@ -351,7 +391,8 @@ def assemble_built(outp):
     in as the 'RDPClient' file. The binary and resources therefore always match.
     Set the 'RDPClient' file's type to Absolute (&FF8) after copying to the Pi.
     """
-    app_src = os.path.normpath(os.path.join(HERE, "..", "app", "!RDPClient"))
+    app_src = os.path.normpath(os.path.join(HERE, "..", "rdpclientsrc",
+                                            "RDPClient", "!RDPClient"))
     built   = os.path.join(HERE, "Built")
     app_dst = os.path.join(built, "!RDPClient")
     if not os.path.isdir(app_src):
@@ -377,7 +418,7 @@ def assemble_built(outp):
     # the app requires installed in !Boot) plus the original docs/licence, if a
     # dist_extras/ folder is present next to this script. They sit beside
     # !RDPClient in Built, matching the original distribution layout.
-    extras = os.path.normpath(os.path.join(HERE, "..", "dist_extras"))
+    extras = os.path.join(HERE, "dist_extras")
     if os.path.isdir(extras):
         for entry in sorted(os.listdir(extras)):
             src = os.path.join(extras, entry)
@@ -404,7 +445,7 @@ def main():
     # 3/32bit), previously-built objects are stale and MUST be rebuilt. Wipe
     # work/o when the signature changes so we never link stale objects.
     import hashlib
-    SIG_VERSION = "4-wimpfix"   # bump to force a full clean rebuild of all objects
+    SIG_VERSION = "7-0921-clean"   # bump to force a full clean rebuild of all objects
     sig = hashlib.sha1((SIG_VERSION + "\n" + "\n".join(c["cmd"] for c in compiles)
                         + "\n" + "\n".join(finals)).encode()).hexdigest()
     sigpath = os.path.join(WORK, ".build_sig")
@@ -520,13 +561,48 @@ def main():
                     log("\nDONE (see RDPClient.zip)."); return 0
         else:
             open(outp, "wb").write(data)
+        bad = chunk5_guard()
+        if bad:
+            log("")
+            log("!!! CHUNK-5 GUARD FAILED -- object(s) import a C99 printf-family")
+            log("    symbol that pulls SharedCLibrary stub chunk 5 (ROM CLib 5.34")
+            log("    cannot initialise it) -> the 'SWI &5DC34' launch crash:")
+            for n, syms in bad:
+                log("      o.%s  imports  %s" % (n, ", ".join(syms)))
+            log("    Fix: replace the snprintf/vsnprintf call with a bounded vsprintf")
+            log("    wrapper (cm_snprintf / ce_snprintf / kh_snprintf), delete that")
+            log("    object from work/o so it recompiles, then rebuild.")
+            log("    The linked binary is UNSAFE and has NOT been finalised.")
+            return 5
+        log("chunk-5 guard: OK -- no linked object imports snprintf/vsnprintf.")
         assemble_built(outp)
+        _run_consistency_check()
         log("\nDONE.  Linked binary written to: %s  (%d bytes, filetype &%03x)"
             % (outp, os.path.getsize(outp), r["art_ft"]))
         log("Drop it into !RDPClient as the 'RDPClient' file (type &FF8, Absolute).")
         return 0
     log("\nLink did not produce RDPClient (rc=%s). See buildapp.log." % r["rc"])
     return 1
+
+
+def _run_consistency_check():
+    """Release guardrail: verify the repo / scratch / rdpclientsrc trees agree
+    (version strings, History, !Help, Clipboard, app_base.zip, plan flags).
+    Non-fatal -- prints its report; a FAIL means fix before committing/releasing."""
+    script = os.path.join(HERE, "consistency.py")
+    if not os.path.isfile(script):
+        return
+    try:
+        log("")
+        log("--- release consistency check (consistency.py) ---")
+        r = subprocess.run([sys.executable, script], cwd=HERE,
+                           capture_output=True, text=True)
+        for line in (r.stdout or "").rstrip().split("\n"):
+            log(line)
+        if r.returncode != 0:
+            log("*** CONSISTENCY FAILED -- do NOT commit/release until green ***")
+    except Exception as e:
+        log("consistency check skipped: %s" % e)
 
 
 if __name__ == "__main__":

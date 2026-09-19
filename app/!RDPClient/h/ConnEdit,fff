@@ -1,6 +1,6 @@
 /************************************************************************
  *        File: ConnEdit.h  --  connection editor / manager UI            *
- *   (C) 2026 Andrew Youll, GPL (same licence as the rest of !RDPClient). *
+ *   (C) 2026 Andrew Youll, GPL v3 (same licence as the rest of !RDPClient). *
  ************************************************************************/
 
 #ifndef __ConnEdit_h

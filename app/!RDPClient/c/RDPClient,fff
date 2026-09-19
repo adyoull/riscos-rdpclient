@@ -92,6 +92,7 @@ static menu_ptr mainmenu = NULL;
 
 /* Scroll settings submenu (C) 2026 Andrew Youll */
 static menu_ptr scrollmenu = NULL;
+static menu_ptr displaymenu = NULL;   /* (C) 2026 Andrew Youll -- Display submenu */
 
 /* iconbar icon handle */
 static icon_handle bariconhandle = NULL;
@@ -106,15 +107,18 @@ static save_saveblock *saveblock = NULL;
 
 /* Defines for the positions at which items appear on the menus. */
 #define mainmenu_INFO        0
-#define mainmenu_WINDOW      1
-#define mainmenu_FULLWINDOW  2
-#define mainmenu_FULLSCREEN  3
-#define mainmenu_SAVESCREEN  4
-#define mainmenu_VIEWLOG     5
-#define mainmenu_STATUS      6
-#define mainmenu_SCROLL      7   /* (C) 2026 Andrew Youll -- scroll settings  */
-#define mainmenu_CONNECT     8   /* (C) 2026 Andrew Youll -- connection editor */
-#define mainmenu_QUIT        9
+#define mainmenu_DISPLAY     1   /* (C) 2026 Andrew Youll -- display-mode submenu */
+#define mainmenu_SAVESCREEN  2
+#define mainmenu_VIEWLOG     3
+#define mainmenu_STATUS      4
+#define mainmenu_SCROLL      5   /* (C) 2026 Andrew Youll -- scroll settings  */
+#define mainmenu_CONNECT     6   /* (C) 2026 Andrew Youll -- connection editor */
+#define mainmenu_QUIT        7
+
+/* Display submenu item positions (C) 2026 Andrew Youll */
+#define displaymenu_WINDOW      0
+#define displaymenu_FULLWINDOW  1
+#define displaymenu_FULLSCREEN  2
 
 /* Scroll submenu item positions (C) 2026 Andrew Youll */
 #define scrollmenu_INVERT    0
@@ -230,9 +234,11 @@ extern void RDPClient_MenuSetDisplayMode(int display_mode)
   int fullwindow_ticked, fullwindow_shaded;
   int fullscreen_ticked, fullscreen_shaded;
 
-  Menu_GetFlags(mainmenu, mainmenu_WINDOW, &window_ticked, &window_shaded);
-  Menu_GetFlags(mainmenu, mainmenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
-  Menu_GetFlags(mainmenu, mainmenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
+  if(displaymenu == NULL) return;   /* (C) 2026 Andrew Youll */
+
+  Menu_GetFlags(displaymenu, displaymenu_WINDOW, &window_ticked, &window_shaded);
+  Menu_GetFlags(displaymenu, displaymenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
+  Menu_GetFlags(displaymenu, displaymenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
 
   switch(display_mode)
   {
@@ -255,9 +261,9 @@ extern void RDPClient_MenuSetDisplayMode(int display_mode)
       break;
   }
 
-  Menu_SetFlags(mainmenu, mainmenu_WINDOW, window_ticked, window_shaded);
-  Menu_SetFlags(mainmenu, mainmenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
-  Menu_SetFlags(mainmenu, mainmenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
+  Menu_SetFlags(displaymenu, displaymenu_WINDOW, window_ticked, window_shaded);
+  Menu_SetFlags(displaymenu, displaymenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
+  Menu_SetFlags(displaymenu, displaymenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
 
 }
 
@@ -409,9 +415,12 @@ static BOOL Menuwarn_mainmenu(event_pollblock *event, void *reference)
   }
 
  /*
-  * (C) 2026 Andrew Youll -- let DeskLib open the code-attached Scroll submenu
-  * itself (do not claim its submenu-warning).
+  * (C) 2026 Andrew Youll -- let DeskLib open the code-attached Display and
+  * Scroll submenus itself (do not claim their submenu-warnings).
   */
+  if(event->data.message.data.menuwarn.selection[0] == mainmenu_DISPLAY)
+     return(FALSE);
+
   if(event->data.message.data.menuwarn.selection[0] == mainmenu_SCROLL)
      return(FALSE);
 
@@ -592,16 +601,21 @@ static BOOL MenuChoice_mainmenu(event_pollblock *event, void *reference)
 
   switch(event->data.selection[0])
   {
-    case mainmenu_WINDOW:
-      Display_SetDisplayMode(display_mode_WINDOW);
-      break;
+    case mainmenu_DISPLAY:
+      switch(event->data.selection[1])
+      {
+        case displaymenu_WINDOW:
+          Display_SetDisplayMode(display_mode_WINDOW);
+          break;
 
-    case mainmenu_FULLWINDOW:
-      Display_SetDisplayMode(display_mode_FULLSCREEN);
-      break;
+        case displaymenu_FULLWINDOW:
+          Display_SetDisplayMode(display_mode_FULLSCREEN);
+          break;
 
-    case mainmenu_FULLSCREEN:
-      Display_SetDisplayMode(display_mode_SINGLETASK);
+        case displaymenu_FULLSCREEN:
+          Display_SetDisplayMode(display_mode_SINGLETASK);
+          break;
+      }
       break;
 
     case mainmenu_STATUS:
@@ -846,6 +860,15 @@ static void setup_menus(void)
   mainmenu  = Menu_New(menutitle, menudescription);
 
  /*
+  * (C) 2026 Andrew Youll -- build the Display-mode submenu in code and attach
+  * it to the "Display" entry of the iconbar menu (Window / Full window /
+  * Full screen, formerly three separate top-level entries).
+  */
+  displaymenu = Menu_New("Display", "Window,Full window,Full screen");
+  if(displaymenu != NULL)
+     Menu_AddSubMenu(mainmenu, mainmenu_DISPLAY, displaymenu);
+
+ /*
   * (C) 2026 Andrew Youll -- build the Scroll settings submenu in code and
   * attach it to the ">Scroll" entry of the iconbar menu. "Invert" toggles the
   * scroll direction; "Slower"/"Faster" step the scroll speed.
@@ -946,15 +969,17 @@ static void set_menu_shade(BOOL shaded)
   int fullwindow_ticked, fullwindow_shaded;
   int fullscreen_ticked, fullscreen_shaded;
 
-  Menu_GetFlags(mainmenu, mainmenu_WINDOW, &window_ticked, &window_shaded);
-  Menu_GetFlags(mainmenu, mainmenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
-  Menu_GetFlags(mainmenu, mainmenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
+  if(displaymenu == NULL) return;   /* (C) 2026 Andrew Youll */
+
+  Menu_GetFlags(displaymenu, displaymenu_WINDOW, &window_ticked, &window_shaded);
+  Menu_GetFlags(displaymenu, displaymenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
+  Menu_GetFlags(displaymenu, displaymenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
 
   window_shaded = fullwindow_shaded = fullscreen_shaded = (shaded ? 1 : 0);
   
-  Menu_SetFlags(mainmenu, mainmenu_WINDOW, window_ticked, window_shaded);
-  Menu_SetFlags(mainmenu, mainmenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
-  Menu_SetFlags(mainmenu, mainmenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
+  Menu_SetFlags(displaymenu, displaymenu_WINDOW, window_ticked, window_shaded);
+  Menu_SetFlags(displaymenu, displaymenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
+  Menu_SetFlags(displaymenu, displaymenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
 
 }
 
@@ -1056,19 +1081,21 @@ static void validate_screen_modes(void)
   int fullwindow_ticked, fullwindow_shaded;
   int fullscreen_ticked, fullscreen_shaded;
 
+  if(displaymenu == NULL) return;   /* (C) 2026 Andrew Youll */
+
   if(rdpclient_connected){
 
      Display_Validate(&valid_res, &valid_bpp);
 
-     Menu_GetFlags(mainmenu, mainmenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
-     Menu_GetFlags(mainmenu, mainmenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
+     Menu_GetFlags(displaymenu, displaymenu_FULLWINDOW, &fullwindow_ticked, &fullwindow_shaded);
+     Menu_GetFlags(displaymenu, displaymenu_FULLSCREEN, &fullscreen_ticked, &fullscreen_shaded);
 
      fullwindow_shaded = (!valid_res ? 1 : 0);
 
      fullscreen_shaded = (!valid_bpp ? 1 : 0);
   
-     Menu_SetFlags(mainmenu, mainmenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
-     Menu_SetFlags(mainmenu, mainmenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
+     Menu_SetFlags(displaymenu, displaymenu_FULLWINDOW, fullwindow_ticked, fullwindow_shaded);
+     Menu_SetFlags(displaymenu, displaymenu_FULLSCREEN, fullscreen_ticked, fullscreen_shaded);
 
   }
 

@@ -1,10 +1,10 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.92.1)
+# !RDPClient — RISC OS RDP client (32-bit, 0.92.2)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
 compiler, with **mouse scroll-wheel support** added. Base port 0.88 by Andrew
-Sellors; scroll-wheel work © 2026 Andrew Youll. Licensed under the **GNU GPL v2**
-(with the OpenSSL linking exemption) — see `LICENSE`.
+Sellors; scroll-wheel work © 2026 Andrew Youll. Licensed under the **GNU GPL v3**
+(with the OpenSSL linking exemption) — see `LICENSE`. As a derivative of rdesktop 1.6.0 (GPL v3 or later), !RDPClient is GPL v3 — inherited from the upstream codebase, not established by the 32-bit port or scroll-wheel work. Every package since the original RISC OS port (0.88, 2010) had bundled a stale GPL v2 licence *file* by mistake alongside GPL v3 code; this release is a compliance correction of that shipped file (not a relicensing), now carrying the correct GPL v3 text.
 
 This repository is designed for a **100% reproducible build**: everything needed
 to reproduce the exact working binary is here, and the single source of truth is
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.92.1**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.92.2**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -44,7 +44,7 @@ dist_extras/           bundled with the app so a fresh install works:
     ConnectEx Licence History ReadFirst   original-distribution files
 docs/                  REBUILD_RECIPE.md, codechanges.md, DEVELOPER_addendum.md,
                        CHANGELOG.md  (see "Documentation" below)
-LICENSE                GNU GPL v2 (+ OpenSSL exemption) — the app's licence
+LICENSE                GNU GPL v3 (+ OpenSSL exemption) — the app's licence
 ```
 
 Build artefacts (`build/work/`, `build/Built/`, `build/_pkg/`, `*.stale*`,
@@ -157,6 +157,21 @@ objects, which is why a clean rebuild used to regress):
    **DeskLib source** and is baked into the prebuilt `build/DeskLib32`.
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
+
+### 0.92.2 — security hardening, Display submenu, GPL v3
+
+Defence-in-depth for saved connections: the connection **Name** is validated on
+save (letters, digits, space, `-`, `_` only) so it cannot contain RISC OS path
+metacharacters, and every value written into a connection's launch Obey has
+control characters and quotes stripped, so a crafted connection file cannot
+escape its directory or inject a second command. Two clearly-wrong reads of
+server-controlled lengths in the inherited rdesktop core (the redirection-PDU
+username size and the X.509 certificate lengths) are now bounds-checked. The
+three window-mode menu entries are grouped under a single **Display** submenu.
+The bundled licence now carries the correct **GPL v3** text. The build driver
+gained a guard that fails the build if any object imports C99 `snprintf` /
+`vsnprintf` — the symbol that pulls a SharedCLibrary stub chunk the target ROM
+C library cannot initialise (an earlier launch-crash cause).
 
 ### 0.92.1 — connect to more servers (standard-security fallback)
 

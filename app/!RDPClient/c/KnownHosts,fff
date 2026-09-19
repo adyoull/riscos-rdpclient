@@ -1,0 +1,697 @@
+/************************************************************************
+ *                                                                      *
+ *        File: KnownHosts.c                                            *
+ *                                                                      *
+ *     Purpose: SSH-style known-hosts store (data model only; the       *
+ *              manager window and the connect-time capture/dialogs are  *
+ *              separate).  Stores a SHA-256 fingerprint of each         *
+ *              server's identity and detects when it changes.          *
+ *                                                                      *
+ *              Storage is a flat text file, one tab-separated record    *
+ *              per line, at <Choices$Write>.RDPClient.KnownHosts.  It   *
+ *              is deliberately NOT encrypted: on single-user RISC OS    *
+ *              there is nowhere to hide a key from someone who already  *
+ *              has the user's file access, so encryption would be       *
+ *              obfuscation, not protection.  The value of the store is  *
+ *              change-detection (possible MITM / re-installed server),  *
+ *              not secrecy.                                             *
+ *                                                                      *
+ *   RISC OS 5 / 32-bit build additions (C) 2026 Andrew Youll, released  *
+ *   under the same licence as the rest of !RDPClient (GPL v3).          *
+ *                                                                      *
+ ************************************************************************/
+
+#include "DeskLib:Core.h"          /* BOOL, TRUE, FALSE */
+#include "DeskLib:File.h"          /* File_SetType      */
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <stdarg.h>
+
+#include "KnownHosts.h"
+
+#define filetype_TEXT 0xFFF
+
+/* Bounded formatter used instead of the C99 snprintf().  snprintf lives in a
+   newer SharedCLibrary stub chunk (chunk 5) that older ROM SharedCLibrary
+   builds cannot initialise -> the app crashes at launch (LibInit fails, sp=0).
+   vsprintf is the classic C89 entry (chunk 2) and is already linked, so this
+   keeps output bounded without pulling in the extra chunk. */
+static void kh_snprintf(char *buf, int size, const char *fmt, ...)
+{
+   char tmp[512];
+   va_list ap;
+   int n;
+   if(size <= 0) return;
+   va_start(ap, fmt);
+   n = vsprintf(tmp, fmt, ap);
+   va_end(ap);
+   if(n < 0) { buf[0] = '\0'; return; }
+   if(n > size - 1) n = size - 1;
+   memcpy(buf, tmp, (unsigned) n);
+   buf[n] = '\0';
+}
+
+
+/* ==================================================================== *
+ *  SHA-256  (FIPS 180-4).  Self-contained; the linked OpenSSL subset    *
+ *  offers only SHA-1, which is too weak to present as a "fingerprint".  *
+ * ==================================================================== */
+
+typedef struct
+{
+   unsigned int  state[8];
+   unsigned int  bytelen;      /* total bytes hashed (ample for our inputs) */
+   unsigned char buf[64];
+   int           buflen;       /* bytes currently buffered */
+} sha256_ctx;
+
+static const unsigned int sha256_k[64] =
+{
+   0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+   0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+   0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+   0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+   0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+   0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+   0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+   0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
+};
+
+#define ROTR(x,n)  (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void sha256_transform(sha256_ctx *c, const unsigned char *p)
+{
+   unsigned int w[64], a, b, cc, d, e, f, g, h, t1, t2, s0, s1, ch, maj;
+   int i;
+
+   for(i = 0; i < 16; i++)
+      w[i] = ((unsigned int) p[i*4]     << 24) |
+             ((unsigned int) p[i*4 + 1] << 16) |
+             ((unsigned int) p[i*4 + 2] <<  8) |
+             ((unsigned int) p[i*4 + 3]);
+   for(i = 16; i < 64; i++)
+   {
+      s0 = ROTR(w[i-15], 7) ^ ROTR(w[i-15], 18) ^ (w[i-15] >> 3);
+      s1 = ROTR(w[i-2], 17) ^ ROTR(w[i-2], 19) ^ (w[i-2] >> 10);
+      w[i] = w[i-16] + s0 + w[i-7] + s1;
+   }
+
+   a = c->state[0]; b = c->state[1]; cc = c->state[2]; d = c->state[3];
+   e = c->state[4]; f = c->state[5]; g = c->state[6]; h = c->state[7];
+
+   for(i = 0; i < 64; i++)
+   {
+      s1  = ROTR(e, 6) ^ ROTR(e, 11) ^ ROTR(e, 25);
+      ch  = (e & f) ^ ((~e) & g);
+      t1  = h + s1 + ch + sha256_k[i] + w[i];
+      s0  = ROTR(a, 2) ^ ROTR(a, 13) ^ ROTR(a, 22);
+      maj = (a & b) ^ (a & cc) ^ (b & cc);
+      t2  = s0 + maj;
+      h = g; g = f; f = e; e = d + t1; d = cc; cc = b; b = a; a = t1 + t2;
+   }
+
+   c->state[0] += a; c->state[1] += b; c->state[2] += cc; c->state[3] += d;
+   c->state[4] += e; c->state[5] += f; c->state[6] += g; c->state[7] += h;
+}
+
+static void sha256_init(sha256_ctx *c)
+{
+   c->state[0] = 0x6a09e667u; c->state[1] = 0xbb67ae85u;
+   c->state[2] = 0x3c6ef372u; c->state[3] = 0xa54ff53au;
+   c->state[4] = 0x510e527fu; c->state[5] = 0x9b05688cu;
+   c->state[6] = 0x1f83d9abu; c->state[7] = 0x5be0cd19u;
+   c->bytelen = 0;
+   c->buflen  = 0;
+}
+
+static void sha256_update(sha256_ctx *c, const unsigned char *data, int len)
+{
+   int i;
+   for(i = 0; i < len; i++)
+   {
+      c->buf[c->buflen++] = data[i];
+      if(c->buflen == 64)
+      {
+         sha256_transform(c, c->buf);
+         c->buflen = 0;
+      }
+   }
+   c->bytelen += (unsigned int) len;
+}
+
+static void sha256_final(sha256_ctx *c, unsigned char out[32])
+{
+   unsigned int hi, lo;
+   int pad, i;
+
+   hi = c->bytelen >> 29;         /* high 32 bits of (bytelen * 8) */
+   lo = c->bytelen << 3;          /* low  32 bits                  */
+
+   pad = c->buflen;
+   c->buf[pad++] = 0x80;
+   if(pad > 56)
+   {
+      while(pad < 64) c->buf[pad++] = 0;
+      sha256_transform(c, c->buf);
+      pad = 0;
+   }
+   while(pad < 56) c->buf[pad++] = 0;
+   c->buf[56] = (unsigned char)(hi >> 24); c->buf[57] = (unsigned char)(hi >> 16);
+   c->buf[58] = (unsigned char)(hi >>  8); c->buf[59] = (unsigned char)(hi);
+   c->buf[60] = (unsigned char)(lo >> 24); c->buf[61] = (unsigned char)(lo >> 16);
+   c->buf[62] = (unsigned char)(lo >>  8); c->buf[63] = (unsigned char)(lo);
+   sha256_transform(c, c->buf);
+
+   for(i = 0; i < 8; i++)
+   {
+      out[i*4]     = (unsigned char)(c->state[i] >> 24);
+      out[i*4 + 1] = (unsigned char)(c->state[i] >> 16);
+      out[i*4 + 2] = (unsigned char)(c->state[i] >>  8);
+      out[i*4 + 3] = (unsigned char)(c->state[i]);
+   }
+}
+
+/* ==================================================================== */
+
+extern void KnownHosts_Fingerprint(const unsigned char *data, int len,
+                                    char *out, int outsize)
+{
+   static const char hexd[] = "0123456789ABCDEF";
+   unsigned char digest[32];
+   sha256_ctx c;
+   int i, n = 0;
+
+   if(outsize <= 0) return;
+   sha256_init(&c);
+   if(data != NULL && len > 0)
+      sha256_update(&c, data, len);
+   sha256_final(&c, digest);
+
+   for(i = 0; i < 32; i++)
+   {
+      if(i > 0 && n < outsize - 1) out[n++] = ':';
+      if(n < outsize - 1) out[n++] = hexd[(digest[i] >> 4) & 0xf];
+      if(n < outsize - 1) out[n++] = hexd[digest[i] & 0xf];
+   }
+   out[n] = '\0';
+}
+
+/* ---- small helpers ------------------------------------------------- */
+
+static void kh_copy(char *dst, const char *src, int size)
+{
+   if(size <= 0) return;
+   strncpy(dst, src, size - 1);
+   dst[size - 1] = '\0';
+}
+
+/* Copy, replacing control characters (incl. TAB / newline) with spaces so a
+   value can never break the tab-separated record format. */
+static void kh_copy_clean(char *dst, const char *src, int size)
+{
+   int i = 0;
+   if(size <= 0) return;
+   while(src[i] != '\0' && i < size - 1)
+   {
+      unsigned char ch = (unsigned char) src[i];
+      dst[i] = (ch < 0x20 || ch == 0x7f) ? ' ' : (char) ch;
+      i++;
+   }
+   dst[i] = '\0';
+}
+
+static void kh_now(char *buf, int size)
+{
+   time_t t;
+   struct tm *tm;
+   if(size <= 0) return;
+   buf[0] = '\0';
+   t = time(NULL);
+   tm = localtime(&t);
+   if(tm != NULL)
+      kh_snprintf(buf, size, "%04d-%02d-%02d %02d:%02d",
+               tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+               tm->tm_hour, tm->tm_min);
+}
+
+/* Strip trailing CR/LF, then split 'line' on TABs into up to maxf fields
+   (in place).  Returns the number of fields. */
+static int kh_split(char *line, char *fields[], int maxf)
+{
+   int n = 0, len;
+   char *p;
+
+   if(maxf <= 0) return 0;
+   len = (int) strlen(line);
+   while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+      line[--len] = '\0';
+
+   fields[n++] = line;
+   for(p = line; *p != '\0'; p++)
+   {
+      if(*p == '\t')
+      {
+         *p = '\0';
+         if(n < maxf) fields[n++] = p + 1;
+      }
+   }
+   return n;
+}
+
+static const char *kh_disc_mode(int mode)   /* on-disc token */
+{
+   return (mode == knownhosts_MODE_TLS) ? "TLS" : "RC4";
+}
+
+extern const char *KnownHosts_ModeName(int mode)   /* display name */
+{
+   return (mode == knownhosts_MODE_TLS) ? "TLS" : "Standard";
+}
+
+/* ---- whole-store access -------------------------------------------- */
+
+extern int KnownHosts_Load(knownhosts_record *recs, int maxrecs)
+{
+   FILE *f;
+   char  line[512];
+   int   count = 0;
+
+   f = fopen(knownhosts_FILE, "r");
+   if(f == NULL) return 0;
+
+   while(count < maxrecs && fgets(line, sizeof(line), f) != NULL)
+   {
+      char *fld[6];
+      int   nf;
+      knownhosts_record *r;
+
+      if(line[0] == '#' || line[0] == '\n' || line[0] == '\r' || line[0] == '\0')
+         continue;
+
+      nf = kh_split(line, fld, 6);
+      if(nf < 3) continue;                 /* need host, mode, fingerprint */
+
+      r = &recs[count];
+      memset(r, 0, sizeof(*r));
+      kh_copy(r->host, fld[0], knownhosts_HOSTLEN);
+      r->mode = (strcmp(fld[1], "TLS") == 0) ? knownhosts_MODE_TLS
+                                             : knownhosts_MODE_RC4;
+      kh_copy(r->fingerprint, fld[2], knownhosts_FPLEN);
+      if(nf > 3) kh_copy(r->cn,        fld[3], knownhosts_CNLEN);
+      if(nf > 4) kh_copy(r->firstseen, fld[4], knownhosts_DATELEN);
+      if(nf > 5) kh_copy(r->lastseen,  fld[5], knownhosts_DATELEN);
+      count++;
+   }
+
+   fclose(f);
+   return count;
+}
+
+extern BOOL KnownHosts_Save(const knownhosts_record *recs, int count)
+{
+   FILE *f;
+   int   i;
+
+   f = fopen(knownhosts_FILE, "w");
+   if(f == NULL) return FALSE;
+
+   fprintf(f, "#RDPClient KnownHosts v1 -- server identity fingerprints (SHA-256)\n");
+   fprintf(f, "#host:port\tmode\tfingerprint\tcert-CN\tfirst-seen\tlast-seen\n");
+   for(i = 0; i < count; i++)
+      fprintf(f, "%s\t%s\t%s\t%s\t%s\t%s\n",
+              recs[i].host, kh_disc_mode(recs[i].mode), recs[i].fingerprint,
+              recs[i].cn, recs[i].firstseen, recs[i].lastseen);
+
+   fclose(f);
+   File_SetType(knownhosts_FILE, filetype_TEXT);
+   return TRUE;
+}
+
+/* ---- per-connection helpers ---------------------------------------- */
+
+extern int KnownHosts_Check(const char *host, int mode, const char *fingerprint,
+                            char *stored_fp, int stored_fp_size)
+{
+   knownhosts_record recs[knownhosts_MAXHOSTS];
+   int n, i;
+
+   if(stored_fp != NULL && stored_fp_size > 0) stored_fp[0] = '\0';
+   n = KnownHosts_Load(recs, knownhosts_MAXHOSTS);
+   for(i = 0; i < n; i++)
+   {
+      if(recs[i].mode == mode && strcmp(recs[i].host, host) == 0)
+      {
+         if(stored_fp != NULL && stored_fp_size > 0)
+            kh_copy(stored_fp, recs[i].fingerprint, stored_fp_size);
+         return (strcmp(recs[i].fingerprint, fingerprint) == 0)
+                   ? knownhosts_MATCH : knownhosts_CHANGED;
+      }
+   }
+   return knownhosts_NEW;
+}
+
+extern BOOL KnownHosts_Record(const char *host, int mode,
+                              const char *fingerprint, const char *cn)
+{
+   knownhosts_record recs[knownhosts_MAXHOSTS];
+   char now[knownhosts_DATELEN];
+   int  n, i, found = -1;
+
+   n = KnownHosts_Load(recs, knownhosts_MAXHOSTS);
+   kh_now(now, sizeof(now));
+
+   for(i = 0; i < n; i++)
+      if(recs[i].mode == mode && strcmp(recs[i].host, host) == 0)
+      {
+         found = i;
+         break;
+      }
+
+   if(found < 0)
+   {
+      if(n >= knownhosts_MAXHOSTS) return FALSE;      /* store full */
+      found = n++;
+      memset(&recs[found], 0, sizeof(recs[found]));
+      kh_copy(recs[found].host, host, knownhosts_HOSTLEN);
+      recs[found].mode = mode;
+      kh_copy(recs[found].firstseen, now, knownhosts_DATELEN);
+   }
+
+   kh_copy(recs[found].fingerprint, fingerprint, knownhosts_FPLEN);
+   if(cn != NULL) kh_copy_clean(recs[found].cn, cn, knownhosts_CNLEN);
+   else           recs[found].cn[0] = '\0';
+   kh_copy(recs[found].lastseen, now, knownhosts_DATELEN);
+
+   return KnownHosts_Save(recs, n);
+}
+
+extern BOOL KnownHosts_Forget(const char *host, int mode)
+{
+   knownhosts_record recs[knownhosts_MAXHOSTS];
+   int  n, i, w = 0;
+   BOOL removed = FALSE;
+
+   n = KnownHosts_Load(recs, knownhosts_MAXHOSTS);
+   for(i = 0; i < n; i++)
+   {
+      if(recs[i].mode == mode && strcmp(recs[i].host, host) == 0)
+      {
+         removed = TRUE;
+         continue;                        /* drop it */
+      }
+      if(w != i) recs[w] = recs[i];
+      w++;
+   }
+   if(!removed) return FALSE;
+   return KnownHosts_Save(recs, w);
+}
+
+/* ==================================================================== *
+ *  Manager window -- view the known hosts and revoke ("Forget") one.    *
+ *  Built on the "KnownHosts" Wimp template (icon-row list).             *
+ * ==================================================================== */
+
+#include "DeskLib:Window.h"
+#include "DeskLib:Event.h"
+#include "DeskLib:Icon.h"
+#include "DeskLib:Error.h"
+#include "DeskLib:Template.h"
+#include "DeskLib:SWI.h"
+#include "DeskLib:WimpSWIs.h"
+#include "kernel.h"
+
+#define SWI_Wimp_ReportError 0x400DF   /* SWI number; not in DeskLib headers */
+
+static window_handle     kh_window    = NULL;
+static knownhosts_record kh_disp[knownhosts_MAXHOSTS];
+static int               kh_dispcount = 0;
+static int               kh_sel       = -1;
+
+/* (C) 2026 Andrew Youll -- indirected-icon backing store for the code-built
+   manager window (no Wimp template is used, so nothing external can go stale
+   or be missing at start-up). */
+static char kh_valid[]  = "";
+static char kh_hdrbuf[256];
+static char kh_rowbuf[knownhosts_NUMROWS][80];
+static char kh_btnbuf[3][16];   /* Forget / Details / Close labels */
+
+/* OK/Cancel confirmation (mirrors the connection manager's). */
+static BOOL kh_confirm(const char *msg)
+{
+   _kernel_swi_regs r;
+   struct { int errnum; char text[240]; } eb;
+
+   eb.errnum = 0;
+   strncpy(eb.text, msg, sizeof(eb.text) - 1);
+   eb.text[sizeof(eb.text) - 1] = '\0';
+   r.r[0] = (int) &eb;
+   r.r[1] = 0x1 | 0x2 | 0x8;          /* OK + Cancel, no beep */
+   r.r[2] = (int) "RDPClient";
+   if(_kernel_swi(SWI_XOS_Bit | SWI_Wimp_ReportError, &r, &r) != NULL)
+      return FALSE;
+   return (r.r[1] == 1);              /* 1 = OK, 2 = Cancel */
+}
+
+static void kh_fmt_row(const knownhosts_record *r, char *out, int size)
+{
+   char fp[20];
+   int  i;
+   for(i = 0; i < 16 && r->fingerprint[i] != '\0'; i++) fp[i] = r->fingerprint[i];
+   fp[i] = '\0';
+   kh_snprintf(out, size, "%-22s  %-8s  %s...  %s",
+            r->host, KnownHosts_ModeName(r->mode), fp, r->lastseen);
+}
+
+static void kh_populate(void)
+{
+   char buf[256];
+   int  i;
+
+   kh_dispcount = KnownHosts_Load(kh_disp, knownhosts_MAXHOSTS);
+   kh_sel = -1;
+   for(i = 0; i < knownhosts_NUMROWS; i++)
+   {
+      if(i < kh_dispcount)
+      {
+         kh_fmt_row(&kh_disp[i], buf, sizeof(buf));
+         Icon_SetText(kh_window, knownhosts_ICON_ROW0 + i, buf);
+      }
+      else
+         Icon_SetText(kh_window, knownhosts_ICON_ROW0 + i, "");
+      Icon_SetSelect(kh_window, knownhosts_ICON_ROW0 + i, 0);
+   }
+   if(kh_dispcount == 0)
+      strcpy(buf, "No known hosts recorded yet.");
+   else
+      kh_snprintf(buf, sizeof(buf), "%d known host%s%s", kh_dispcount,
+               (kh_dispcount == 1) ? "" : "s",
+               (kh_dispcount > knownhosts_NUMROWS) ? "  (showing first 14)" : "");
+   Icon_SetText(kh_window, knownhosts_ICON_COUNT, buf);
+}
+
+static BOOL kh_click(event_pollblock *event, void *reference)
+{
+   int icon = event->data.mouse.icon;
+
+   if(icon >= knownhosts_ICON_ROW0 &&
+      icon <  knownhosts_ICON_ROW0 + knownhosts_NUMROWS)
+   {
+      int row = icon - knownhosts_ICON_ROW0;
+      if(row < kh_dispcount)
+      {
+         if(kh_sel >= 0)
+            Icon_SetSelect(kh_window, knownhosts_ICON_ROW0 + kh_sel, 0);
+         kh_sel = row;
+         Icon_SetSelect(kh_window, icon, 1);
+      }
+      return TRUE;
+   }
+
+   switch(icon)
+   {
+      case knownhosts_ICON_CLOSE:
+         Window_Hide(kh_window);
+         return TRUE;
+
+      case knownhosts_ICON_FORGET:
+         if(kh_sel >= 0 && kh_sel < kh_dispcount)
+         {
+            char q[200];
+            kh_snprintf(q, sizeof(q),
+               "Forget known host '%s'?  RDPClient will treat it as new and "
+               "ask you to confirm its identity next time.",
+               kh_disp[kh_sel].host);
+            if(kh_confirm(q))
+            {
+               KnownHosts_Forget(kh_disp[kh_sel].host, kh_disp[kh_sel].mode);
+               kh_populate();
+            }
+         }
+         else
+            Error_Report(0, "Select a host in the list first.");
+         return TRUE;
+
+      case knownhosts_ICON_DETAILS:
+         if(kh_sel >= 0 && kh_sel < kh_dispcount)
+         {
+            knownhosts_record *r = &kh_disp[kh_sel];
+            Error_Report(0,
+               "%s  (%s security)\n"
+               "Fingerprint (SHA-256):\n%s\n"
+               "Certificate name: %s\n"
+               "First seen: %s\nLast seen: %s",
+               r->host, KnownHosts_ModeName(r->mode), r->fingerprint,
+               (r->cn[0] != '\0') ? r->cn : "(none)",
+               r->firstseen, r->lastseen);
+         }
+         else
+            Error_Report(0, "Select a host in the list first.");
+         return TRUE;
+   }
+   return FALSE;
+}
+
+/* ---- code-built manager window (no Wimp template needed) -------------- *
+ * (C) 2026 Andrew Youll.  The window and every icon are created in code via
+ * Wimp_CreateWindow / Wimp_CreateIcon, so the application carries no extra
+ * binary template and cannot fail to start because one is missing/invalid.
+ * Icons are created in ascending order, so the Wimp assigns them exactly the
+ * numbers the click handler expects: COUNT=0, ROW0..ROW0+NUMROWS-1, then
+ * FORGET, DETAILS, CLOSE.                                                  */
+
+#define KH_W        1000        /* work-area width (OS units) */
+#define KH_ROWH       44        /* row / button height        */
+#define KH_MARGIN      8
+
+static icon_handle kh_add_icon(int x0, int y0, int x1, int y1,
+                               unsigned int flags,
+                               const char *text, char *indbuf, int indlen,
+                               const char *valid)
+{
+   icon_createblock ic;
+   icon_handle h;
+
+   ic.window = kh_window;
+   ic.icondata.workarearect.min.x = x0;
+   ic.icondata.workarearect.min.y = y0;
+   ic.icondata.workarearect.max.x = x1;
+   ic.icondata.workarearect.max.y = y1;
+   ic.icondata.flags.value = flags;
+
+   if(flags & icon_INDIRECTED)
+   {
+      ic.icondata.data.indirecttext.buffer      = indbuf;
+      ic.icondata.data.indirecttext.validstring = (char *) (valid ? valid : kh_valid);
+      ic.icondata.data.indirecttext.bufflen     = indlen;
+      if(text) { strncpy(indbuf, text, indlen - 1); indbuf[indlen - 1] = '\0'; }
+      else     indbuf[0] = '\0';
+   }
+   else
+   {
+      strncpy(ic.icondata.data.text, text ? text : "", wimp_MAXNAME - 1);
+      ic.icondata.data.text[wimp_MAXNAME - 1] = '\0';
+   }
+   h = -1;
+   Wimp_CreateIcon(&ic, &h);
+   return h;
+}
+
+static BOOL kh_build_window(void)
+{
+   window_block win;
+   int i, bottom, top;
+
+   bottom = -(KH_MARGIN + KH_ROWH                     /* header row */
+              + knownhosts_NUMROWS * KH_ROWH          /* host rows  */
+              + KH_MARGIN + KH_ROWH + KH_MARGIN);     /* button row */
+
+   memset(&win, 0, sizeof(win));
+   win.screenrect.min.x = 300;         win.screenrect.min.y = 300;
+   win.screenrect.max.x = 300 + KH_W;  win.screenrect.max.y = 300 - bottom;
+   win.scroll.x = 0;  win.scroll.y = 0;
+   win.behind   = (window_handle) -1;                 /* open in front */
+   win.flags.value = 0;
+   win.flags.data.moveable   = 1;
+   win.flags.data.autoredraw = 1;
+   win.flags.data.titlebar   = 1;
+   win.flags.data.closeicon  = 1;
+   win.flags.data.backicon   = 1;
+   win.flags.data.newflags   = 1;
+   win.colours.cols.titlefore   = 7;
+   win.colours.cols.titleback   = 2;
+   win.colours.cols.workfore    = 7;
+   win.colours.cols.workback    = 1;
+   win.colours.cols.scrollouter = 3;
+   win.colours.cols.scrollinner = 1;
+   win.colours.cols.titlefocus  = 12;
+   win.colours.cols.extflags    = 0;
+   win.workarearect.min.x = 0;     win.workarearect.max.y = 0;
+   win.workarearect.max.x = KH_W;  win.workarearect.min.y = bottom;
+   win.titleflags.value = icon_TEXT | icon_HCENTRE | icon_VCENTRE |
+                          icon_FILLED | icon_BORDER;
+   win.workflags.value  = 0;
+   win.spritearea = (void *) 1;                       /* Wimp sprite area */
+   win.minsize.x = 200;  win.minsize.y = 100;
+   strncpy(win.title.text, "Known hosts", wimp_MAXNAME - 1);
+   win.title.text[wimp_MAXNAME - 1] = '\0';
+   win.numicons = 0;
+
+   kh_window = NULL;
+   if(Wimp_CreateWindow(&win, &kh_window) != NULL || kh_window == NULL)
+      return FALSE;
+
+   /* icon 0 : header / count line (indirected, left, no clicks) */
+   top = -KH_MARGIN;
+   kh_add_icon(KH_MARGIN, top - KH_ROWH, KH_W - KH_MARGIN, top,
+               icon_TEXT | icon_INDIRECTED | icon_VCENTRE | (7u << 24),
+               "", kh_hdrbuf, (int) sizeof(kh_hdrbuf), kh_valid);
+
+   /* icons 1..NUMROWS : selectable host rows (indirected text, CLICK) */
+   for(i = 0; i < knownhosts_NUMROWS; i++)
+   {
+      top = -(KH_MARGIN + KH_ROWH) - i * KH_ROWH;
+      kh_add_icon(KH_MARGIN, top - KH_ROWH, KH_W - KH_MARGIN, top,
+                  icon_TEXT | icon_INDIRECTED | icon_VCENTRE | icon_FILLED |
+                  (iconbtype_CLICK << 12) | (7u << 24) | (1u << 28),
+                  "", kh_rowbuf[i], (int) sizeof(kh_rowbuf[i]), kh_valid);
+   }
+
+   /* icons NUMROWS+1..NUMROWS+3 : Forget / Details / Close buttons */
+   {
+      unsigned int bf = icon_TEXT | icon_INDIRECTED | icon_HCENTRE |
+                        icon_VCENTRE | icon_FILLED | icon_BORDER |
+                        (iconbtype_CLICK << 12) | (7u << 24) | (1u << 28);
+      top = -(KH_MARGIN + KH_ROWH) - knownhosts_NUMROWS * KH_ROWH - KH_MARGIN;
+      kh_add_icon(KH_MARGIN,               top - KH_ROWH, KH_MARGIN + 190, top,
+                  bf, "Forget",  kh_btnbuf[0], (int) sizeof(kh_btnbuf[0]), "R5,3");
+      kh_add_icon(KH_MARGIN + 200,         top - KH_ROWH, KH_MARGIN + 390, top,
+                  bf, "Details", kh_btnbuf[1], (int) sizeof(kh_btnbuf[1]), "R5,3");
+      kh_add_icon(KH_W - KH_MARGIN - 190,  top - KH_ROWH, KH_W - KH_MARGIN,  top,
+                  bf, "Close",   kh_btnbuf[2], (int) sizeof(kh_btnbuf[2]), "R5,3");
+   }
+   return TRUE;
+}
+
+extern void KnownHostsUI_Init(void)
+{
+   /* The window is built lazily on first open (KnownHostsUI_Open), so nothing
+      here can affect application start-up. */
+   kh_window = NULL;
+}
+
+extern void KnownHostsUI_Open(void)
+{
+   if(kh_window == NULL)
+   {
+      if(!kh_build_window())
+      {
+         Error_Report(0, "Could not create the Known Hosts window.");
+         return;
+      }
+      Event_Claim(event_CLICK, kh_window, event_ANY, kh_click, NULL);
+   }
+   kh_populate();
+   Window_Show(kh_window, open_CENTERED);
+}

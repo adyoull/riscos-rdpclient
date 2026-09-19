@@ -6,7 +6,7 @@
  *                                                                      *
  ************************************************************************/
 /* RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll, released
-   under the same licence as the rest of !RDPClient (GPL), preserving the
+   under the same licence as the rest of !RDPClient (GPL v3), preserving the
    copyright of the original authors. */
 
 #include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */

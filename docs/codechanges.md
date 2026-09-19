@@ -195,6 +195,15 @@ documents the `-v` protocol-trace option.
 
 ---
 
+## 0.92.2 — security hardening + Display submenu + GPL v3 (2026-09-19)
+
+- ConnMgr/ConnEdit: `connmgr_append_clean` (Obey field sanitising) + `connedit_name_ok` (name validation); `sprintf` -> bounded `cm_snprintf`/`ce_snprintf` vsprintf wrappers (NOT C99 `snprintf`, which pulls SharedCLibrary stub chunk 5 -> launch crash).
+- rdesktop core: `process_redirect_pdu` destination size `len+1` (was `strlen` of an uninitialised buffer); `sec_parse_crypt_info` X.509 length bounds checks.
+- RDPClient: Window/Full window/Full screen regrouped under a code-attached `Display` submenu (`mainmenu_*` renumbered, `displaymenu_*` added).
+- KnownHosts module + code-built manager window present but **parked** (AcornSSL exposes no client TLS-cert read API).
+- buildapp.py: chunk-5 guard fails the build if any linked object imports `snprintf`/`vsnprintf` (whole-symbol match).
+- Licence/headers: GPL v3 throughout.
+
 ## 0.92.1 — standard-security fallback + toggle
 
 **`rdesktop/c/iso`** — a new `-S` flag and `g_force_standard` gate the TLS offer

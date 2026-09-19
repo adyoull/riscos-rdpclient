@@ -1,0 +1,112 @@
+/************************************************************************
+ *                                                                      *
+ *        File: KnownHosts.h                                            *
+ *                                                                      *
+ *     Purpose: SSH-style known-hosts store for !RDPClient.  Records    *
+ *              a SHA-256 fingerprint of each server's identity (the    *
+ *              TLS certificate under Enhanced security, or the RSA     *
+ *              host-key modulus under Standard security), so a later   *
+ *              connection to the same server can be checked and the    *
+ *              user warned if the identity has CHANGED (possible MITM  *
+ *              or a legitimately re-installed / re-issued server).     *
+ *                                                                      *
+ *              The fingerprint is the trust anchor; the certificate    *
+ *              Subject CN is stored only as descriptive metadata and   *
+ *              is never part of the trust decision.                    *
+ *                                                                      *
+ *   RISC OS 5 / 32-bit build additions (C) 2026 Andrew Youll, released  *
+ *   under the same licence as the rest of !RDPClient (GPL v3).          *
+ *                                                                      *
+ ************************************************************************/
+
+#ifndef RDPClient_KnownHosts_h
+#define RDPClient_KnownHosts_h
+
+#include "DeskLib:Core.h"          /* BOOL, TRUE, FALSE */
+
+#define knownhosts_MAXHOSTS   128
+#define knownhosts_HOSTLEN    128         /* "server:port" key           */
+#define knownhosts_CNLEN      128         /* certificate Subject CN      */
+#define knownhosts_FPLEN      96          /* SHA-256 as "AA:BB:..:ZZ"+NUL */
+#define knownhosts_DATELEN    24          /* "YYYY-MM-DD HH:MM" + slack  */
+
+/* Security mode a fingerprint was captured under.  A server legitimately
+   presents different identities for Standard vs Enhanced security, so the
+   store is keyed by (host, mode) to avoid false "changed" alarms. */
+#define knownhosts_MODE_RC4   0           /* Standard RDP Security (RSA)  */
+#define knownhosts_MODE_TLS   1           /* Enhanced (TLS) - DER cert    */
+
+/* Result of KnownHosts_Check(). */
+#define knownhosts_NEW        0           /* not seen before -> offer trust */
+#define knownhosts_MATCH      1           /* seen, fingerprint matches       */
+#define knownhosts_CHANGED    2           /* seen, fingerprint DIFFERS -> warn */
+
+/* On-disc store (RISC OS filing-system path; <Choices$Write> is expanded
+   by the C library exactly as the connection manager does). */
+#define knownhosts_FILE  "<Choices$Write>.RDPClient.KnownHosts"
+
+typedef struct
+{
+   char host[knownhosts_HOSTLEN];         /* "server:port" (the key)      */
+   int  mode;                             /* knownhosts_MODE_*            */
+   char fingerprint[knownhosts_FPLEN];    /* SHA-256, upper-case colon-hex */
+   char cn[knownhosts_CNLEN];             /* cert Subject CN, or ""       */
+   char firstseen[knownhosts_DATELEN];
+   char lastseen[knownhosts_DATELEN];
+} knownhosts_record;
+
+/* ---- fingerprint --------------------------------------------------- */
+
+/* SHA-256 of (data,len), formatted as upper-case colon-separated hex
+   ("A1:B2:..:9F") into 'out' (needs knownhosts_FPLEN bytes). */
+extern void KnownHosts_Fingerprint(const unsigned char *data, int len,
+                                    char *out, int outsize);
+
+/* ---- whole-store access (used by the manager window) --------------- */
+
+/* Load every record into 'recs' (up to maxrecs); returns the count. */
+extern int  KnownHosts_Load(knownhosts_record *recs, int maxrecs);
+
+/* Write 'count' records back to the store, replacing it.  TRUE on success. */
+extern BOOL KnownHosts_Save(const knownhosts_record *recs, int count);
+
+/* ---- per-connection helpers (used by the connect path) ------------- */
+
+/* Compare a just-seen (host,mode,fingerprint) against the store.
+   Returns knownhosts_NEW / _MATCH / _CHANGED.  When _CHANGED (or _MATCH),
+   the previously stored fingerprint is copied into 'stored_fp' (if non-NULL)
+   so the caller can show old-vs-new in a warning. */
+extern int  KnownHosts_Check(const char *host, int mode,
+                             const char *fingerprint,
+                             char *stored_fp, int stored_fp_size);
+
+/* Add or update the record for (host,mode): sets first-seen on creation,
+   always refreshes last-seen, stores the fingerprint and CN (cn may be
+   NULL).  Writes the store.  TRUE on success. */
+extern BOOL KnownHosts_Record(const char *host, int mode,
+                              const char *fingerprint, const char *cn);
+
+/* Remove the record for (host,mode) - the "Forget" / revoke action.
+   TRUE if a record existed and was removed. */
+extern BOOL KnownHosts_Forget(const char *host, int mode);
+
+/* Human-readable mode name ("TLS" / "Standard"). */
+extern const char *KnownHosts_ModeName(int mode);
+
+
+/* ---- manager window (view / revoke known hosts) -------------------- */
+
+#define knownhosts_ICON_COUNT    0
+#define knownhosts_ICON_ROW0     1
+#define knownhosts_NUMROWS       14
+#define knownhosts_ICON_FORGET   15
+#define knownhosts_ICON_DETAILS  16
+#define knownhosts_ICON_CLOSE    17
+
+/* Create the manager window and claim its events (call once at startup). */
+extern void KnownHostsUI_Init(void);
+
+/* Populate from the store and open the manager window. */
+extern void KnownHostsUI_Open(void);
+
+#endif

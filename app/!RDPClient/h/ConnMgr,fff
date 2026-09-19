@@ -6,7 +6,7 @@
  *              Obey files (the connection-manager data model).         *
  *                                                                      *
  *   RISC OS 5 / 32-bit build modifications (C) 2026 Andrew Youll,      *
- *   released under the same licence as the rest of !RDPClient (GPL).   *
+ *   released under the same licence as the rest of !RDPClient (GPL v3).   *
  *                                                                      *
  ************************************************************************/
 

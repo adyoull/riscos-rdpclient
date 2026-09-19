@@ -632,6 +632,11 @@ sec_parse_crypt_info(STREAM s, uint32 * rc4_key_size,
 			DEBUG_RDP5(("Ignored certs left: %d\n", certcount));
 			in_uint32_le(s, ignorelen);
 			DEBUG_RDP5(("Ignored Certificate length is %d\n", ignorelen));
+			if (ignorelen > (uint32) (s->end - s->p))
+			{
+				error("Server X509 ignored-cert length exceeds packet\n");
+				return False;
+			}
 			ignorecert = ssl_cert_read(s->p, ignorelen);
 			in_uint8s(s, ignorelen);
 			if (ignorecert == NULL)
@@ -654,6 +659,11 @@ sec_parse_crypt_info(STREAM s, uint32 * rc4_key_size,
 		 */
 		in_uint32_le(s, cacert_len);
 		DEBUG_RDP5(("CA Certificate length is %d\n", cacert_len));
+		if (cacert_len > (uint32) (s->end - s->p))
+		{
+			error("Server CA certificate length exceeds packet\n");
+			return False;
+		}
 		cacert = ssl_cert_read(s->p, cacert_len);
 		in_uint8s(s, cacert_len);
 		if (NULL == cacert)
@@ -663,6 +673,12 @@ sec_parse_crypt_info(STREAM s, uint32 * rc4_key_size,
 		}
 		in_uint32_le(s, cert_len);
 		DEBUG_RDP5(("Certificate length is %d\n", cert_len));
+		if (cert_len > (uint32) (s->end - s->p))
+		{
+			ssl_cert_free(cacert);
+			error("Server certificate length exceeds packet\n");
+			return False;
+		}
 		server_cert = ssl_cert_read(s->p, cert_len);
 		in_uint8s(s, cert_len);
 		if (NULL == server_cert)

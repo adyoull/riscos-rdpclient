@@ -1,3 +1,13 @@
+19-Sep-2026  0.92.2 Security hardening: saved-connection Name validation and
+                    Obey field sanitising, so a crafted connection cannot escape
+                    its directory or inject a launch command; plus two bounds
+                    checks in the core RDP / certificate parsing. The Window /
+                    Full window / Full screen entries are grouped under a
+                    'Display' submenu. Licence: a long-standing GPL
+                    compliance correction -- the code has been GPL v3 since the
+                    original 2010 port, but earlier packages bundled the wrong
+                    GPL v2 licence text; corrected here (not a relicensing).
+
 16-Sep-2026  0.92.1 Connects to more servers. A server set to Standard (legacy)
                     RDP Security only refuses the TLS offer (negotiation failure
                     code 2); instead of failing, the client now retries
