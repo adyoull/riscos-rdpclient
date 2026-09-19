@@ -77,6 +77,31 @@ try:
     ok("Messages: src == repo version line") if a==b else bad("Messages version line","src '%s' != repo '%s'"%(a,b))
 except Exception as e: bad("Messages compare", str(e))
 
+# ---- Licence text: GPL v3, and byte-identical across every shipped copy ----
+# Guards the slip where the licence is updated in one tree but not the
+# build-source trees that assemble_built copies into the release zip.
+LICENCE_COPIES = [
+    ("repo dist_extras Licence,fff", P(REPO,"dist_extras","Licence,fff")),
+    ("repo LICENSE",                 P(REPO,"LICENSE")),
+    ("src  !RDPClient Licence",      os.path.join(SRC,"Licence")),
+    ("scratch dist_extras/Licence",  P("dist_extras","Licence")),
+]
+try:
+    canon_lic = read(P(REPO,"app","!RDPClient","Licence,fff"))
+    if ("version 3 of the License" in canon_lic) or ("General Public License version 3" in canon_lic):
+        ok("Licence: repo app Licence,fff is GPL v3")
+    else:
+        bad("Licence: repo app Licence,fff", "does not carry GPL v3 text")
+    for label, path in LICENCE_COPIES:
+        if not os.path.exists(path):
+            bad("Licence: "+label, "missing file")
+        elif read(path) == canon_lic:
+            ok("Licence: "+label+" == repo app Licence,fff")
+        else:
+            bad("Licence: "+label+" != repo app Licence,fff", "content differs")
+except Exception as e:
+    bad("Licence compare", str(e))
+
 # ---- tracked source files: identical across work / repo / both app_base.zip ----
 SOURCES = [
     ("work/c/Clipboard",      "app/!RDPClient/c/Clipboard,fff",      "c/Clipboard"),
