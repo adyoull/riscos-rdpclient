@@ -102,6 +102,49 @@ try:
 except Exception as e:
     bad("Licence compare", str(e))
 
+# ---- OpenSSL / SSLeay notice: the file ships, is complete, is in sync, and the
+# two required acknowledgements appear in the shipped docs (SSLeay licence
+# requires the acknowledgement in documentation or at startup). ----
+ACK_OSSL = "This product includes software developed by the OpenSSL Project"
+ACK_EAY  = "This product includes cryptographic software written by Eric Young"
+OSSL_COPIES = [
+    ("repo    dist_extras OpenSSL-Licence,fff", P(REPO,"dist_extras","OpenSSL-Licence,fff")),
+    ("scratch dist_extras OpenSSL-Licence",     P("dist_extras","OpenSSL-Licence")),
+    ("Built   OpenSSL-Licence",                 P("Built","OpenSSL-Licence")),
+]
+try:
+    canon_ossl = read(OSSL_COPIES[0][1])
+    need = ["OpenSSL License", "Original SSLeay License", ACK_OSSL, ACK_EAY]
+    miss = [s for s in need if s not in canon_ossl]
+    if miss:
+        bad("OpenSSL notice: repo OpenSSL-Licence,fff", "missing: %s" % ", ".join(miss))
+    else:
+        ok("OpenSSL notice: repo OpenSSL-Licence,fff complete (both licences + both acknowledgements)")
+    for label, path in OSSL_COPIES[1:]:
+        if not os.path.exists(path):
+            bad("OpenSSL notice: "+label, "missing file")
+        elif read(path) == canon_ossl:
+            ok("OpenSSL notice: "+label+" == repo")
+        else:
+            bad("OpenSSL notice: "+label+" != repo", "content differs")
+except Exception as e:
+    bad("OpenSSL notice compare", str(e))
+# acknowledgement reproduced in the shipped !Help and ReadFirst
+for label, path in [
+    ("repo   !Help,fff",            P(REPO,"app","!RDPClient","!Help,fff")),
+    ("src    !Help",                os.path.join(SRC,"!Help")),
+    ("repo   dist_extras ReadFirst,fff", P(REPO,"dist_extras","ReadFirst,fff")),
+    ("scratch dist_extras ReadFirst",    P("dist_extras","ReadFirst")),
+]:
+    try:
+        t = read(path)
+        if ACK_OSSL in t:
+            ok("OpenSSL notice: acknowledgement in "+label)
+        else:
+            bad("OpenSSL notice: "+label, "OpenSSL acknowledgement missing")
+    except Exception as e:
+        bad("OpenSSL notice: "+label, str(e))
+
 # ---- tracked source files: identical across work / repo / both app_base.zip ----
 SOURCES = [
     ("work/c/Clipboard",      "app/!RDPClient/c/Clipboard,fff",      "c/Clipboard"),

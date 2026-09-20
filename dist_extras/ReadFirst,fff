@@ -18,6 +18,22 @@ the computer to allow the installation to take effect.
 DeepKeys © Cerilica Ltd 1999-2003  Contact: <simon@cerilica.com>
 
 
+OpenSSL
+=======
+
+This software includes and is statically linked with the OpenSSL library
+(OpenSSL 0.9.7c):
+
+  This product includes software developed by the OpenSSL Project for use in
+  the OpenSSL Toolkit. (http://www.openssl.org/)
+
+  This product includes cryptographic software written by Eric Young
+  (eay@cryptsoft.com).
+
+See the document "OpenSSL-Licence" for the full OpenSSL and SSLeay licence
+text.
+
+
 Documentation
 =============
 

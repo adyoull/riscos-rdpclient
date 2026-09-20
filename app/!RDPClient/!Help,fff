@@ -27,6 +27,7 @@ Saving the display
 !RDPClient status window
 Known issues
 Serious errors
+Third-party software
 Credits
 The future
 Contacting the author
@@ -917,6 +918,32 @@ Note: a type 20 error is deemed to be an abnormal termination of the
       application. This can be caused by an error in the program or by using the
       <Alt><Break> task kill function to stop the application. If the task kill
       function is used, the type 20 error can be safely ignored.
+
+********************************************************************************
+
+Third-party software:
+~~~~~~~~~~~~~~~~~~~~~
+
+!RDPClient includes and is statically linked with the OpenSSL cryptographic
+library (OpenSSL 0.9.7c), used for its RC4, RSA, SHA and message-digest
+routines. In accordance with the OpenSSL Licence and the original SSLeay
+licence, the following acknowledgements are given:
+
+  This product includes software developed by the OpenSSL Project for use in
+  the OpenSSL Toolkit. (http://www.openssl.org/)
+
+  This product includes cryptographic software written by Eric Young
+  (eay@cryptsoft.com).
+
+OpenSSL 0.9.7c is distributed under a dual licence: the OpenSSL Licence and
+the original SSLeay licence. Both are reproduced in full in the document
+"OpenSSL-Licence" supplied in this archive. The GPL v3 text in the "Licence"
+document carries an explicit exception permitting this program to be linked
+with the OpenSSL library.
+
+The DeepKeys module (see 'Compatibility and prerequisites' above) is
+redistributed with permission of Cerilica Ltd; see its own documentation in
+the 'DeepKeys' directory for details.
 
 ********************************************************************************
 
