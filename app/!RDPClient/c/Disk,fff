@@ -79,6 +79,7 @@
 #define MMM_TYPE_DOT_EXTN 3   /* file extension (NO dot), passed as a pointer   */
 
 extern RDPDR_DEVICE g_rdpdr_device[];
+extern int g_debug_trace;   /* -v / RDPClient$Debug: gates the RDPDiskLog */
 
 FILEINFO g_fileinfo[MAX_OPEN_FILES];
 RD_BOOL g_notify_stamp = False;
@@ -118,6 +119,7 @@ DEVICE_FNS disk_fns = {
 static void disk_log(const char *line)
 {
   FILE *f = NULL;
+  if(!g_debug_trace) return;   /* diagnostics only: -v or 'Set RDPClient$Debug 1' */
   if(g_disk_logpath[0] != '\0') f = fopen(g_disk_logpath, "a");
   if(f == NULL) f = fopen("<Wimp$ScrapDir>.RDPDiskLog", "a");
   if(f == NULL) f = fopen("<RDPClient$Dir>.RDPDiskLog", "a");
