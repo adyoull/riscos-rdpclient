@@ -158,6 +158,25 @@ objects, which is why a clean rebuild used to regress):
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
 
+---
+
+### 0.93 — shared drive (RISC OS folder ↔ remote session)
+
+A RISC OS directory can be shared with the remote session as a network drive
+(`\\tsclient\RISCOS` on Windows; mounted into the session filesystem on macOS /
+NuoRDS), so files move both ways — browse it, copy off and on, open, rename and
+delete. RISC OS filetypes map to Windows extensions via the system **MimeMap**
+module (with a built-in fallback table), spaces in names are preserved, and file
+dates are shown correctly on both sides; files that store the extension in the
+leafname (e.g. `MyFile/pdf`) open too. Enable it with `-r disk:NAME=<RISC OS
+path>`, or set it in the connection editor's new **Shared folder** field by
+dragging a folder onto it. Under the hood this ports the POSIX backing layer of
+rdesktop's `disk.c` onto RISC OS FileSwitch (`OS_File` / `OS_GBPB` / stdio),
+keeping the NT filesystem semantics on the wire unchanged; the `-r disk:` option
+is listed in the startup log view.
+
+---
+
 ### 0.92.2 — security hardening, Display submenu, GPL v3
 
 Defence-in-depth for saved connections: the connection **Name** is validated on
@@ -172,6 +191,8 @@ The bundled licence now carries the correct **GPL v3** text. The build driver
 gained a guard that fails the build if any object imports C99 `snprintf` /
 `vsnprintf` — the symbol that pulls a SharedCLibrary stub chunk the target ROM
 C library cannot initialise (an earlier launch-crash cause).
+
+---
 
 ### 0.92.1 — connect to more servers (standard-security fallback)
 
@@ -188,6 +209,8 @@ and a checkbox in the connection editor — to force Standard security explicitl
 (useful for probing an old server, or on a trusted LAN). And the RDP negotiation
 trace (the TLS offer and the server's selected protocol) is now shown by the
 `-v` option / `RDPClient$Debug`, having previously been compile-time only.
+
+---
 
 ### 0.92.0 — connection manager
 
@@ -212,6 +235,8 @@ sent correctly (previously full screen never actually engaged) — and the start
 banner now credits both the original RISC OS port (Andrew Sellors, 2004–2010)
 and the 32-bit update (Andrew Youll, 2026), and lists the `-v` trace option.
 The connection manager lives in its own `ConnMgr` / `ConnEdit` source modules.
+
+---
 
 ### 0.91.1 — Windows RDP-over-TLS fix (anti-MITM) + protocol trace
 
@@ -243,6 +268,8 @@ file). TLS errors now also report AcornSSL's own message instead of a bare
 `errno`. Note that **SNI is deliberately not sent**: it would switch on mbedTLS
 certificate name-checking, which breaks the self-signed certificates Windows RDP
 uses by default when connecting by IP or a non-matching name.
+
+---
 
 ### 0.91 — RDP-over-TLS (AcornSSL)
 
@@ -356,4 +383,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.92`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.93`; wheel scrolls the remote.
