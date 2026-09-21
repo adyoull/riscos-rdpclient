@@ -16,6 +16,25 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.93 — 2026-09-21
+
+A shared drive between RISC OS and the remote Windows session, plus a
+drag-and-drop **Shared folder** field in the connection editor.
+
+### Added
+
+- **Shared drive (drive redirection).** A RISC OS directory can be shared with
+  the remote session as a network drive (`\\tsclient\RISCOS`). Browse it in
+  Windows Explorer and move files both ways — copy off and on, open, rename and
+  delete. RISC OS filetypes map to Windows extensions via the system **MimeMap**
+  module (with a built-in fallback table), spaces in names are preserved, and
+  correct file dates are shown on both sides. Files stored on RISC OS with the
+  extension in the leafname (e.g. `MyFile/pdf`) open correctly from Windows too.
+  Enable with `-r disk:NAME=<RISC OS path>`.
+- **Shared folder in the connection editor.** Drag a folder from the Filer onto
+  the editor to set it as the shared drive; it is saved with the connection.
+  The `-r disk:` option is also listed in the startup log view.
+
 ## 0.92.2 — 2026-09-19
 
 Security hardening, a **Display** submenu grouping the window-mode entries, a

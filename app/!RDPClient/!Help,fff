@@ -990,6 +990,19 @@ Any other suggestions will be gladly accepted.
 Version history:
 ~~~~~~~~~~~~~~~
 
+0.93 (21-Sep-2026)
+  * Shared drive. A RISC OS directory can now be shared with the remote Windows
+    session as a network drive (\\tsclient\RISCOS), for moving files both ways.
+    Browse it in Windows Explorer; files copy off and on, open, rename and
+    delete. RISC OS filetypes map to Windows extensions (via the system MimeMap
+    module, with a built-in fallback table), spaces in names are preserved, and
+    correct file dates are shown on both sides. Files stored on RISC OS with the
+    extension in their name (e.g. "MyFile/pdf") open correctly from Windows too.
+    Enable it with '-r disk:NAME=<RISC OS path>', or set it in the connection
+    editor.
+  * The connection editor gains a 'Shared folder' field: drag a folder from the
+    Filer onto the editor to share it, and it is saved with the connection.
+
 0.92.2 (19-Sep-2026)
   * Security hardening. Saved-connection input is validated and sanitised: the
     connection Name is restricted to safe characters, and field values are

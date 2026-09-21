@@ -2,14 +2,15 @@
  *                                                                      *
  *        File: Disk.c                                                  *
  *                                                                      *
- *     Purpose: Disc interface to rdesktop.                             *
+ *     Purpose: Disc interface to rdesktop (rdpdr DEVICE_TYPE_DISK).     *
+ *              RISC OS port of rdesktop disk.c: NT filesystem shim      *
+ *              mapped onto FileSwitch (_kernel_osfile/osfind/osgbpb).   *
+ *              Wire formats ported verbatim from upstream rdesktop.     *
  *                                                                      *
  ************************************************************************/
 
-
-#include "kernel.h"                    /* clib kernel functions           */
-#include "MySWIs.h"                    /* SWI no defs                     */
-
+#include "kernel.h"                    /* _kernel_os* file primitives     */
+#include "MySWIs.h"
 
 #include <stddef.h>
 #include <ctype.h>
@@ -19,8 +20,6 @@
 #include <limits.h>
 #include <time.h>
 
-/*#include <socklib.h>*/
-
 #include "rdesktop/rdesktop.h"
 
 #define FILE_ATTRIBUTE_READONLY			0x00000001
@@ -28,46 +27,18 @@
 #define FILE_ATTRIBUTE_SYSTEM			0x00000004
 #define FILE_ATTRIBUTE_DIRECTORY		0x00000010
 #define FILE_ATTRIBUTE_ARCHIVE			0x00000020
-#define FILE_ATTRIBUTE_DEVICE			0x00000040
-#define FILE_ATTRIBUTE_UNKNOWNXXX0		0x00000060	/* ??? ACTION i.e. 0x860 == compress this file ? */
 #define FILE_ATTRIBUTE_NORMAL			0x00000080
-#define FILE_ATTRIBUTE_TEMPORARY		0x00000100
-#define FILE_ATTRIBUTE_SPARSE_FILE		0x00000200
-#define FILE_ATTRIBUTE_REPARSE_POINT		0x00000400
-#define FILE_ATTRIBUTE_COMPRESSED		0x00000800
-#define FILE_ATTRIBUTE_OFFLINE			0x00001000
-#define FILE_ATTRIBUTE_NOT_CONTENT_INDEXED	0x00002000
-#define FILE_ATTRIBUTE_ENCRYPTED		0x00004000
 
-#define FILE_FLAG_OPEN_NO_RECALL		0x00100000
-#define FILE_FLAG_OPEN_REPARSE_POINT		0x00200000
-#define FILE_FLAG_POSIX_SEMANTICS		0x01000000
-#define FILE_FLAG_BACKUP_SEMANTICS		0x02000000	/* sometimes used to create a directory */
+#define FILE_FLAG_BACKUP_SEMANTICS		0x02000000
 #define FILE_FLAG_DELETE_ON_CLOSE		0x04000000
-#define FILE_FLAG_SEQUENTIAL_SCAN		0x08000000
-#define FILE_FLAG_RANDOM_ACCESS			0x10000000
-#define FILE_FLAG_NO_BUFFERING			0x20000000
-#define FILE_FLAG_OVERLAPPED			0x40000000
-#define FILE_FLAG_WRITE_THROUGH			0x80000000
-
-#define FILE_SHARE_READ				0x01
-#define FILE_SHARE_WRITE			0x02
-#define FILE_SHARE_DELETE			0x04
-
-#define FILE_BASIC_INFORMATION			0x04
-#define FILE_STANDARD_INFORMATION		0x05
 
 #define FS_CASE_SENSITIVE			0x00000001
 #define FS_CASE_IS_PRESERVED			0x00000002
-#define FS_UNICODE_STORED_ON_DISK		0x00000004
-#define FS_PERSISTENT_ACLS			0x00000008
-#define FS_FILE_COMPRESSION			0x00000010
-#define FS_VOLUME_QUOTAS			0x00000020
-#define FS_SUPPORTS_SPARSE_FILES		0x00000040
-#define FS_SUPPORTS_REPARSE_POINTS		0x00000080
-#define FS_SUPPORTS_REMOTE_STORAGE		0X00000100
-#define FS_VOL_IS_COMPRESSED			0x00008000
-#define FILE_READ_ONLY_VOLUME			0x00080000
+
+#define GENERIC_WRITE				0x40000000
+#define GENERIC_ALL				0x10000000
+#define FILE_WRITE_DATA				0x00000002
+#define FILE_APPEND_DATA			0x00000004
 
 #define OPEN_EXISTING				1
 #define CREATE_NEW				2
@@ -75,31 +46,53 @@
 #define TRUNCATE_EXISTING			4
 #define CREATE_ALWAYS				5
 
-#define GENERIC_READ				0x80000000
-#define GENERIC_WRITE				0x40000000
-#define GENERIC_EXECUTE				0x20000000
-#define GENERIC_ALL				0x10000000
+/* NT FILE_INFORMATION_CLASS (on-the-wire values Windows sends) */
+#define FileDirectoryInformation		1
+#define FileFullDirectoryInformation		2
+#define FileBothDirectoryInformation		3
+#define FileBasicInformation			4
+#define FileStandardInformation			5
+#define FileRenameInformation			10
+#define FileNamesInformation			12
+#define FileDispositionInformation		13
+#define FileAllocationInformation		19
+#define FileEndOfFileInformation		20
 
-#define ERROR_FILE_NOT_FOUND			2L
-#define ERROR_ALREADY_EXISTS			183L
+/* NT FS_INFORMATION_CLASS */
+#define FileFsVolumeInformation			1
+#define FileFsSizeInformation			3
+#define FileFsDeviceInformation			4
+#define FileFsAttributeInformation		5
+#define FileFsFullSizeInformation		7
 
-#define	MAX_OPEN_FILES	0x100
+#define MAX_OPEN_FILES	0x100
+
+#ifndef XOS_Bit
+#define XOS_Bit 0x20000
+#endif
+#define MimeMap_Translate 0x50B00   /* SWI: RISC OS filetype <-> MIME <-> extn */
+/* MimeMap_Translate formats (per 3QD RISC OS docs): R0=in fmt, R1=in data/ptr,
+   R2=out fmt, R3=pointer to a >=128-byte output buffer for string results (and
+   the result on exit).  Getting R3 wrong (uninitialised) makes the module write
+   the result string to a stray address -> data abort. */
+#define MMM_TYPE_RISCOS   0   /* RISC OS filetype, passed/returned as an int   */
+#define MMM_TYPE_DOT_EXTN 3   /* file extension (NO dot), passed as a pointer   */
 
 extern RDPDR_DEVICE g_rdpdr_device[];
 
 FILEINFO g_fileinfo[MAX_OPEN_FILES];
 RD_BOOL g_notify_stamp = False;
 
-typedef struct
-{
-	char name[PATH_MAX];
-	char label[PATH_MAX];
-	unsigned long serial;
-	char type[PATH_MAX];
-} FsInfoType;
+/* per-handle RISC OS state (parallel to g_fileinfo, indexed by handle) */
+static int g_disk_inuse[MAX_OPEN_FILES];
+static int g_disk_osfh[MAX_OPEN_FILES];   /* RISC OS file handle (0 = none/dir) */
+static int g_disk_isdir[MAX_OPEN_FILES];
+static int g_disk_diroff[MAX_OPEN_FILES]; /* directory enumeration continuation  */
+static int g_disk_settype[MAX_OPEN_FILES]; /* filetype to set on close (-1=none) */
+static FILE *g_disk_fp[MAX_OPEN_FILES];   /* open file (stdio), NULL for dir/none  */
+static char g_disk_logpath[256];          /* writable log location (share parent)  */
 
-/* although these routines are static, they are called from outside using */
-/* the disk_fns function pointer table */
+/* forward decls */
 static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 sharemode,
                             uint32 create_disposition, uint32 flags_and_attributes,
                             char *filename, RD_NTHANDLE *handle);
@@ -110,7 +103,6 @@ static RD_NTSTATUS Disk_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, ui
                            uint32 *result);
 static RD_NTSTATUS Disk_DeviceControl(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out);
 
-/* function table for disc control routines */
 DEVICE_FNS disk_fns = {
   Disk_Create,
   Disk_Close,
@@ -120,15 +112,322 @@ DEVICE_FNS disk_fns = {
 };
 
 /******************************************************************************
+ *                              diagnostics                                   *
+ ******************************************************************************/
+
+static void disk_log(const char *line)
+{
+  FILE *f = NULL;
+  if(g_disk_logpath[0] != '\0') f = fopen(g_disk_logpath, "a");
+  if(f == NULL) f = fopen("<Wimp$ScrapDir>.RDPDiskLog", "a");
+  if(f == NULL) f = fopen("<RDPClient$Dir>.RDPDiskLog", "a");
+  if(f != NULL){ fputs(line, f); fputc('\n', f); fclose(f); }
+}
+
+static void disk_log_hex(const char *tag, const unsigned char *p, int n)
+{
+  char line[160];
+  int i, o;
+  o = sprintf(line, "%s:", tag);
+  for(i = 0; i < n && o < (int)sizeof(line) - 4; i++)
+     o += sprintf(line + o, " %02X", p[i]);
+  disk_log(line);
+}
+
+/******************************************************************************
+ *                          RISC OS helpers                                   *
+ ******************************************************************************/
+
+/* Map a Windows-relative path (already '/'-separated) to a full RISC OS path
+   under the share root. RISC OS foreign-name convention: swap '.' and '/'. */
+static int disk_ext_to_type(const char *e);
+static const char *disk_type_to_ext(int t);
+static int disk_filetype_of(int load);
+
+/* Map a Windows-relative path to a full RISC OS path under the share root
+   (swap '.'<->'/'). If the final leaf ends in a known extension, that extension
+   is stripped (it is carried as the RISC OS filetype instead) and the filetype
+   is returned; otherwise -1. */
+static int disk_win_to_riscos(uint32 device, const char *win, char *out,
+                              int outsz, int strip)
+{
+  const char *root = g_rdpdr_device[device].local_path;
+  char wbuf[PATH_MAX];
+  char *leaf, *dot;
+  int o = 0, i, ftype = -1;
+
+  while(*win == '/') win++;
+  strncpy(wbuf, win, sizeof(wbuf) - 1);
+  wbuf[sizeof(wbuf) - 1] = '\0';
+
+  /* strip a known extension from the final leaf (encoded as a filetype instead) */
+  if(strip){
+     leaf = strrchr(wbuf, '/');
+     leaf = (leaf != NULL) ? leaf + 1 : wbuf;
+     dot  = strrchr(leaf, '.');
+     if(dot != NULL && dot[1] != '\0'){
+        ftype = disk_ext_to_type(dot + 1);
+        if(ftype >= 0)
+           *dot = '\0';              /* drop ".ext" - encoded as filetype */
+     }
+  }
+
+  for(i = 0; root != NULL && root[i] != '\0' && o < outsz - 1; i++)
+     out[o++] = root[i];
+
+  if(wbuf[0] != '\0' && o < outsz - 1) out[o++] = '.';
+
+  for(i = 0; wbuf[i] != '\0' && o < outsz - 1; i++){
+     char c = wbuf[i];
+     if(c == '/') c = '.';
+     else if(c == '.') c = '/';
+     else if(c == ' ') c = (char)0xA0;   /* RISC OS hard space */
+     out[o++] = c;
+  }
+  out[o] = '\0';
+  return(ftype);
+}
+
+/* Back-compat wrapper: map a Windows name to a RISC OS path, stripping a known
+   trailing extension (carried as the filetype) and returning that filetype. */
+static int disk_riscos_path(uint32 device, const char *win, char *out, int outsz)
+{
+  return disk_win_to_riscos(device, win, out, outsz, 1);
+}
+
+/* Read catalogue info. Returns object type (0 none,1 file,2 dir,3 image) or -1. */
+static int disk_stat(const char *path, int *length, int *attr, int *load, int *exec)
+{
+  _kernel_osfile_block b;
+  int type = _kernel_osfile(5, path, &b);
+  if(type == _kernel_ERROR) return(-1);
+  if(length != NULL) *length = b.start;
+  if(attr   != NULL) *attr   = b.end;
+  if(load   != NULL) *load   = b.load;
+  if(exec   != NULL) *exec   = b.exec;
+  return(type);
+}
+
+/* Add the 64-bit value (vhi:vlo) into the accumulator (*hi:*lo). */
+static void disk_add64(uint32 *hi, uint32 *lo, uint32 vhi, uint32 vlo)
+{
+  uint32 nlo = *lo + vlo;
+  *lo = nlo;
+  *hi = *hi + vhi + (nlo < vlo ? 1u : 0u);
+}
+
+/* RISC OS load/exec (5-byte centiseconds since 1900) -> Windows FILETIME
+   (100ns since 1601), returned as two 32-bit words. Non-dated files -> 0.
+   64-bit maths done by hand in 32-bit pieces (no C99 long long). */
+#define FT1900_LO 0xFDE04000u
+#define FT1900_HI 0x014F373Bu
+static void disk_filetime(int load, int exec, uint32 *ftlow, uint32 *fthigh)
+{
+  uint32 hi = 0, lo = 0;
+  uint32 cs_lo, cs_hi, bytes[5];
+  int i;
+
+  if(((uint32)load & 0xFFF00000u) != 0xFFF00000u){  /* not typed+dated */
+     *ftlow = 0; *fthigh = 0;
+     return;
+  }
+
+  cs_lo = (uint32)exec;
+  cs_hi = (uint32)load & 0xFFu;
+  bytes[0] =  cs_lo        & 0xFF;
+  bytes[1] = (cs_lo >> 8)  & 0xFF;
+  bytes[2] = (cs_lo >> 16) & 0xFF;
+  bytes[3] = (cs_lo >> 24) & 0xFF;
+  bytes[4] =  cs_hi        & 0xFF;
+
+  for(i = 0; i < 5; i++){
+     uint32 pp = bytes[i] * 100000u;   /* centisecond byte * 10^5 ns/cs units */
+     int sh = 8 * i;
+     uint32 vhi, vlo;
+     if(sh == 0)       { vlo = pp;        vhi = 0; }
+     else if(sh < 32)  { vlo = pp << sh;  vhi = pp >> (32 - sh); }
+     else              { vlo = 0;         vhi = pp << (sh - 32); }
+     disk_add64(&hi, &lo, vhi, vlo);
+  }
+  disk_add64(&hi, &lo, FT1900_HI, FT1900_LO);
+
+  *ftlow  = lo;
+  *fthigh = hi;
+}
+
+/* case-insensitive string compare */
+static int disk_ieq(const char *a, const char *b)
+{
+  while(*a != '\0' && *b != '\0'){
+     if(tolower((unsigned char)*a) != tolower((unsigned char)*b)) return(0);
+     a++; b++;
+  }
+  return(*a == *b);
+}
+
+/* RISC OS filetype held in a load address, or -1 if the file is untyped. */
+static int disk_filetype_of(int load)
+{
+  if(((unsigned)load & 0xFFF00000u) == 0xFFF00000u)
+     return(((unsigned)load >> 8) & 0xFFF);
+  return(-1);
+}
+
+/* filetype -> DOS extension (NULL if we should not add one). */
+static const char *disk_type_to_ext(int t)
+{
+  static char mmret[16];       /* returned to the caller (persists) */
+  char mmbuf[132];             /* MimeMap output buffer (needs >= 128 bytes) */
+  _kernel_swi_regs r;
+
+  /* Prefer the system MimeMap table (matches the rest of RISC OS). */
+  r.r[0] = MMM_TYPE_RISCOS;    /* input:  RISC OS filetype (int)        */
+  r.r[1] = t;
+  r.r[2] = MMM_TYPE_DOT_EXTN;  /* output: filename extension (no dot)   */
+  r.r[3] = (int) mmbuf;        /* output buffer (mandatory for strings) */
+  mmbuf[0] = '\0';
+  if(_kernel_swi(MimeMap_Translate | XOS_Bit, &r, &r) == NULL && r.r[3] != 0){
+     const char *sp = (const char *)r.r[3];
+     int i = 0;
+     if(*sp == '.') sp++;      /* defensive: format 3 has no dot */
+     while(sp[i] != '\0' && i < (int)sizeof(mmret) - 1){ mmret[i] = sp[i]; i++; }
+     mmret[i] = '\0';
+     if(mmret[0] != '\0') return(mmret);
+  }
+
+  /* fallback: built-in common types */
+  switch(t){
+     case 0xFFF: return("txt");
+     case 0xFF5: return("ps");
+     case 0xADF: return("pdf");
+     case 0xFAF: return("html");
+     case 0xF80: return("xml");
+     case 0xDFE: return("csv");
+     case 0xDDC: return("zip");
+     case 0xC85: return("jpg");
+     case 0xB60: return("png");
+     case 0x695: return("gif");
+     case 0x69C: return("bmp");
+     case 0xAFF: return("draw");
+     case 0xFF9: return("spr");
+     case 0xBBC: return("bas");
+     case 0xFB4: return("doc");
+     case 0xDB0: return("rtf");
+     default:    return(NULL);
+  }
+}
+
+/* DOS extension -> filetype, or -1 if unknown. */
+static int disk_ext_to_type(const char *e)
+{
+  char obuf[132];              /* output buffer (unused for an int result) */
+  _kernel_swi_regs r;
+
+  /* Prefer the system MimeMap table. */
+  r.r[0] = MMM_TYPE_DOT_EXTN;   /* input:  filename extension (no dot), ptr */
+  r.r[1] = (int)e;
+  r.r[2] = MMM_TYPE_RISCOS;     /* output: RISC OS filetype (int)           */
+  r.r[3] = (int) obuf;          /* buffer supplied for safety               */
+  if(_kernel_swi(MimeMap_Translate | XOS_Bit, &r, &r) == NULL)
+     return(r.r[3] & 0xFFF);
+
+  /* fallback: built-in common types */
+  if(disk_ieq(e,"txt") || disk_ieq(e,"text") || disk_ieq(e,"log")) return(0xFFF);
+  if(disk_ieq(e,"ps")  || disk_ieq(e,"eps"))  return(0xFF5);
+  if(disk_ieq(e,"pdf"))                        return(0xADF);
+  if(disk_ieq(e,"htm") || disk_ieq(e,"html"))  return(0xFAF);
+  if(disk_ieq(e,"xml"))                        return(0xF80);
+  if(disk_ieq(e,"csv"))                        return(0xDFE);
+  if(disk_ieq(e,"zip"))                        return(0xDDC);
+  if(disk_ieq(e,"jpg") || disk_ieq(e,"jpeg"))  return(0xC85);
+  if(disk_ieq(e,"png"))                        return(0xB60);
+  if(disk_ieq(e,"gif"))                        return(0x695);
+  if(disk_ieq(e,"bmp"))                        return(0x69C);
+  if(disk_ieq(e,"draw"))                       return(0xAFF);
+  if(disk_ieq(e,"spr"))                        return(0xFF9);
+  if(disk_ieq(e,"rtf"))                        return(0xDB0);
+  if(disk_ieq(e,"doc"))                        return(0xFB4);
+  return(-1);
+}
+
+/* Write a NUL-less UTF-16LE rendering of an 8-bit string; returns bytes. */
+static int disk_out_unistr(STREAM out, const char *s)
+{
+  int n = 0;
+  while(*s != '\0'){
+     out_uint8(out, (uint8)*s);
+     out_uint8(out, 0);
+     s++;
+     n += 2;
+  }
+  return(n);
+}
+
+static int disk_get_free_handle(void)
+{
+  int i;
+  for(i = 1; i < MAX_OPEN_FILES; i++)
+     if(!g_disk_inuse[i]) return(i);
+  return(-1);
+}
+
+/******************************************************************************
  *                            extern routines                                 *
  ******************************************************************************/
 
 extern void Disk_Init(void)
 {
- /*
-  * initialisation to be done on startup
-  */
+  int i;
+  for(i = 0; i < MAX_OPEN_FILES; i++){
+     g_disk_inuse[i] = 0;
+     g_disk_osfh[i]  = 0;
+     g_disk_isdir[i] = 0;
+     g_disk_diroff[i] = 0;
+     g_disk_settype[i] = -1;
+     g_disk_fp[i] = NULL;
+  }
+}
 
+/* -r disk:NAME=<riscos-path>  e.g.  -r disk:RISCOS=ADFS::4.$.RDPShare */
+int disk_enum_devices(uint32 *id, char *optarg)
+{
+  char *eq, *name, *path;
+  char l[128];
+
+  if(*optarg == ':') optarg++;
+
+  eq = strchr(optarg, '=');
+  if(eq == NULL) return(0);          /* need NAME=path */
+  *eq = '\0';
+  name = optarg;
+  path = eq + 1;
+
+  if(*name == '\0' || *path == '\0') return(0);
+
+  memset(g_rdpdr_device[*id].name, 0, 8);
+  strncpy(g_rdpdr_device[*id].name, name, 7);
+
+  g_rdpdr_device[*id].device_type  = DEVICE_TYPE_DISK;
+  g_rdpdr_device[*id].pdevice_data = NULL;
+  g_rdpdr_device[*id].local_path   = xstrdup(path);
+  g_rdpdr_device[*id].handle       = 0;
+
+  /* log to the directory ABOVE the share (writable disc, not inside the share) */
+  {
+     char *lastdot;
+     strncpy(g_disk_logpath, path, sizeof(g_disk_logpath) - 12);
+     g_disk_logpath[sizeof(g_disk_logpath) - 12] = '\0';
+     lastdot = strrchr(g_disk_logpath, '.');
+     if(lastdot != NULL) *lastdot = '\0';
+     strcat(g_disk_logpath, ".RDPDiskLog");
+  }
+
+  sprintf(l, "enum: disk '%s' -> '%s' (device %lu)",
+          g_rdpdr_device[*id].name, path, (unsigned long)*id);
+  disk_log(l);
+
+  (*id)++;
+  return(1);
 }
 
 /******************************************************************************/
@@ -137,17 +436,117 @@ static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 share
                                uint32 create_disposition, uint32 flags_and_attributes,
                                char *filename, RD_NTHANDLE *handle)
 {
- /*
-  * Initialise connection to disc drive
-  */
-  fprintf(stderr, "Called Disk_Create(device_id=%li, accessmask=%li, sharemode=%li, create_disposition=%li, flags_and_attributes=%li, filename='%s', handle=%li, *handle=%li)\n", device_id, accessmask, sharemode, create_disposition, flags_and_attributes, filename, handle, *handle);
+  char path[PATH_MAX];
+  char l[PATH_MAX + 64];
+  int type, h, isdir = 0, ftype, created = 0;
+  RD_BOOL want_dir, want_write;
+  FILE *fp = NULL;
 
- /* return STATUS_ACCESS_DENIED */
+  /* Windows NTFS alternate data streams ("name:Zone.Identifier") - not real
+     files; RISC OS has no equivalent, report as absent. */
+  if(strchr(filename, ':') != NULL)
+     return(RD_STATUS_NO_SUCH_FILE);
 
- /*
-  * Return success state
-  */
-//  *handle = 0;
+  ftype = disk_riscos_path(device_id, filename, path, sizeof(path));
+  type = disk_stat(path, NULL, NULL, NULL, NULL);
+
+  /* Some RISC OS files hold the extension in their leafname (e.g. "MyFile/pdf",
+     shown to Windows as "MyFile.pdf") rather than as a filetype.  If the
+     extension-stripped name does not exist, retry with the extension kept so
+     these files open; the name already carries the type, so don't re-stamp. */
+  if(type == 0){
+     char rawpath[PATH_MAX];
+     int  rawtype;
+     disk_win_to_riscos(device_id, filename, rawpath, sizeof(rawpath), 0);
+     rawtype = disk_stat(rawpath, NULL, NULL, NULL, NULL);
+     if(rawtype != 0){
+        strncpy(path, rawpath, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        type  = rawtype;
+        ftype = -1;
+     }
+  }
+
+  want_dir = (flags_and_attributes & FILE_FLAG_BACKUP_SEMANTICS) ? True : False;
+  if(type == 2 || type == 3) want_dir = True;
+
+  want_write = (accessmask & (GENERIC_WRITE | GENERIC_ALL |
+                              FILE_WRITE_DATA | FILE_APPEND_DATA)) ? True : False;
+
+  if(want_dir || filename[0] == '\0' ||
+     (filename[0] == '/' && filename[1] == '\0')){
+     _kernel_osfile_block b;
+     isdir = 1;
+     if(type == 0 &&
+        (create_disposition == CREATE_NEW || create_disposition == CREATE_ALWAYS ||
+         create_disposition == OPEN_ALWAYS)){
+        b.start = 0;
+        _kernel_osfile(8, path, &b);       /* create directory */
+     }
+  }
+  else{
+     switch(create_disposition){
+        case CREATE_NEW:
+           if(type != 0) return(RD_STATUS_OBJECT_NAME_COLLISION);
+           fp = fopen(path, "w+b"); created = 1;
+           break;
+        case CREATE_ALWAYS:
+           fp = fopen(path, "w+b"); created = 1;
+           break;
+        case OPEN_EXISTING:
+           if(type == 0) return(RD_STATUS_NO_SUCH_FILE);
+           fp = fopen(path, want_write ? "r+b" : "rb");
+           break;
+        case OPEN_ALWAYS:
+           if(type == 0){ fp = fopen(path, "w+b"); created = 1; }
+           else           fp = fopen(path, want_write ? "r+b" : "rb");
+           break;
+        case TRUNCATE_EXISTING:
+           if(type == 0) return(RD_STATUS_NO_SUCH_FILE);
+           fp = fopen(path, "w+b");
+           break;
+        default:
+           fp = fopen(path, want_write ? "r+b" : "rb");
+           break;
+     }
+     if(fp == NULL) fp = fopen(path, "rb");   /* fall back read-only */
+     if(fp == NULL){
+        char le[PATH_MAX + 128];
+        _kernel_oserror *e = _kernel_last_oserror();
+        sprintf(le, "create: OPEN FAILED '%s' disp=%lu ww=%d err=%d '%s'",
+                path, (unsigned long)create_disposition, (int)want_write,
+                e ? e->errnum : 0, e ? e->errmess : "(none)");
+        disk_log(le);
+        return(RD_STATUS_ACCESS_DENIED);
+     }
+  }
+
+  h = disk_get_free_handle();
+  if(h < 0){
+     if(fp != NULL) fclose(fp);
+     return(RD_STATUS_ACCESS_DENIED);
+  }
+
+  g_disk_inuse[h]  = 1;
+  g_disk_fp[h]     = fp;
+  g_disk_isdir[h]  = isdir;
+  g_disk_diroff[h] = 0;
+  g_disk_settype[h] = (isdir || !created) ? -1 : ftype;  /* stamp only new files */
+
+  g_fileinfo[h].device_id            = device_id;
+  g_fileinfo[h].accessmask           = accessmask;
+  g_fileinfo[h].flags_and_attributes = flags_and_attributes;
+  g_fileinfo[h].delete_on_close      = False;
+  g_fileinfo[h].pattern[0]           = '\0';
+  strncpy(g_fileinfo[h].path, path, PATH_MAX - 1);
+  g_fileinfo[h].path[PATH_MAX - 1]   = '\0';
+
+  *handle = (RD_NTHANDLE)h;
+
+  sprintf(l, "create: '%s' type=%d disp=%lu -> handle %d%s",
+          path, type, (unsigned long)create_disposition, h, isdir ? " [dir]" : "");
+  disk_log(l);
+
   return(RD_STATUS_SUCCESS);
 }
 
@@ -155,11 +554,41 @@ static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 share
 
 static RD_NTSTATUS Disk_Close(RD_NTHANDLE handle)
 {
- /*
-  * Close connetion to disc drive
-  */
-  fprintf(stderr, "Called Disk_Close(handle=%li)\n", handle);
+  int h = (int)handle;
 
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
+     return(RD_STATUS_INVALID_HANDLE);
+
+  if(g_disk_fp[h] != NULL){
+     fclose(g_disk_fp[h]);
+     g_disk_fp[h] = NULL;
+  }
+
+  /* stamp the RISC OS filetype derived from the Windows extension */
+  if(!g_disk_isdir[h] && g_disk_settype[h] >= 0){
+     _kernel_osfile_block b;
+     b.load = g_disk_settype[h];
+     _kernel_osfile(18, g_fileinfo[h].path, &b);   /* set filetype */
+     g_disk_settype[h] = -1;
+  }
+
+  if(g_fileinfo[h].delete_on_close){
+     if(g_disk_isdir[h]){
+        _kernel_osfile_block b;
+        _kernel_osfile(6, g_fileinfo[h].path, &b);   /* delete object */
+     }
+     else
+        remove(g_fileinfo[h].path);
+  }
+
+  {
+     char l[80];
+     sprintf(l, "close: h=%d", h);
+     disk_log(l);
+  }
+
+  g_disk_inuse[h] = 0;
+  g_fileinfo[h].device_id = 0xFFFFFFFF;   /* invalidate for rdpdr_handle_ok */
   return(RD_STATUS_SUCCESS);
 }
 
@@ -168,11 +597,25 @@ static RD_NTSTATUS Disk_Close(RD_NTHANDLE handle)
 static RD_NTSTATUS Disk_Read(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
                              uint32 *result)
 {
- /*
-  */
-  fprintf(stderr, "Called Disk_Read(handle=%li, data=%li, *data=%c, length=%li, offset=%li)\n", handle, data, *data, length, offset);
+  int h = (int)handle;
+  FILE *fp;
 
   *result = 0;
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h] || g_disk_fp[h] == NULL)
+     return(RD_STATUS_INVALID_HANDLE);
+
+  fp = g_disk_fp[h];
+  clearerr(fp);
+  if(fseek(fp, (long)offset, SEEK_SET) != 0)
+     return(RD_STATUS_ACCESS_DENIED);
+  *result = (uint32)fread(data, 1, (size_t)length, fp);
+
+  {
+     char l[96];
+     sprintf(l, "read: h=%d len=%lu off=%lu got=%lu",
+             h, (unsigned long)length, (unsigned long)offset, (unsigned long)*result);
+     disk_log(l);
+  }
   return(RD_STATUS_SUCCESS);
 }
 
@@ -181,11 +624,26 @@ static RD_NTSTATUS Disk_Read(RD_NTHANDLE handle, uint8 *data, uint32 length, uin
 static RD_NTSTATUS Disk_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, uint32 offset,
                               uint32 *result)
 {
- /*
-  */
-  fprintf(stderr, "Called Disk_Write(handle=%li, data=%li, length=%li, offset=%li)\n", handle, data, length, offset);
+  int h = (int)handle;
+  FILE *fp;
 
   *result = 0;
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h] || g_disk_fp[h] == NULL)
+     return(RD_STATUS_INVALID_HANDLE);
+
+  fp = g_disk_fp[h];
+  clearerr(fp);
+  if(fseek(fp, (long)offset, SEEK_SET) != 0)
+     return(RD_STATUS_ACCESS_DENIED);
+  *result = (uint32)fwrite(data, 1, (size_t)length, fp);
+  fflush(fp);
+
+  {
+     char l[96];
+     sprintf(l, "write: h=%d len=%lu off=%lu put=%lu",
+             h, (unsigned long)length, (unsigned long)offset, (unsigned long)*result);
+     disk_log(l);
+  }
   return(RD_STATUS_SUCCESS);
 }
 
@@ -193,11 +651,6 @@ static RD_NTSTATUS Disk_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, ui
 
 static RD_NTSTATUS Disk_DeviceControl(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 {
- /*
-  * Read and Write various configuration parameters
-  */
-  fprintf(stderr, "Called Disk_DeviceControl(handle=%li, request=%li)\n", handle, request);
-
   return(RD_STATUS_SUCCESS);
 }
 
@@ -205,7 +658,47 @@ static RD_NTSTATUS Disk_DeviceControl(RD_NTHANDLE handle, uint32 request, STREAM
 
 extern RD_NTSTATUS disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 {
+  int h = (int)handle, type, len = 0, attr = 0, load = 0, exec = 0;
+  uint32 fattr, ftlow, fthigh;
 
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h]){
+     out_uint8(out, 0);
+     return(RD_STATUS_INVALID_HANDLE);
+  }
+
+  type = disk_stat(g_fileinfo[h].path, &len, &attr, &load, &exec);
+  if(type < 0){
+     out_uint8(out, 0);
+     return(RD_STATUS_ACCESS_DENIED);
+  }
+
+  fattr = 0;
+  if(type == 2 || type == 3) fattr |= FILE_ATTRIBUTE_DIRECTORY;
+  else if(attr & 0x08)       fattr |= FILE_ATTRIBUTE_READONLY;   /* locked file */
+  if(!fattr)                 fattr |= FILE_ATTRIBUTE_NORMAL;
+
+  disk_filetime(load, exec, &ftlow, &fthigh);
+
+  switch(info_class){
+     case FileBasicInformation:
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* creation */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* access   */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* write    */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* change   */
+        out_uint32_le(out, fattr);
+        break;
+
+     case FileStandardInformation:
+        out_uint32_le(out, (uint32)len); out_uint32_le(out, 0);  /* alloc  */
+        out_uint32_le(out, (uint32)len); out_uint32_le(out, 0);  /* eof    */
+        out_uint32_le(out, 1);                                   /* nlinks */
+        out_uint8(out, 0);                                       /* delete pending */
+        out_uint8(out, (type == 2 || type == 3) ? 1 : 0);        /* directory */
+        break;
+
+     default:
+        return(RD_STATUS_INVALID_PARAMETER);
+  }
   return(RD_STATUS_SUCCESS);
 }
 
@@ -213,7 +706,62 @@ extern RD_NTSTATUS disk_query_information(RD_NTHANDLE handle, uint32 info_class,
 
 extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM out)
 {
+  int h = (int)handle;
+  uint32 length;
+  char newname[PATH_MAX], fullpath[PATH_MAX];
 
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
+     return(RD_STATUS_INVALID_HANDLE);
+
+  {
+     char l[96];
+     sprintf(l, "setinfo: h=%d ic=%lu", h, (unsigned long)info_class);
+     disk_log(l);
+  }
+
+  switch(info_class){
+     case FileBasicInformation:
+     case FileAllocationInformation:
+        return(RD_STATUS_SUCCESS);            /* accept, no-op */
+
+     case FileRenameInformation:
+        in_uint8s(in, 4);                     /* replace-if-exists + root dir */
+        in_uint8s(in, 0x1a);                  /* padding */
+        in_uint32_le(in, length);
+        if(length == 0 || (length / 2) >= (PATH_MAX - 1))
+           return(RD_STATUS_INVALID_PARAMETER);
+        rdp_in_unistr(in, newname, sizeof(newname), length);
+        {
+           char *p;
+           while((p = strchr(newname, '\\')) != NULL) *p = '/';
+        }
+        disk_riscos_path(g_fileinfo[h].device_id, newname, fullpath, sizeof(fullpath));
+        if(rename(g_fileinfo[h].path, fullpath) != 0)
+           return(RD_STATUS_ACCESS_DENIED);
+        strncpy(g_fileinfo[h].path, fullpath, PATH_MAX - 1);
+        g_fileinfo[h].path[PATH_MAX - 1] = '\0';
+        break;
+
+     case FileDispositionInformation:
+        g_fileinfo[h].delete_on_close = True;
+        break;
+
+     case FileEndOfFileInformation:
+        in_uint8s(in, 28);
+        in_uint32_le(in, length);
+        /* pre-extend so Windows' out-of-order writes land within the file */
+        if(g_disk_fp[h] != NULL && length > 0){
+           clearerr(g_disk_fp[h]);
+           if(fseek(g_disk_fp[h], (long)length - 1, SEEK_SET) == 0){
+              fputc(0, g_disk_fp[h]);
+              fflush(g_disk_fp[h]);
+           }
+        }
+        return(RD_STATUS_SUCCESS);
+
+     default:
+        return(RD_STATUS_INVALID_PARAMETER);
+  }
   return(RD_STATUS_SUCCESS);
 }
 
@@ -221,7 +769,6 @@ extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, S
 
 extern RD_NTSTATUS disk_check_notify(RD_NTHANDLE handle)
 {
-
   return(RD_STATUS_SUCCESS);
 }
 
@@ -229,7 +776,6 @@ extern RD_NTSTATUS disk_check_notify(RD_NTHANDLE handle)
 
 extern RD_NTSTATUS disk_create_notify(RD_NTHANDLE handle, uint32 info_class)
 {
-
   return(RD_STATUS_SUCCESS);
 }
 
@@ -237,7 +783,56 @@ extern RD_NTSTATUS disk_create_notify(RD_NTHANDLE handle, uint32 info_class)
 
 extern RD_NTSTATUS disk_query_volume_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 {
+  int h = (int)handle;
+  const char *label;
+  int lblbytes, typebytes;
 
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
+     return(RD_STATUS_INVALID_HANDLE);
+
+  label = g_rdpdr_device[g_fileinfo[h].device_id].name;
+
+  switch(info_class){
+     case FileFsVolumeInformation:
+        lblbytes = 2 * strlen(label);
+        out_uint32_le(out, 0); out_uint32_le(out, 0);   /* creation time */
+        out_uint32_le(out, 0x52495343);                 /* serial 'RISC' */
+        out_uint32_le(out, (uint32)lblbytes);
+        out_uint8(out, 0);                               /* supports objects */
+        disk_out_unistr(out, label);
+        break;
+
+     case FileFsSizeInformation:
+        out_uint32_le(out, 0x00100000); out_uint32_le(out, 0);   /* total units */
+        out_uint32_le(out, 0x00080000); out_uint32_le(out, 0);   /* free units  */
+        out_uint32_le(out, 1);                                   /* sec/unit    */
+        out_uint32_le(out, 0x200);                               /* bytes/sec   */
+        break;
+
+     case FileFsFullSizeInformation:
+        out_uint32_le(out, 0x00100000); out_uint32_le(out, 0);   /* total       */
+        out_uint32_le(out, 0x00080000); out_uint32_le(out, 0);   /* caller avail */
+        out_uint32_le(out, 0x00080000); out_uint32_le(out, 0);   /* free        */
+        out_uint32_le(out, 1);
+        out_uint32_le(out, 0x200);
+        break;
+
+     case FileFsAttributeInformation:
+        typebytes = 2 * strlen("RISCOS");
+        out_uint32_le(out, FS_CASE_SENSITIVE | FS_CASE_IS_PRESERVED);
+        out_uint32_le(out, 255);                         /* max component len */
+        out_uint32_le(out, (uint32)typebytes);
+        disk_out_unistr(out, "RISCOS");
+        break;
+
+     case FileFsDeviceInformation:
+        out_uint32_le(out, 0x00000007);                  /* FILE_DEVICE_DISK */
+        out_uint32_le(out, 0);                           /* characteristics  */
+        break;
+
+     default:
+        return(RD_STATUS_INVALID_PARAMETER);
+  }
   return(RD_STATUS_SUCCESS);
 }
 
@@ -245,15 +840,160 @@ extern RD_NTSTATUS disk_query_volume_information(RD_NTHANDLE handle, uint32 info
 
 extern RD_NTSTATUS disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREAM out)
 {
+  int h = (int)handle, r;
+  _kernel_osgbpb_block blk;
+  char entrybuf[300];
+  char winname[300];
+  char childpath[PATH_MAX * 2];
+  char *name;
+  int elen, eattr, etype, eload, eexec, i;
+  uint32 fattr, namelen, ftlow, fthigh;
 
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
+     return(RD_STATUS_INVALID_HANDLE);
+
+  if(pattern != NULL && pattern[0] != '\0'){
+     char *leaf = strrchr(pattern, '/');
+     int i, o = 0;
+     leaf = (leaf != NULL) ? leaf + 1 : pattern;
+     for(i = 0; leaf[i] != '\0' && o < (int)sizeof(g_fileinfo[h].pattern) - 1; i++){
+        char c = leaf[i];
+        if(c == '.') c = '/';
+        else if(c == '?') c = '#';
+        g_fileinfo[h].pattern[o++] = c;
+     }
+     g_fileinfo[h].pattern[o] = '\0';
+     g_disk_diroff[h] = 0;
+  }
+
+  if(g_disk_diroff[h] == -1)
+     return(RD_STATUS_NO_MORE_FILES);
+
+  /* Read one leaf NAME at a time (OS_GBPB 9), then stat the child for its
+     type/size/attributes. Robust vs the raw reason-10 record layout. Loop
+     past any non-matching batch so we do not stop the listing early. */
+  do {
+     memset(entrybuf, 0, sizeof(entrybuf));
+     blk.dataptr  = entrybuf;
+     blk.nbytes   = 1;                    /* one name */
+     blk.fileptr  = g_disk_diroff[h];     /* continuation offset */
+     blk.buf_len  = sizeof(entrybuf);
+     blk.wild_fld = (g_fileinfo[h].pattern[0] != '\0' &&
+                     strcmp(g_fileinfo[h].pattern, "*") != 0)
+                    ? g_fileinfo[h].pattern : NULL;
+
+     r = _kernel_osgbpb(9, (unsigned)g_fileinfo[h].path, &blk);   /* names only */
+     if(r == _kernel_ERROR)
+        return(RD_STATUS_NO_SUCH_FILE);
+     g_disk_diroff[h] = blk.fileptr;
+  } while(entrybuf[0] == '\0' && g_disk_diroff[h] != -1);
+
+  if(entrybuf[0] == '\0')
+     return(RD_STATUS_NO_MORE_FILES);
+
+  /* stat the child (path uses the RISC OS leaf, i.e. with '/') */
+  sprintf(childpath, "%s.%s", g_fileinfo[h].path, entrybuf);
+  eload = 0;
+  etype = disk_stat(childpath, &elen, &eattr, &eload, &eexec);
+  if(etype < 0){ etype = 1; elen = 0; eattr = 3; eload = 0; }
+
+  /* name Windows sees: RISC OS leaf ('/'->'.'), plus a DOS extension derived
+     from the RISC OS filetype so Windows can honour it (mimetype). */
+  {
+     int wi = 0;
+     const char *ext;
+     for(i = 0; entrybuf[i] != '\0' && wi < (int)sizeof(winname) - 8; i++){
+        char c = entrybuf[i];
+        if(c == '/') c = '.';
+        else if((unsigned char)c == 0xA0) c = ' ';   /* hard space -> space */
+        winname[wi++] = c;
+     }
+     winname[wi] = '\0';
+     if(etype == 1){
+        ext = disk_type_to_ext(disk_filetype_of(eload));
+        if(ext != NULL){
+           int el = (int)strlen(ext);
+           int bl = wi;
+           /* only append if not already ending in ".ext" */
+           if(!(bl > el && winname[bl - el - 1] == '.' &&
+                disk_ieq(winname + bl - el, ext))){
+              winname[wi++] = '.';
+              strcpy(winname + wi, ext);
+              wi += el;
+           }
+        }
+     }
+  }
+  name = winname;
+
+  {
+     char l[PATH_MAX * 3];
+     sprintf(l, "qdir: leaf='%s' -> win='%s' type=%d len=%d nextoff=%d",
+             entrybuf, name, etype, elen, g_disk_diroff[h]);
+     disk_log(l);
+  }
+
+  fattr = 0;
+  if(etype == 2 || etype == 3) fattr |= FILE_ATTRIBUTE_DIRECTORY;
+  else if(eattr & 0x08)        fattr |= FILE_ATTRIBUTE_READONLY;   /* locked */
+  if(!fattr)                   fattr |= FILE_ATTRIBUTE_NORMAL;
+  namelen = 2 * strlen(name);
+
+  disk_filetime(eload, eexec, &ftlow, &fthigh);
+
+  out_uint32_le(out, 0);   /* NextEntryOffset */
+  out_uint32_le(out, 0);   /* FileIndex       */
+
+  switch(info_class){
+     case FileBothDirectoryInformation:
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* create */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* access */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* write  */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* change */
+        out_uint32_le(out, (uint32)elen); out_uint32_le(out, 0);   /* eof   */
+        out_uint32_le(out, (uint32)elen); out_uint32_le(out, 0);   /* alloc */
+        out_uint32_le(out, fattr);
+        out_uint32_le(out, namelen);
+        out_uint32_le(out, 0);          /* EaSize */
+        out_uint8(out, 0);              /* ShortNameLength */
+        out_uint8s(out, 24);            /* ShortName */
+        disk_out_unistr(out, name);
+        break;
+
+     case FileDirectoryInformation:
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, (uint32)elen); out_uint32_le(out, 0);
+        out_uint32_le(out, (uint32)elen); out_uint32_le(out, 0);
+        out_uint32_le(out, fattr);
+        out_uint32_le(out, namelen);
+        disk_out_unistr(out, name);
+        break;
+
+     case FileFullDirectoryInformation:
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);
+        out_uint32_le(out, (uint32)elen); out_uint32_le(out, 0);
+        out_uint32_le(out, (uint32)elen); out_uint32_le(out, 0);
+        out_uint32_le(out, fattr);
+        out_uint32_le(out, namelen);
+        out_uint32_le(out, 0);          /* EaSize */
+        disk_out_unistr(out, name);
+        break;
+
+     case FileNamesInformation:
+        out_uint32_le(out, namelen);
+        disk_out_unistr(out, name);
+        break;
+
+     default:
+        return(RD_STATUS_INVALID_PARAMETER);
+  }
   return(RD_STATUS_SUCCESS);
 }
 
-/******************************************************************************
- *                                  handlers                                  *
- ******************************************************************************/
-
-/******************************************************************************
- *                                  routines                                  *
- ******************************************************************************/
-
+/******************************************************************************/

@@ -405,7 +405,7 @@ rdpdr_process_irp(STREAM s)
 		case DEVICE_TYPE_DISK:
 
 			fns = &disk_fns;
-			rw_blocking = False;
+			rw_blocking = True;	/* RISC OS file I/O is synchronous */
 			break;
 
 		case DEVICE_TYPE_SCARD:

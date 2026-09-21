@@ -16,6 +16,7 @@
 #include "DeskLib:Core.h"
 #include "DeskLib:Error.h"
 #include "DeskLib:Event.h"
+#include "DeskLib:EventMsg.h"    /* Wimp Message dispatch (folder drop) */
 #include "DeskLib:Icon.h"
 #include "DeskLib:KeyCodes.h"
 #include "DeskLib:Menu.h"
@@ -70,6 +71,17 @@ static menu_ptr            connedit_menu_col   = NULL;
 static menu_ptr            connedit_menu_disp  = NULL;
 static menu_ptr            connedit_menu_speed = NULL;
 
+/* Shared-folder field.  This row is added below the action buttons at run time
+   (it is not in the binary template), so its icon handle is whatever
+   Wimp_CreateIcon returns; its text is indirected into these statics.  A folder
+   dragged from the Filer onto the editor drops its path in here.
+   (C) 2026 Andrew Youll */
+static icon_handle         connedit_disk_icon   = -1;
+static char                connedit_disk_buf[connmgr_STRLEN] = "";
+static char                connedit_disk_val[]    = "R2";           /* border */
+static char                connedit_disk_lbltxt[] = "Shared folder";
+static char                connedit_disk_lblval[] = "";
+
 /* connection manager: dynamic "Connections" submenu (C) 2026 Andrew Youll */
 static menu_ptr            connmenu        = NULL;   /* rebuilt on each menu open */
 static menu_ptr            connmenu_action = NULL;   /* shared Connect/Edit/Delete */
@@ -87,6 +99,8 @@ static void connedit_do_connect(const connmgr_connection *c);
 static void ConnEdit_OpenNew(void);
 static void ConnEdit_OpenEdit(const connmgr_connection *c);
 static void connmgr_do_action(const char *name, int action);
+static void connedit_create_disk_field(void);
+static BOOL connedit_dataload(event_pollblock *event, void *reference);
 
 /******************************************************************************
  *  Connection editor   (C) 2026 Andrew Youll                                 *
@@ -191,6 +205,8 @@ static void connedit_populate(const connmgr_connection *c)
   Icon_SetSelect(connedit_window, connedit_OPT_COMPRESS, c->compression ? 1 : 0);
   Icon_SetSelect(connedit_window, connedit_OPT_RDP4,     c->rdp4        ? 1 : 0);
   Icon_SetSelect(connedit_window, connedit_OPT_STD,      c->force_standard ? 1 : 0);
+  if(connedit_disk_icon >= 0)
+     Icon_SetText(connedit_window, connedit_disk_icon, c->disk_path);
 }
 
 /* Read the writable fields and radio icons back into connedit_rec.  The pop-up
@@ -218,6 +234,8 @@ static void connedit_read_fields(void)
   connedit_rec.compression = Icon_GetSelect(connedit_window, connedit_OPT_COMPRESS) ? TRUE : FALSE;
   connedit_rec.rdp4        = Icon_GetSelect(connedit_window, connedit_OPT_RDP4)     ? TRUE : FALSE;
   connedit_rec.force_standard = Icon_GetSelect(connedit_window, connedit_OPT_STD)   ? TRUE : FALSE;
+  if(connedit_disk_icon >= 0)
+     Icon_GetText(connedit_window, connedit_disk_icon, connedit_rec.disk_path);
 }
 
 /* Bounded formatter used instead of the C99 snprintf().  snprintf pulls in an
@@ -539,10 +557,94 @@ extern void ConnEdit_RebuildMenu(menu_ptr mainmenu, int connect_item)
 }
 
 
+/* Add the "Shared folder" label and its writable path field at run time, in the
+   row freed up below the last option (the action buttons were moved down one row
+   in the ConnEdit template to make space).  Keeping this out of the binary
+   template avoids re-flowing every icon's indirected-data offset by hand.
+   (C) 2026 Andrew Youll */
+static void connedit_create_disk_field(void)
+{
+  icon_createblock ic;
+  icon_handle      h;
+
+  /* label, matching the other left-hand field captions */
+  ic.window = connedit_window;
+  ic.icondata.workarearect.min.x =  16;
+  ic.icondata.workarearect.min.y = -882;
+  ic.icondata.workarearect.max.x = 250;   /* wide enough for 'Shared folder' */
+  ic.icondata.workarearect.max.y = -830;
+  ic.icondata.flags.value = icon_TEXT | icon_INDIRECTED | icon_VCENTRE |
+                            (7u << 24);
+  ic.icondata.data.indirecttext.buffer      = connedit_disk_lbltxt;
+  ic.icondata.data.indirecttext.validstring = connedit_disk_lblval;
+  ic.icondata.data.indirecttext.bufflen     = sizeof(connedit_disk_lbltxt);
+  (void) Wimp_CreateIcon(&ic, &h);
+
+  /* writable path field / folder-drop target */
+  ic.window = connedit_window;
+  ic.icondata.workarearect.min.x = 256;   /* clear of the wider label */
+  ic.icondata.workarearect.min.y = -882;
+  ic.icondata.workarearect.max.x = 660;
+  ic.icondata.workarearect.max.y = -830;
+  ic.icondata.flags.value = icon_TEXT | icon_INDIRECTED | icon_VCENTRE |
+                            icon_FILLED | icon_BORDER |
+                            (iconbtype_WRITABLE << 12) | (7u << 24);
+  connedit_disk_buf[0] = '\0';
+  ic.icondata.data.indirecttext.buffer      = connedit_disk_buf;
+  ic.icondata.data.indirecttext.validstring = connedit_disk_val;
+  ic.icondata.data.indirecttext.bufflen     = sizeof(connedit_disk_buf);
+  if(Wimp_CreateIcon(&ic, &h) == NULL)
+     connedit_disk_icon = h;
+}
+
+/* Accept a folder dragged from the Filer onto the editor and use it as the
+   connection's shared folder.  For an object that already exists on disc the
+   Filer sends Message_DataLoad directly, so we copy the pathname into the
+   shared-folder field and acknowledge with DataLoadAck.  (C) 2026 Andrew Youll */
+static BOOL connedit_dataload(event_pollblock *event, void *reference)
+{
+  message_block block;
+  int ftype;
+
+  if(event->data.message.header.action != message_DATALOAD)
+     return(FALSE);
+
+  /* only our (open) editor window; let anything else fall through */
+  if(connedit_window == 0 ||
+     event->data.message.data.dataload.window != connedit_window)
+     return(FALSE);
+
+  ftype = event->data.message.data.dataload.filetype;
+
+  if(ftype != 0x1000 && ftype != 0x2000)      /* &1000 dir, &2000 application */
+  {
+     Error_Report(0, "Drop a folder here to share it with the remote computer.");
+  }
+  else if(connedit_disk_icon >= 0)
+  {
+     Icon_SetText(connedit_window, connedit_disk_icon,
+                  event->data.message.data.dataload.filename);
+     strncpy(connedit_rec.disk_path,
+             event->data.message.data.dataload.filename,
+             sizeof(connedit_rec.disk_path) - 1);
+     connedit_rec.disk_path[sizeof(connedit_rec.disk_path) - 1] = '\0';
+  }
+
+  /* acknowledge (identical block, ref chained) so the Filer completes */
+  memcpy(&block, &(event->data), sizeof(message_block));
+  block.header.yourref = event->data.message.header.myref;
+  block.header.action  = message_DATALOADACK;
+  Wimp_SendMessage(event_USERMESSAGE, &block,
+                   event->data.message.header.sender, 0);
+
+  return(TRUE);
+}
+
 /* Create the editor window and its pop-up menus, and claim their events. */
 extern void ConnEdit_Init(void)
 {
   connedit_window = Window_Create("ConnEdit", template_TITLEMIN);
+  connedit_create_disk_field();
   connedit_menu_res   = Menu_New("Resolution",
      "Same as RISC OS|800 x 600,1024 x 768,1152 x 864,1280 x 720,1280 x 1024,1440 x 900,1680 x 1050,1920 x 1080");
   connedit_menu_col   = Menu_New("Colours", "Same as RISC OS|256 colours,Thousands,Millions,Millions+");
@@ -552,6 +654,7 @@ extern void ConnEdit_Init(void)
   Event_Claim(event_CLICK, connedit_window, event_ANY, connedit_click, NULL);
   Event_Claim(event_KEY,   connedit_window, event_ANY, connedit_key, NULL);
   Event_Claim(event_MENU,  event_ANY, event_ANY, connedit_menuchoice, NULL);
+  EventMsg_Claim(message_DATALOAD, event_ANY, connedit_dataload, NULL);
   /* PARKED 2026-09-19: KnownHostsUI_Init(); */
 }
 

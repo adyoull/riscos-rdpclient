@@ -453,9 +453,14 @@ extern int RDesktop_Main(int argc, char *argv[])
                  Clipboard_SetMode(clipboard_ACTIVE);
               }
            }
+           else if(strncmp("clipfile", optarg, 8) == 0){
+              /* opt-in: pull files copied on the server clipboard down to
+                 <Wimp$ScrapDir>.RDPClient.Recv (needs clipboard active too). */
+              Clipboard_SetFileMode(True);
+           }
            else if(strncmp("disk", optarg, 4) == 0){
-              /* -r disk:h:=/mnt/floppy */
-//              disk_enum_devices(&g_num_devices, optarg + 4);
+              /* -r disk:NAME=<riscos-path>  e.g. -r disk:RISCOS=ADFS::4.$.Share */
+              disk_enum_devices(&g_num_devices, optarg + 4);
            }
            else if(strncmp("comport", optarg, 7) == 0){
 //              serial_enum_devices(&g_num_devices, optarg + 7);
@@ -464,7 +469,7 @@ extern int RDesktop_Main(int argc, char *argv[])
 //              parallel_enum_devices(&g_num_devices, optarg + 7);
            }
            else if(strncmp("printer", optarg, 7) == 0){
-//              printer_enum_devices(&g_num_devices, optarg + 7);
+              printer_enum_devices(&g_num_devices, optarg + 7);
            }
            else if(strncmp("clientname", optarg, 10) == 0){
               g_rdpdr_clientname = xmalloc(strlen(optarg + 11) + 1);
@@ -1333,9 +1338,12 @@ static void usage(char *program)
   messagetext("         '-r clipboard:[off|active][,datalimit]': control clipboard redirection");
   messagetext("                 remote would leave sound on server");
   messagetext("         '-r sound:[local|off|remote]': enable sound redirection");
+  messagetext("         '-r disk:NAME=<path>': share a RISC OS directory as a Windows drive");
 /*
   messagetext("             or      mydeskjet=\"HP LaserJet IIIP\" to enter server driver as well");
   messagetext("         '-r printer:mydeskjet': enable printer redirection");
+  messagetext("         '-r clipfile': enable clip-file receive (server->RISC OS file drop)");
+  messagetext("         '-r disk:NAME=<path>': redirect a RISC OS directory as a Windows drive");
   messagetext("             or      LPT1=/dev/lp0,LPT2=/dev/lp1");
   messagetext("         '-r lptport:LPT1=/dev/lp0': enable parallel redirection of /dev/lp0 to LPT1");
   messagetext("             or   A=/mnt/floppy,D=/mnt/cdrom'");

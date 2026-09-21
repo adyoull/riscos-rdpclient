@@ -30,6 +30,12 @@
 #define CLIPRDR_RESPONSE		1
 #define CLIPRDR_ERROR			2
 
+#define CLIPRDR_FILECONTENTS_REQUEST	8
+#define CLIPRDR_FILECONTENTS_RESPONSE	9
+
+#define FILECONTENTS_SIZE	0x00000001
+#define FILECONTENTS_RANGE	0x00000002
+
 static VCHANNEL *cliprdr_channel;
 
 static uint8 *last_formats = NULL;
@@ -109,6 +115,39 @@ cliprdr_send_data(uint8 * data, uint32 length)
 	cliprdr_send_packet(CLIPRDR_DATA_RESPONSE, CLIPRDR_RESPONSE, data, length);
 }
 
+/* Request a range of a redirected file's contents from the server (clip-file
+   receive path). MS-RDPECLIP File Contents Request PDU. */
+void
+cliprdr_send_filecontents_request(uint32 streamid, uint32 lindex, uint32 flags,
+						  uint32 poslow, uint32 poshigh, uint32 cbrequested)
+{
+	uint8 buffer[24];
+	buf_out_uint32(buffer,      streamid);
+	buf_out_uint32(buffer + 4,  lindex);
+	buf_out_uint32(buffer + 8,  flags);
+	buf_out_uint32(buffer + 12, poslow);
+	buf_out_uint32(buffer + 16, poshigh);
+	buf_out_uint32(buffer + 20, cbrequested);
+	cliprdr_send_packet(CLIPRDR_FILECONTENTS_REQUEST, CLIPRDR_REQUEST, buffer,
+				sizeof(buffer));
+}
+
+/* Advertise one General capability set so the server offers redirected file
+   formats (CB_STREAM_FILECLIP_ENABLED). Short format names are kept (no
+   CB_USE_LONG_FORMAT_NAMES) so the 36-byte format-announce parser still works. */
+void
+cliprdr_send_clip_caps(uint32 generalflags)
+{
+	uint8 buffer[16];
+	buffer[0] = 1;  buffer[1] = 0;	/* cCapabilitiesSets = 1   */
+	buffer[2] = 0;  buffer[3] = 0;	/* pad                     */
+	buffer[4] = 1;  buffer[5] = 0;	/* CB_CAPSTYPE_GENERAL     */
+	buffer[6] = 12; buffer[7] = 0;	/* lengthCapability = 12   */
+	buf_out_uint32(buffer + 8,  2);	/* CB_CAPS_VERSION_2       */
+	buf_out_uint32(buffer + 12, generalflags);
+	cliprdr_send_packet(7 /* CB_CLIP_CAPS */, 0, buffer, sizeof(buffer));
+}
+
 static void
 cliprdr_process(STREAM s)
 {
@@ -145,6 +184,9 @@ cliprdr_process(STREAM s)
 			case CLIPRDR_DATA_RESPONSE:
 				ui_clip_request_failed();
 				break;
+			case CLIPRDR_FILECONTENTS_RESPONSE:
+				ui_clip_filecontents_failed();
+				break;
 			default:
 				DEBUG_CLIPBOARD(("CLIPRDR error (type=%d)\n", type));
 		}
@@ -169,6 +211,9 @@ cliprdr_process(STREAM s)
 			break;
 		case CLIPRDR_DATA_RESPONSE:
 			ui_clip_handle_data(data, length);
+			break;
+		case CLIPRDR_FILECONTENTS_RESPONSE:
+			ui_clip_handle_filecontents(data, length);
 			break;
 		case 7:	/* TODO: W2K3 SP1 sends this on connect with a value of 1 */
 			break;

@@ -55,6 +55,8 @@ void cliprdr_send_simple_native_format_announce(uint32 format);
 void cliprdr_send_native_format_announce(uint8 * formats_data, uint32 formats_data_length);
 void cliprdr_send_data_request(uint32 format);
 void cliprdr_send_data(uint8 * data, uint32 length);
+void cliprdr_send_filecontents_request(uint32 streamid, uint32 lindex, uint32 flags, uint32 poslow, uint32 poshigh, uint32 cbrequested);
+void cliprdr_send_clip_caps(uint32 generalflags);
 void cliprdr_set_mode(const char *optarg);
 RD_BOOL cliprdr_init(void);
 /* disk.c */
@@ -231,6 +233,8 @@ void tcp_reset_state(void);
 void ui_clip_format_announce(uint8 * data, uint32 length);
 void ui_clip_handle_data(uint8 * data, uint32 length);
 void ui_clip_request_failed(void);
+void ui_clip_handle_filecontents(uint8 * data, uint32 length);
+void ui_clip_filecontents_failed(void);
 void ui_clip_request_data(uint32 format);
 void ui_clip_sync(void);
 void ui_clip_set_mode(const char *optarg);

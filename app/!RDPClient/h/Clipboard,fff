@@ -47,6 +47,12 @@ extern void Clipboard_SetMode(int mode);
 
 
  /*
+  * Enable/disable clip-file receive (Windows -> RISC OS file drop)
+  */
+extern void Clipboard_SetFileMode(int on);
+
+
+ /*
   * Return mode of clipboard redirection
   */
 extern int Clipboard_GetMode(void);
