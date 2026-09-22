@@ -16,6 +16,49 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.93.1 — 2026-09-22
+
+Shared-drive robustness fixes for real servers (chiefly macOS / NuoRDS), plus the
+macOS `.zip` known limitation. Feature unchanged from 0.93.
+
+### Fixed (shared-drive robustness against real servers, chiefly macOS / NuoRDS)
+
+- **Rename of an open scratch file** no longer fails — the shim closes the file
+  first, renames, and falls back to copy-then-delete if the native rename is
+  refused. This was the original **"Error 45"** on macOS.
+- **Enumeration no longer appends `.dat`** to extensionless RISC OS Data (&FFD)
+  files, so a file the server just created is found again on the next directory
+  read (create ↔ enumerate now round-trip exactly).
+- **Delete-on-close** removes a temp file even when the server holds several
+  handles open on it: the shim force-closes its other handles on that path, then
+  deletes. Previously multi-handle temp files piled up.
+- **Directory creation is honoured.** A create carrying `FILE_DIRECTORY_FILE`
+  (which the redirector delivers in the field the dispatcher passes as
+  `flags_and_attributes`, i.e. `CreateOptions`) now makes a real RISC OS
+  directory instead of a file.
+- **Volume-information queries are always answered.** They were rejected with
+  `STATUS_INVALID_HANDLE` when the server queried without a live file handle, so
+  the volume never reported its label, free space or attributes; it does now.
+- **`X.zip` opens the file,** not a coincidentally same-named `X` directory left
+  beside it (e.g. after a previous extraction).
+- **Volume attributes corrected** to case-insensitive, case-preserving, Unicode
+  (was wrongly reported case-sensitive).
+- **Release logging.** The `RDPDiskLog` shared-drive trace is written only under
+  `-v` / `RDPClient$Debug` now; a normal run leaves no log file. A per-request
+  (IRP) trace was added under the same flag for diagnosing a server.
+
+### Known limitation — extracting .zip on macOS (NuoRDS)
+
+macOS's built-in **Archive Utility cannot expand a `.zip` directly onto the
+shared drive** — it reports **"Error 45"** or **"unable to expand … unsupported
+format"** and writes nothing. This is a **macOS/NuoRDS limitation, not a fault in
+the shared drive**: macOS presents the redirected drive as a *zero-capacity
+network volume*, and Archive Utility refuses to stage its sandboxed extraction
+there. Copying files on and off, and extracting with a third-party tool, all work
+normally. To unzip onto the shared drive, use **Keka** (or `unzip` / `ditto` in
+Terminal), or expand the archive to a local Mac folder and copy the results
+across. Windows and Linux (xrdp) servers are unaffected.
+
 ## 0.93 — 2026-09-21
 
 A shared drive between RISC OS and the remote Windows session, plus a
@@ -72,8 +115,8 @@ corrected to GPL v3.
     the ignored-cert, CA-cert and server-cert lengths were read from the server
     and used to read / advance the stream with no bounds check; each is now
     rejected if it exceeds the bytes remaining, before the certificate is read.
-  Not a full parser audit — the broader bitmap / channels / rdpdr bounds pass
-  is a separate, test-heavy effort — but it closes the two unambiguous holes.
+    Not a full parser audit — the broader bitmap / channels / rdpdr bounds pass
+    is a separate, test-heavy effort — but it closes the two unambiguous holes.
 
 ### Added
 

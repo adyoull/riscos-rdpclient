@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.93)
+# !RDPClient — RISC OS RDP client (32-bit, 0.93.1)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,9 +15,29 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.93**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.93.1**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
+
+---
+
+## Shared drive (0.93) and the macOS `.zip` caveat
+
+From **0.93** a RISC OS directory can be shared with the remote session as a
+redirected network drive (`\\tsclient\RISCOS`) — copy files both ways, open,
+rename and delete, with RISC OS filetypes mapped to extensions. Set it with
+`-r disk:NAME=<RISC OS path>` or the connection editor's **Shared folder** field.
+
+> **Known limitation — extracting `.zip` on macOS (NuoRDS servers).**
+> macOS's built-in **Archive Utility cannot expand a `.zip` directly onto the
+> shared drive** — it reports **"Error 45"** or **"unable to expand … unsupported
+> format"** and writes nothing. This is a **macOS/NuoRDS limitation, not a fault
+> in the shared drive**: macOS presents the redirected drive as a *zero-capacity
+> network volume*, and Archive Utility refuses to stage its sandboxed extraction
+> onto such a volume. Copying files on and off, and extracting with a third-party
+> tool, all work normally. **To unzip onto the shared drive, use [Keka](https://www.keka.io/)**
+> (or `unzip` / `ditto` in Terminal), or expand the archive to a local Mac folder
+> and copy the results across. Windows and Linux (xrdp) servers are unaffected.
 
 ---
 
@@ -157,6 +177,21 @@ objects, which is why a clean rebuild used to regress):
    **DeskLib source** and is baked into the prebuilt `build/DeskLib32`.
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
+
+---
+
+### 0.93.1 — shared-drive robustness fixes
+
+A point release on top of 0.93. It fixes the cases that only show up against
+real-world servers — chiefly macOS / NuoRDS — so the shared drive works
+reliably: renaming a file whose handle is still open (the original macOS
+"Error 45"); enumerating extensionless files (now reported as `.dat`);
+delete-on-close of temp files held by several handles; real directory
+creation; volume-information queries (free space and filesystem attributes);
+`X.zip`-vs-`X`-folder name clashes; and case-insensitive / Unicode volume
+flags. The `RDPDiskLog` diagnostic trace is now gated behind `-v` /
+`RDPClient$Debug`, so a normal run leaves no log file. See the macOS `.zip`
+caveat above; Windows and Linux (xrdp) servers are unaffected.
 
 ---
 
@@ -383,4 +418,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.93`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.93.1`; wheel scrolls the remote.

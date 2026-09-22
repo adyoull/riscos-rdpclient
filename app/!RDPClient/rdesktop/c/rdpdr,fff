@@ -736,6 +736,20 @@ rdpdr_process_irp(STREAM s)
 			break;
 	}
 
+	/* IRP-stream trace into RDPDiskLog (skip READ/WRITE majors -- already logged
+	   in detail by the disk device).  Reveals control-plane ops (DeviceControl,
+	   volume queries, unimplemented majors) and their returned status. */
+	if (major != IRP_MJ_READ && major != IRP_MJ_WRITE)
+	{
+		extern void disk_extlog(const char *);
+		char il[160];
+		sprintf(il, "IRP dev=%lu maj=0x%lx min=0x%lx -> st=0x%lx res=%lu",
+			(unsigned long) device, (unsigned long) major,
+			(unsigned long) minor, (unsigned long) status,
+			(unsigned long) result);
+		disk_extlog(il);
+	}
+
 	if (status != RD_STATUS_PENDING)
 	{
 		rdpdr_send_completion(device, id, status, result, buffer, buffer_len);
@@ -829,6 +843,17 @@ rdpdr_process(STREAM s)
 		if ((magic[2] == 'P') && (magic[3] == 'S'))
 		{
 			/* server capability */
+			return;
+		}
+		if ((magic[2] == 'L') && (magic[3] == 'U'))
+		{
+			/* PAKID_CORE_USER_LOGGEDON: the server registers redirected
+			   devices into the logged-on session now, so re-announce our
+			   device list. Windows works from the one-shot announce, but
+			   servers like NuoRDS only activate the drive on this message.
+			   Re-announcing is idempotent (stable device IDs). */
+			rdpdr_send_name();
+			rdpdr_send_available();
 			return;
 		}
 	}

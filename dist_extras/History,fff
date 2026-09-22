@@ -1,3 +1,16 @@
+22-Sep-2026  0.93.1 Shared-drive robustness fixes for real servers (chiefly
+                    macOS / NuoRDS): open-handle rename, extensionless-file
+                    enumeration (.dat), delete-on-close of multi-handle temp
+                    files, real directory creation, volume-info (free space /
+                    attributes) queries, X.zip-vs-folder name clashes and
+                    case/Unicode volume flags all corrected. The RDPDiskLog
+                    trace is now gated behind -v.
+                    macOS note (NuoRDS): the Mac's built-in Archive Utility
+                    cannot expand a .zip directly onto the shared drive ('Error
+                    45' / 'unsupported format') -- macOS presents the redirected
+                    drive as a zero-capacity network volume and refuses to stage
+                    the extraction. File copying works; unzip with a third-party
+                    tool (e.g. Keka) or extract locally and copy across.
 21-Sep-2026  0.93 Shared drive: a RISC OS directory can be shared with the
                   remote Windows session as a network drive (\\tsclient\RISCOS)
                   for moving files both ways -- browse in Explorer; copy off

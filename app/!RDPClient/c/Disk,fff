@@ -30,10 +30,18 @@
 #define FILE_ATTRIBUTE_NORMAL			0x00000080
 
 #define FILE_FLAG_BACKUP_SEMANTICS		0x02000000
+/* NOTE: the rdpdr dispatcher mislabels the IRP_MJ_CREATE field order: the
+   value delivered here as flags_and_attributes is actually MS-RDPEFS
+   CreateOptions.  Its bit 0 (FILE_DIRECTORY_FILE) is how the peer asks for a
+   directory -- macOS Archive Utility uses it for its .ArchiveServiceTemp
+   extraction sandbox and its .AU probe.  We must honour it or those objects
+   get created as files and extraction fails ("Error 45" = EOPNOTSUPP). */
+#define FILE_DIRECTORY_FILE			0x00000001
 #define FILE_FLAG_DELETE_ON_CLOSE		0x04000000
 
 #define FS_CASE_SENSITIVE			0x00000001
 #define FS_CASE_IS_PRESERVED			0x00000002
+#define FS_UNICODE_ON_DISK			0x00000004
 
 #define GENERIC_WRITE				0x40000000
 #define GENERIC_ALL				0x10000000
@@ -57,6 +65,8 @@
 #define FileDispositionInformation		13
 #define FileAllocationInformation		19
 #define FileEndOfFileInformation		20
+#define FileNetworkOpenInformation		34   /* Win11 shell: metadata in one call */
+#define FileAttributeTagInformation		35   /* Win11 shell: reparse/cloud check  */
 
 /* NT FS_INFORMATION_CLASS */
 #define FileFsVolumeInformation			1
@@ -80,6 +90,7 @@
 
 extern RDPDR_DEVICE g_rdpdr_device[];
 extern int g_debug_trace;   /* -v / RDPClient$Debug: gates the RDPDiskLog */
+extern void messagetext(char *format, ...);   /* c/RDesktop: Log window */
 
 FILEINFO g_fileinfo[MAX_OPEN_FILES];
 RD_BOOL g_notify_stamp = False;
@@ -116,15 +127,30 @@ DEVICE_FNS disk_fns = {
  *                              diagnostics                                   *
  ******************************************************************************/
 
-static void disk_log(const char *line)
+/* Two-level disk logging, gated on -v / RDPClient$Debug:
+   - routine chatter (create/read/write/close/qdir) -> RDPDiskLog file only;
+   - issues (open failures, short writes, unhandled info classes, rejected
+     ':' metadata streams) -> ALSO the on-screen Log window, so the window
+     shows only problems instead of being flooded by every read. */
+static void disk_logf(const char *line, int issue)
 {
   FILE *f = NULL;
-  if(!g_debug_trace) return;   /* diagnostics only: -v or 'Set RDPClient$Debug 1' */
+  /* Issues surface in the on-screen Log window only when tracing is on.  The
+     RDPDiskLog FILE trace is likewise gated behind tracing (-v or
+     RDPClient$Debug): a normal release run writes no log file; enable tracing to
+     capture the full shared-drive trace when diagnosing a server. */
+  if(issue && g_debug_trace) messagetext("DISK: %s", line);
+  if(!g_debug_trace) return;
   if(g_disk_logpath[0] != '\0') f = fopen(g_disk_logpath, "a");
   if(f == NULL) f = fopen("<Wimp$ScrapDir>.RDPDiskLog", "a");
   if(f == NULL) f = fopen("<RDPClient$Dir>.RDPDiskLog", "a");
   if(f != NULL){ fputs(line, f); fputc('\n', f); fclose(f); }
 }
+static void disk_log(const char *line)  { disk_logf(line, 0); }   /* routine -> file */
+static void disk_warn(const char *line) { disk_logf(line, 1); }   /* issue -> window+file */
+
+/* External entry so the rdpdr IRP dispatcher can log into RDPDiskLog too. */
+extern void disk_extlog(const char *line) { disk_log(line); }
 
 static void disk_log_hex(const char *tag, const unsigned char *p, int n)
 {
@@ -282,6 +308,14 @@ static const char *disk_type_to_ext(int t)
   char mmbuf[132];             /* MimeMap output buffer (needs >= 128 bytes) */
   _kernel_swi_regs r;
 
+  /* &FFD (Data) is the generic "no particular type" filetype.  macOS/NuoRDS
+     temp files are created without an extension and stored as Data; appending
+     ".dat" here corrupts the name on the round-trip - the client would
+     enumerate '.AU.Y2UMK' back as '.AU.Y2UMK.dat', so macOS fails to find its
+     own scratch file ("cannot identify a writable temporary folder").  Treat
+     Data as extensionless. */
+  if(t == 0xFFD) return(NULL);
+
   /* Prefer the system MimeMap table (matches the rest of RISC OS). */
   r.r[0] = MMM_TYPE_RISCOS;    /* input:  RISC OS filetype (int)        */
   r.r[1] = t;
@@ -324,6 +358,11 @@ static int disk_ext_to_type(const char *e)
 {
   char obuf[132];              /* output buffer (unused for an int result) */
   _kernel_swi_regs r;
+
+  /* Keep "dat" symmetric with disk_type_to_ext's Data handling: treat it as
+     no known extension, so a real "*.dat" name is preserved verbatim instead
+     of being stripped to a Data leaf and reappended on enumeration. */
+  if(disk_ieq(e, "dat")) return(-1);
 
   /* Prefer the system MimeMap table. */
   r.r[0] = MMM_TYPE_DOT_EXTN;   /* input:  filename extension (no dot), ptr */
@@ -447,21 +486,33 @@ static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 share
   /* Windows NTFS alternate data streams ("name:Zone.Identifier") - not real
      files; RISC OS has no equivalent, report as absent. */
   if(strchr(filename, ':') != NULL)
+  {
+     char l[PATH_MAX + 32];
+     sprintf(l, "reject stream/ADS create: '%s'", filename);
+     disk_warn(l);
      return(RD_STATUS_NO_SUCH_FILE);
+  }
 
   ftype = disk_riscos_path(device_id, filename, path, sizeof(path));
   type = disk_stat(path, NULL, NULL, NULL, NULL);
 
   /* Some RISC OS files hold the extension in their leafname (e.g. "MyFile/pdf",
-     shown to Windows as "MyFile.pdf") rather than as a filetype.  If the
-     extension-stripped name does not exist, retry with the extension kept so
-     these files open; the name already carries the type, so don't re-stamp. */
-  if(type == 0){
+     shown to Windows as "MyFile.pdf") rather than as a filetype.  Retry with the
+     extension kept so these files open when:
+       (a) the extension-stripped name does not exist, OR
+       (b) the stripped name is a DIRECTORY but the extension-kept name is a real
+           file.  This resolves the collision where a "Revert-0921" folder (e.g.
+           left by a previous extraction) sits beside "Revert-0921/zip": opening
+           "Revert-0921.zip" must map to the FILE, not the coincidentally-named
+           directory (else macOS reads a folder as an archive -> "unsupported
+           format").  The name already carries the type, so don't re-stamp. */
+  if(type == 0 || type == 2){
      char rawpath[PATH_MAX];
      int  rawtype;
      disk_win_to_riscos(device_id, filename, rawpath, sizeof(rawpath), 0);
      rawtype = disk_stat(rawpath, NULL, NULL, NULL, NULL);
-     if(rawtype != 0){
+     if(rawtype != 0 && (type == 0 || rawtype != 2) &&
+        strcmp(rawpath, path) != 0){
         strncpy(path, rawpath, sizeof(path) - 1);
         path[sizeof(path) - 1] = '\0';
         type  = rawtype;
@@ -469,8 +520,8 @@ static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 share
      }
   }
 
-  want_dir = (flags_and_attributes & FILE_FLAG_BACKUP_SEMANTICS) ? True : False;
-  if(type == 2 || type == 3) want_dir = True;
+  want_dir = (flags_and_attributes & (FILE_DIRECTORY_FILE | FILE_FLAG_BACKUP_SEMANTICS)) ? True : False;
+  if(type == 2) want_dir = True;   /* type 3 = image file (zip/archive) -> a FILE */
 
   want_write = (accessmask & (GENERIC_WRITE | GENERIC_ALL |
                               FILE_WRITE_DATA | FILE_APPEND_DATA)) ? True : False;
@@ -518,7 +569,7 @@ static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 share
         sprintf(le, "create: OPEN FAILED '%s' disp=%lu ww=%d err=%d '%s'",
                 path, (unsigned long)create_disposition, (int)want_write,
                 e ? e->errnum : 0, e ? e->errmess : "(none)");
-        disk_log(le);
+        disk_warn(le);
         return(RD_STATUS_ACCESS_DENIED);
      }
   }
@@ -545,9 +596,14 @@ static RD_NTSTATUS Disk_Create(uint32 device_id, uint32 accessmask, uint32 share
 
   *handle = (RD_NTHANDLE)h;
 
-  sprintf(l, "create: '%s' type=%d disp=%lu -> handle %d%s",
-          path, type, (unsigned long)create_disposition, h, isdir ? " [dir]" : "");
-  disk_log(l);
+  {
+     char lr[2 * PATH_MAX + 96];
+     sprintf(lr, "create: raw='%s' -> '%s' type=%d disp=%lu fa=0x%lx am=0x%lx -> handle %d%s",
+             filename, path, type, (unsigned long)create_disposition,
+             (unsigned long)flags_and_attributes, (unsigned long)accessmask, h,
+             isdir ? " [dir]" : "");
+     disk_log(lr);
+  }
 
   return(RD_STATUS_SUCCESS);
 }
@@ -575,12 +631,36 @@ static RD_NTSTATUS Disk_Close(RD_NTHANDLE handle)
   }
 
   if(g_fileinfo[h].delete_on_close){
-     if(g_disk_isdir[h]){
-        _kernel_osfile_block b;
-        _kernel_osfile(6, g_fileinfo[h].path, &b);   /* delete object */
+     int j, forced = 0;
+     _kernel_osfile_block b;
+     int rc;
+     _kernel_oserror *de;
+     char dl[PATH_MAX + 300];
+     /* macOS Archive Utility's writable-temp probe opens each scratch file
+        MANY times, marks delete-on-close on only ONE handle, closes it, then
+        immediately re-enumerates expecting the object GONE.  RISC OS FileSwitch
+        cannot delete an object that still has open handles, so deferring the
+        delete to a "last handle closes" moment (which macOS never gives before
+        it re-checks) left the 0-byte probe files piled up -> Error 45.
+        Instead, force-close the shim's OTHER open handles on the same path
+        (safe: delete-on-close marks a throwaway temp that is never written with
+        real archive data) and delete the object NOW. */
+     for(j = 0; j < MAX_OPEN_FILES; j++){
+        if(j != h && g_disk_inuse[j] &&
+           strcmp(g_fileinfo[j].path, g_fileinfo[h].path) == 0){
+           if(g_disk_fp[j] != NULL){
+              fclose(g_disk_fp[j]);
+              g_disk_fp[j] = NULL;
+           }
+           g_fileinfo[j].delete_on_close = True;   /* keep intent on the slot */
+           forced++;
+        }
      }
-     else
-        remove(g_fileinfo[h].path);
+     rc = _kernel_osfile(6, g_fileinfo[h].path, &b);   /* delete file/dir now */
+     de = (rc == _kernel_ERROR) ? _kernel_last_oserror() : NULL;
+     sprintf(dl, "DELCLOSE '%s' rc=%d forced=%d%s%s", g_fileinfo[h].path, rc,
+             forced, de ? " err=" : "", de ? de->errmess : "");
+     disk_log(dl);
   }
 
   {
@@ -644,7 +724,7 @@ static RD_NTSTATUS Disk_Write(RD_NTHANDLE handle, uint8 *data, uint32 length, ui
      char l[96];
      sprintf(l, "write: h=%d len=%lu off=%lu put=%lu",
              h, (unsigned long)length, (unsigned long)offset, (unsigned long)*result);
-     disk_log(l);
+     if(*result < length) disk_warn(l); else disk_log(l);
   }
   return(RD_STATUS_SUCCESS);
 }
@@ -674,8 +754,16 @@ extern RD_NTSTATUS disk_query_information(RD_NTHANDLE handle, uint32 info_class,
      return(RD_STATUS_ACCESS_DENIED);
   }
 
+  {
+     char ql[PATH_MAX + 96];
+     sprintf(ql, "qinfo: h=%d ic=%lu type=%d len=%d attr=0x%x '%s'",
+             h, (unsigned long)info_class, type, len, (unsigned)attr,
+             g_fileinfo[h].path);
+     disk_log(ql);
+  }
+
   fattr = 0;
-  if(type == 2 || type == 3) fattr |= FILE_ATTRIBUTE_DIRECTORY;
+  if(type == 2) fattr |= FILE_ATTRIBUTE_DIRECTORY;   /* image file (3) is a file */
   else if(attr & 0x08)       fattr |= FILE_ATTRIBUTE_READONLY;   /* locked file */
   if(!fattr)                 fattr |= FILE_ATTRIBUTE_NORMAL;
 
@@ -695,16 +783,56 @@ extern RD_NTSTATUS disk_query_information(RD_NTHANDLE handle, uint32 info_class,
         out_uint32_le(out, (uint32)len); out_uint32_le(out, 0);  /* eof    */
         out_uint32_le(out, 1);                                   /* nlinks */
         out_uint8(out, 0);                                       /* delete pending */
-        out_uint8(out, (type == 2 || type == 3) ? 1 : 0);        /* directory */
+        out_uint8(out, (type == 2) ? 1 : 0);                     /* directory (image file 3 = file) */
+        break;
+
+     case FileAttributeTagInformation:   /* Windows 11 queries this on every file */
+        out_uint32_le(out, fattr);                               /* FileAttributes */
+        out_uint32_le(out, 0);                                   /* ReparseTag (none) */
+        break;
+
+     case FileNetworkOpenInformation:    /* Windows 11 CopyFile metadata probe */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* creation */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* access   */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* write    */
+        out_uint32_le(out, ftlow); out_uint32_le(out, fthigh);   /* change   */
+        out_uint32_le(out, (uint32)len); out_uint32_le(out, 0);  /* allocation */
+        out_uint32_le(out, (uint32)len); out_uint32_le(out, 0);  /* end of file */
+        out_uint32_le(out, fattr);                               /* attributes */
+        out_uint32_le(out, 0);                                   /* reserved   */
         break;
 
      default:
+     {
+        char l[64];
+        sprintf(l, "queryinfo: UNHANDLED class %lu", (unsigned long)info_class);
+        disk_warn(l);
         return(RD_STATUS_INVALID_PARAMETER);
+     }
   }
   return(RD_STATUS_SUCCESS);
 }
 
 /******************************************************************************/
+
+/* Copy a file byte-for-byte (rename fallback when FileSwitch will not rename
+   in place). Returns 0 on success, -1 on failure. */
+static int disk_copy_file(const char *src, const char *dst)
+{
+  FILE *in, *out;
+  char buf[4096];
+  size_t n;
+  in = fopen(src, "rb");
+  if(in == NULL) return(-1);
+  out = fopen(dst, "wb");
+  if(out == NULL){ fclose(in); return(-1); }
+  while((n = fread(buf, 1, sizeof(buf), in)) > 0){
+     if(fwrite(buf, 1, n, out) != n){ fclose(in); fclose(out); return(-1); }
+  }
+  fclose(in);
+  if(fclose(out) != 0) return(-1);
+  return(0);
+}
 
 extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM out)
 {
@@ -738,10 +866,49 @@ extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, S
            while((p = strchr(newname, '\\')) != NULL) *p = '/';
         }
         disk_riscos_path(g_fileinfo[h].device_id, newname, fullpath, sizeof(fullpath));
-        if(rename(g_fileinfo[h].path, fullpath) != 0)
-           return(RD_STATUS_ACCESS_DENIED);
-        strncpy(g_fileinfo[h].path, fullpath, PATH_MAX - 1);
-        g_fileinfo[h].path[PATH_MAX - 1] = '\0';
+        {
+           /* Windows renames via an OPEN handle (FileRenameInformation).
+              RISC OS FileSwitch refuses to rename an open object, so close
+              the underlying file first, rename, then reopen so further
+              writes on this handle still land.  If the native rename() is
+              refused, fall back to copy-then-delete. */
+           long savedpos = -1;
+           int  rr;
+           if(g_disk_fp[h] != NULL){
+              savedpos = ftell(g_disk_fp[h]);
+              fclose(g_disk_fp[h]);
+              g_disk_fp[h] = NULL;
+           }
+           rr = rename(g_fileinfo[h].path, fullpath);
+           if(rr != 0){
+              if(disk_copy_file(g_fileinfo[h].path, fullpath) == 0){
+                 remove(g_fileinfo[h].path);
+                 rr = 0;
+              }
+           }
+           {
+              char rl[2 * PATH_MAX + 112];
+              sprintf(rl, "RENAME '%s' -> '%s' : rc=%d",
+                      g_fileinfo[h].path, fullpath, rr);
+              disk_warn(rl);
+           }
+           if(rr != 0){
+              /* Reopen the original so the handle stays usable, then fail. */
+              if(savedpos >= 0){
+                 g_disk_fp[h] = fopen(g_fileinfo[h].path, "r+b");
+                 if(g_disk_fp[h] != NULL && savedpos > 0)
+                    fseek(g_disk_fp[h], savedpos, SEEK_SET);
+              }
+              return(RD_STATUS_ACCESS_DENIED);
+           }
+           strncpy(g_fileinfo[h].path, fullpath, PATH_MAX - 1);
+           g_fileinfo[h].path[PATH_MAX - 1] = '\0';
+           if(savedpos >= 0){
+              g_disk_fp[h] = fopen(g_fileinfo[h].path, "r+b");
+              if(g_disk_fp[h] != NULL && savedpos > 0)
+                 fseek(g_disk_fp[h], savedpos, SEEK_SET);
+           }
+        }
         break;
 
      case FileDispositionInformation:
@@ -762,7 +929,12 @@ extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, S
         return(RD_STATUS_SUCCESS);
 
      default:
+     {
+        char l[64];
+        sprintf(l, "setinfo: UNHANDLED class %lu", (unsigned long)info_class);
+        disk_warn(l);
         return(RD_STATUS_INVALID_PARAMETER);
+     }
   }
   return(RD_STATUS_SUCCESS);
 }
@@ -787,12 +959,27 @@ extern RD_NTSTATUS disk_query_volume_information(RD_NTHANDLE handle, uint32 info
 {
   int h = (int)handle;
   const char *label;
-  int lblbytes, typebytes;
+  int lblbytes, typebytes, devid;
 
-  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
-     return(RD_STATUS_INVALID_HANDLE);
+  /* macOS/NuoRDS issues QueryVolumeInformation without (or before) a live file
+     handle -- right after connect and repeatedly while browsing.  Rejecting
+     these with INVALID_HANDLE (seen 324x in one trace) leaves macOS unable to
+     read free space / volume attributes, which blocks Archive Utility.  The
+     rdpdr dispatcher has already confirmed this is the disk device, so answer
+     for it regardless: derive the device from the handle when it is live, else
+     default to the sole disk device (0). */
+  if(h >= 0 && h < MAX_OPEN_FILES && g_disk_inuse[h])
+     devid = g_fileinfo[h].device_id;
+  else
+     devid = 0;
 
-  label = g_rdpdr_device[g_fileinfo[h].device_id].name;
+  label = g_rdpdr_device[devid].name;
+
+  {
+     char vl[96];
+     sprintf(vl, "qvol: h=%d ic=%lu", h, (unsigned long)info_class);
+     disk_log(vl);
+  }
 
   switch(info_class){
      case FileFsVolumeInformation:
@@ -821,7 +1008,11 @@ extern RD_NTSTATUS disk_query_volume_information(RD_NTHANDLE handle, uint32 info
 
      case FileFsAttributeInformation:
         typebytes = 2 * strlen("RISCOS");
-        out_uint32_le(out, FS_CASE_SENSITIVE | FS_CASE_IS_PRESERVED);
+        /* RISC OS FileSwitch is case-INSENSITIVE + case-preserving; advertise that
+           (not CASE_SENSITIVE, which was wrong) plus UNICODE_ON_DISK, matching what
+           a normal network volume reports, so macOS treats it as a fully capable
+           destination. */
+        out_uint32_le(out, FS_CASE_IS_PRESERVED | FS_UNICODE_ON_DISK);
         out_uint32_le(out, 255);                         /* max component len */
         out_uint32_le(out, (uint32)typebytes);
         disk_out_unistr(out, "RISCOS");
@@ -936,7 +1127,7 @@ extern RD_NTSTATUS disk_query_directory(RD_NTHANDLE handle, uint32 info_class, c
   }
 
   fattr = 0;
-  if(etype == 2 || etype == 3) fattr |= FILE_ATTRIBUTE_DIRECTORY;
+  if(etype == 2) fattr |= FILE_ATTRIBUTE_DIRECTORY;   /* image file (3) listed as a file */
   else if(eattr & 0x08)        fattr |= FILE_ATTRIBUTE_READONLY;   /* locked */
   if(!fattr)                   fattr |= FILE_ATTRIBUTE_NORMAL;
   namelen = 2 * strlen(name);
