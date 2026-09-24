@@ -6,6 +6,17 @@
  *                                                                      *
  ************************************************************************/
 
+/*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL v3); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Modifications (C) 2026 Andrew Youll, released under the same GNU General
+ * Public License. The complete corresponding modified source is distributed
+ * alongside the binary.
+ */
+
 #include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
 #include "DeskLib:Window.h"            /* Window handling automation      */
 #include "DeskLib:Core.h"              /* usefull core functions          */
@@ -88,6 +99,27 @@ static uint8 hatch_patterns[] = {
 
 unsigned int next_poll_time = 0;
 #define MAX_PROCESS_TIME 15
+
+/* Idle back-off for ui_select(). While data or user
+   input arrived within IDLE_GRACE_TIME cs, poll flat out as before (no added
+   latency during screen updates). Once quiet for longer, ask the Wimp for the
+   next null event IDLE_POLL_DELAY cs later, so the task sleeps between socket
+   checks instead of burning 100% CPU on null events. */
+#define IDLE_GRACE_TIME  10
+#define IDLE_POLL_DELAY   2
+
+/* When the display window does not have the input focus (no caret and the
+   pointer is not over it -- see Display_HasInputFocus), or it is closed, back
+   off harder while the link is quiet: check the socket at most every
+   UNFOCUSED_POLL_DELAY cs. Pointer-over or a click restores full speed. */
+#define UNFOCUSED_POLL_DELAY 10
+static unsigned int last_active_time = 0;
+
+/* Shared folder: how often (cs) pending directory change-notify requests are
+   re-checked -- see rdpdr_poll_notify() / disk_check_notify(). */
+#define NOTIFY_POLL_TIME 200
+static unsigned int last_notify_poll = 0;
+extern void rdpdr_poll_notify(void);
 
 static BOOL called_poll = FALSE;
 
@@ -229,6 +261,11 @@ extern int ui_select(int rdp_socket)
     MemMan_PollMemoryManagement();
     Clipboard_Poll();
 
+    if((unsigned int)(Time_Monotonic() - last_notify_poll) >= NOTIFY_POLL_TIME){
+       last_notify_poll = Time_Monotonic();
+       rdpdr_poll_notify();
+    }
+
     if(rdpclient_quit){
 #ifdef WITH_DEBUG_AJS
        printf("return=0 (rdpclient_quit == TRUE : user quit)\n\n");
@@ -299,6 +336,9 @@ extern int ui_select(int rdp_socket)
 
        while((time = Time_Monotonic()) == 0);
 
+       if(found_data)
+          last_active_time = time;
+
        if(!found_data || time > next_poll_time){
 //if(found_data && time > next_poll_time)
 //   fprintf(stderr, "Poll timeout with data   time %i  timeout %i\n", time, next_poll_time);
@@ -308,7 +348,16 @@ extern int ui_select(int rdp_socket)
           * or there is no data waiting
           */
        
-          event = RDPClient_PollNull();
+          if(!found_data && !Display_HasInputFocus())
+             event = RDPClient_PollIdle(UNFOCUSED_POLL_DELAY);   /* background */
+          else if(!found_data && (time - last_active_time) > IDLE_GRACE_TIME)
+             event = RDPClient_PollIdle(IDLE_POLL_DELAY);
+          else
+             event = RDPClient_PollNull();
+
+          if(event != event_NULL)
+             last_active_time = time;           /* user input / Wimp activity */
+
           while(event != event_NULL)
              event = RDPClient_PollNull();
 

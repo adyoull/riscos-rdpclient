@@ -1,3 +1,13 @@
+24-Sep-2026  0.93.2 CPU fixes. With a folder shared, RDPClient no longer runs
+                    at 100% CPU: a drive-channel message loop with NuoRDS ('user
+                    logged on' answered by a device re-announce, over and over)
+                    is fixed -- the device list is re-announced once per
+                    connection. While the connection is quiet RDPClient now
+                    sleeps between checks instead of spinning on null events,
+                    and backs off further when its window is not in focus or
+                    is closed. RISC OS-side changes to a shared folder now reach
+                    Explorer/Finder within about 2 seconds. The shared drive
+                    reports a real creation date.
 22-Sep-2026  0.93.1 Shared-drive robustness fixes for real servers (chiefly
                     macOS / NuoRDS): open-handle rename, extensionless-file
                     enumeration (.dat), delete-on-close of multi-handle temp

@@ -8,6 +8,17 @@
  *                                                                      *
  ************************************************************************/
 
+/*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL v3); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Modifications (C) 2026 Andrew Youll, released under the same GNU General
+ * Public License. The complete corresponding modified source is distributed
+ * alongside the binary.
+ */
+
 #include "DeskLib:WimpSWIs.h"          /* Low-level WIMP commands         */
 #include "DeskLib:Window.h"            /* Window handling automation      */
 #include "DeskLib:Core.h"              /* usefull core functions          */
@@ -274,11 +285,25 @@ extern event_type RDPClient_PollNull(void)
  /*
   * Call WimpPoll and return immediately
   */
+  return(RDPClient_PollIdle(0));
+}
+
+/******************************************************************************/
+
+extern event_type RDPClient_PollIdle(unsigned int delay)
+{
+ /*
+  * Wimp_PollIdle that returns a null event no sooner
+  * than 'delay' centiseconds from now (0 = immediately). Any other event
+  * (keys, clicks, redraws, messages) is still returned at once. Used by
+  * ui_select() when the connection is idle so the task sleeps between socket
+  * checks instead of spinning on null events at 100% CPU.
+  */
   event_pollmask event_nonullmask;
 
   event_nonullmask.value = event_mask.value & 0xFFFFFFFE;
 
-  Wimp_PollIdle(event_nonullmask, &event_lastevent, Time_Monotonic());
+  Wimp_PollIdle(event_nonullmask, &event_lastevent, Time_Monotonic() + delay);
 
   Event_Process(&event_lastevent);
 

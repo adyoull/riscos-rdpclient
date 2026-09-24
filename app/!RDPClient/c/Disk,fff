@@ -9,6 +9,17 @@
  *                                                                      *
  ************************************************************************/
 
+/*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL v3); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Modifications (C) 2026 Andrew Youll, released under the same GNU General
+ * Public License. The complete corresponding modified source is distributed
+ * alongside the binary.
+ */
+
 #include "kernel.h"                    /* _kernel_os* file primitives     */
 #include "MySWIs.h"
 
@@ -281,6 +292,20 @@ static void disk_filetime(int load, int exec, uint32 *ftlow, uint32 *fthigh)
 
   *ftlow  = lo;
   *fthigh = hi;
+}
+
+/* Current time (OS_Word 14,3: 5-byte centiseconds since 1900) as a FILETIME. */
+static void disk_now_filetime(uint32 *ftlow, uint32 *fthigh)
+{
+  int blk[2];
+  unsigned char *b = (unsigned char *)blk;
+  int load, exec;
+  blk[0] = blk[1] = 0;
+  b[0] = 3;
+  if(_kernel_osword(14, blk) == _kernel_ERROR){ *ftlow = 0; *fthigh = 0; return; }
+  exec = (int)((uint32)b[0] | ((uint32)b[1] << 8) | ((uint32)b[2] << 16) | ((uint32)b[3] << 24));
+  load = (int)(0xFFF00000u | (uint32)b[4]);
+  disk_filetime(load, exec, ftlow, fthigh);
 }
 
 /* case-insensitive string compare */
@@ -941,16 +966,92 @@ extern RD_NTSTATUS disk_set_information(RD_NTHANDLE handle, uint32 info_class, S
 
 /******************************************************************************/
 
+/* Directory change notification, polled.
+   RISC OS gives us no directory-change events, so a NOTIFY_CHANGE_DIRECTORY
+   request is held pending (STATUS_PENDING) and re-checked on a timer by
+   rdpdr_poll_notify() (called from ui_select): a cheap signature of the
+   directory listing is compared with the one taken when the request was
+   armed, and the request completes only when the listing has changed.
+   Completing it at once with "success, no data" -- the old behaviour -- tells
+   the server "something changed, re-read the folder", which made Explorer /
+   Finder re-list the share and re-arm the watch in a tight loop (100% CPU
+   whenever a folder was shared). */
+static uint32 g_notify_sig[MAX_OPEN_FILES];
+
+static uint32 disk_dir_signature(const char *path)
+{
+  _kernel_osgbpb_block blk;
+  char name[300];
+  char child[PATH_MAX * 2];
+  uint32 hsh = 2166136261u;                 /* FNV-1a */
+  int off = 0, r, len, attr, load, exec, type, guard = 0;
+  const unsigned char *p;
+
+  while(off != -1 && guard++ < 4096){
+     memset(name, 0, sizeof(name));
+     blk.dataptr  = name;
+     blk.nbytes   = 1;                       /* one leaf name per call */
+     blk.fileptr  = off;
+     blk.buf_len  = sizeof(name);
+     blk.wild_fld = NULL;
+     r = _kernel_osgbpb(9, (unsigned)path, &blk);
+     if(r == _kernel_ERROR)
+        return(hsh ^ 0xFFFFFFFFu);
+     off = blk.fileptr;
+     if(name[0] == '\0')
+        continue;
+     for(p = (const unsigned char *)name; *p != 0; p++){ hsh ^= *p; hsh *= 16777619u; }
+     len = attr = load = exec = type = 0;
+     if(strlen(path) + strlen(name) + 2 < sizeof(child)){
+        sprintf(child, "%s.%s", path, name);
+        type = disk_stat(child, &len, &attr, &load, &exec);
+     }
+     hsh ^= (uint32)type; hsh *= 16777619u;
+     hsh ^= (uint32)len;  hsh *= 16777619u;
+     hsh ^= (uint32)load; hsh *= 16777619u;
+     hsh ^= (uint32)exec; hsh *= 16777619u;
+     hsh ^= (uint32)attr; hsh *= 16777619u;
+  }
+  return(hsh);
+}
+
 extern RD_NTSTATUS disk_check_notify(RD_NTHANDLE handle)
 {
-  return(RD_STATUS_SUCCESS);
+  int h = (int)handle;
+  uint32 sig;
+
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
+     return(RD_STATUS_CANCELLED);
+
+  sig = disk_dir_signature(g_fileinfo[h].path);
+  if(sig == g_notify_sig[h])
+     return(RD_STATUS_PENDING);            /* no change: keep waiting */
+
+  g_notify_sig[h] = sig;
+  {
+     char l[PATH_MAX + 48];
+     sprintf(l, "notify: CHANGED h=%d '%s'", h, g_fileinfo[h].path);
+     disk_log(l);
+  }
+  return(RD_STATUS_SUCCESS);               /* success + no data = re-read folder */
 }
 
 /******************************************************************************/
 
 extern RD_NTSTATUS disk_create_notify(RD_NTHANDLE handle, uint32 info_class)
 {
-  return(RD_STATUS_SUCCESS);
+  int h = (int)handle;
+
+  if(h < 0 || h >= MAX_OPEN_FILES || !g_disk_inuse[h])
+     return(RD_STATUS_INVALID_HANDLE);
+
+  g_notify_sig[h] = disk_dir_signature(g_fileinfo[h].path);
+  {
+     char l[PATH_MAX + 48];
+     sprintf(l, "notify: arm h=%d '%s'", h, g_fileinfo[h].path);
+     disk_log(l);
+  }
+  return(RD_STATUS_PENDING);               /* rdpdr queues it; polled later */
 }
 
 /******************************************************************************/
@@ -984,7 +1085,17 @@ extern RD_NTSTATUS disk_query_volume_information(RD_NTHANDLE handle, uint32 info
   switch(info_class){
      case FileFsVolumeInformation:
         lblbytes = 2 * strlen(label);
-        out_uint32_le(out, 0); out_uint32_le(out, 0);   /* creation time */
+        {
+           /* Volume creation time: the share root's date stamp, else now.
+              Was 0, which macOS Get Info showed as a date in 1600. */
+           int vl = 0, va = 0, vload = 0, vexec = 0;
+           uint32 vlo = 0, vhi = 0;
+           if(disk_stat(g_rdpdr_device[devid].local_path, &vl, &va, &vload, &vexec) > 0)
+              disk_filetime(vload, vexec, &vlo, &vhi);
+           if(vlo == 0 && vhi == 0)
+              disk_now_filetime(&vlo, &vhi);
+           out_uint32_le(out, vlo); out_uint32_le(out, vhi);   /* creation time */
+        }
         out_uint32_le(out, 0x52495343);                 /* serial 'RISC' */
         out_uint32_le(out, (uint32)lblbytes);
         out_uint8(out, 0);                               /* supports objects */

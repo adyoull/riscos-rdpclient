@@ -1,4 +1,4 @@
-# !RDPClient — RISC OS RDP client (32-bit, 0.93.1)
+# !RDPClient — RISC OS RDP client (32-bit, 0.93.2)
 
 A RISC OS port of **rdesktop 1.6.0** (Remote Desktop / RDP client), rebuilt
 **32-bit for RISC OS 5** (Raspberry Pi) on the **build.riscos.online** cloud
@@ -15,7 +15,7 @@ never hand-edited.
 
 ## Releases
 
-Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.93.1**.
+Ready-to-run downloads are published on the **[GitHub Releases page](https://github.com/adyoull/riscos-rdpclient/releases)**. Each release attaches `RDPClient_app.zip` — the whole application as a RISC OS zip with every filetype embedded, so you unzip it on RISC OS with no manual `SetType`. The latest release is **0.93.2**.
 
 For what changed in each version see `docs/CHANGELOG.md` (developer detail) and `dist_extras/History` (the in-app version history).
 
@@ -177,6 +177,19 @@ objects, which is why a clean rebuild used to regress):
    **DeskLib source** and is baked into the prebuilt `build/DeskLib32`.
 
 See `docs/DEVELOPER_addendum.md` (sections A–C) for the full diagnosis.
+
+---
+
+### 0.93.2 — CPU fixes
+
+With a folder shared, RDPClient no longer runs at 100% CPU: a drive-channel
+message loop with NuoRDS ("user logged on" answered by a device re-announce,
+over and over) is fixed by re-announcing once per connection. While the
+connection is quiet RDPClient now sleeps between checks instead of spinning on
+null events (20 ms after 100 ms of quiet; 100 ms when its window is not in focus
+or is closed), with no added delay for keys, clicks or screen updates. RISC
+OS-side changes to a shared folder now reach Explorer / Finder within about 2 s,
+and the shared drive reports a real creation date.
 
 ---
 
@@ -418,4 +431,4 @@ need to rebuild DeskLib; the committed `DeskLib32` is used as-is.
 1. `cd build && python3 package.py && python3 buildapp.py`
 2. Copy `build/Built/RDPClient_app.zip` to the Pi; unzip it there.
 3. If DeepKeys isn't installed: run `DeepKeys.InstDeepK` once.
-4. Run `!RDPClient`. Info box should read `0.93.1`; wheel scrolls the remote.
+4. Run `!RDPClient`. Info box should read `0.93.2`; wheel scrolls the remote.

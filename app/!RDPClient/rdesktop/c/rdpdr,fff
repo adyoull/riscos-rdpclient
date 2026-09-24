@@ -17,6 +17,17 @@
 */
 
 /*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL v3); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Modifications (C) 2026 Andrew Youll, released under the same GNU General
+ * Public License. The complete corresponding modified source is distributed
+ * alongside the binary.
+ */
+
+/*
   Here are some resources, for your IRP hacking pleasure:
 
   http://cvs.sourceforge.net/viewcvs.py/mingw/w32api/include/ddk/winddk.h?view=markup
@@ -460,6 +471,13 @@ rdpdr_process_irp(STREAM s)
 				break;
 			}
 
+			/* Drop any change-notify still pending on this handle (the
+			   server closes the watched directory to end a watch). */
+			if (g_rdpdr_device[device].device_type == DEVICE_TYPE_DISK)
+				while (rdpdr_abort_io(file, IRP_MJ_DIRECTORY_CONTROL,
+						      RD_STATUS_CANCELLED))
+					;
+
 			status = fns->close(file);
 			break;
 
@@ -799,6 +817,13 @@ rdpdr_send_clientcapabilty(void)
 	channel_send(s, rdpdr_channel);
 }
 
+/* Re-announce the device list on USER_LOGGEDON only once per connection:
+   NuoRDS answers each re-announce with another USER_LOGGEDON, so doing it
+   every time ping-ponged ~250 small rdpdr packets/s for the whole session
+   (100% CPU whenever a folder was shared). Reset by the server announce
+   (new connection). */
+static RD_BOOL g_rdpdr_loggedon_announced = False;
+
 static void
 rdpdr_process(STREAM s)
 {
@@ -820,6 +845,7 @@ rdpdr_process(STREAM s)
 		}
 		if ((magic[2] == 'n') && (magic[3] == 'I'))
 		{
+			g_rdpdr_loggedon_announced = False;
 			rdpdr_send_connect();
 			rdpdr_send_name();
 			return;
@@ -851,9 +877,14 @@ rdpdr_process(STREAM s)
 			   devices into the logged-on session now, so re-announce our
 			   device list. Windows works from the one-shot announce, but
 			   servers like NuoRDS only activate the drive on this message.
-			   Re-announcing is idempotent (stable device IDs). */
-			rdpdr_send_name();
-			rdpdr_send_available();
+			   Re-announcing is idempotent (stable device IDs) -- but do it
+			   once per connection, or the reply loop never ends. */
+			if (!g_rdpdr_loggedon_announced)
+			{
+				g_rdpdr_loggedon_announced = True;
+				rdpdr_send_name();
+				rdpdr_send_available();
+			}
 			return;
 		}
 	}
@@ -954,6 +985,38 @@ rdpdr_add_fds(int *n, fd_set * rfds, fd_set * wfds, struct timeval *tv, RD_BOOL 
 
 		}
 
+		iorq = iorq->next;
+	}
+}
+
+/* RISC OS: re-check pending directory change-notify requests. Called on a
+   timer from ui_select() (the select()-driven _rdpdr_check_fds path is not
+   used on RISC OS). Completes a request only when disk_check_notify()
+   reports that the watched directory's listing has changed. */
+void
+rdpdr_poll_notify(void)
+{
+	RD_NTSTATUS status;
+	struct async_iorequest *iorq = g_iorequest;
+	struct async_iorequest *prev = NULL;
+
+	while (iorq != NULL)
+	{
+		if (iorq->fd != 0 && iorq->major == IRP_MJ_DIRECTORY_CONTROL &&
+		    g_rdpdr_device[iorq->device].device_type == DEVICE_TYPE_DISK)
+		{
+			status = disk_check_notify(iorq->fd);
+			if (status != RD_STATUS_PENDING)
+			{
+				rdpdr_send_completion(iorq->device, iorq->id, status, 0,
+						      (uint8 *) "", 1);
+				/* returns the next element, or NULL at the list head --
+				   anything left is picked up on the next tick */
+				iorq = rdpdr_remove_iorequest(prev, iorq);
+				continue;
+			}
+		}
+		prev = iorq;
 		iorq = iorq->next;
 	}
 }

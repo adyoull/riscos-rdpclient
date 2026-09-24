@@ -16,6 +16,38 @@ Dates are ISO (YYYY-MM-DD).
 
 ---
 
+## 0.93.2 — 2026-09-24
+
+CPU fixes: RDPClient no longer runs at 100% CPU while connected with a shared
+folder, and idles properly when the connection is quiet.
+
+### Fixed
+
+- **100% CPU with a shared folder.** The server's `USER_LOGGEDON` drive-channel
+  message was answered with a client-name + device-list re-announce (added in
+  0.93 because NuoRDS only activates the drive on it). NuoRDS answers each
+  re-announce with another `USER_LOGGEDON`, so the two sides exchanged ~250 small
+  drive-channel messages a second for the whole session, each one TLS-encrypted
+  and decrypted. The re-announce now happens once per connection (reset on a new
+  connection); the drive still activates.
+- **Idle CPU.** While connected with nothing arriving, the poll loop asked the
+  Wimp for a null event "now" and spun. It now sleeps between socket checks:
+  20 ms once the link has been quiet for 100 ms, and 100 ms when the display
+  window has neither the caret nor the pointer, or is closed. Keys, clicks,
+  redraws and incoming screen updates are still handled immediately.
+- **Shared-folder change notifications.** Directory-watch requests were
+  completed immediately with "changed", telling the server to re-read the folder
+  over and over. They are now held and checked every 2 s against a signature of
+  the folder listing, and completed only when something actually changed — so
+  RISC OS-side saves, renames and deletes appear in Explorer/Finder within ~2 s.
+  Pending watches are dropped when the server closes the folder.
+- **Volume creation date.** The shared drive reported a zero date (shown as
+  1600/1601); it now reports the shared folder's date stamp (or the current
+  time). macOS / NuoRDS ignores the volume date and capacity and still shows its
+  own.
+
+---
+
 ## 0.93.1 — 2026-09-22
 
 Shared-drive robustness fixes for real servers (chiefly macOS / NuoRDS), plus the

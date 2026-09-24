@@ -990,6 +990,23 @@ Any other suggestions will be gladly accepted.
 Version history:
 ~~~~~~~~~~~~~~~
 
+0.93.2 (24-Sep-2026)
+  * Lower CPU use. With a shared folder, RDPClient could run at 100% CPU for
+    the whole session: the server's "user logged on" message was answered with
+    a device-list re-announce, which the server (NuoRDS) answered with another
+    "user logged on", over and over. The re-announce now happens once per
+    connection. While the connection is quiet RDPClient now sleeps between
+    checks for new data instead of polling continuously, and backs off further
+    when its window is not in focus or is closed. Keys, clicks and screen
+    updates are still handled immediately.
+  * Shared folder: changes made on the RISC OS side (saving, renaming or
+    deleting a file) now show up in the remote Explorer or Finder window within
+    about 2 seconds. Previously the remote side was told on every request that
+    the folder had changed, which made it re-read the folder continually.
+  * The shared drive reports a real creation date (the shared folder's date)
+    instead of an empty one. Some servers (macOS / NuoRDS) ignore this and
+    still show their own date and capacity for the drive.
+
 0.93.1 (22-Sep-2026)
   * Shared-drive robustness fixes for real-world servers (chiefly macOS /
     NuoRDS). Following the 0.93 release, several cases that only arise against

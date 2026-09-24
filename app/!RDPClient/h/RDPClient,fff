@@ -8,6 +8,17 @@
  *                                                                      *
  ************************************************************************/
 
+/*
+ * !RDPClient is free software distributed under the GNU General Public
+ * License (GPL v3); it is derived from rdesktop (Copyright (C) 1999-2011
+ * Matthew Chapman and the rdesktop contributors). This file retains the
+ * copyright of its original authors.
+ *
+ * Modifications (C) 2026 Andrew Youll, released under the same GNU General
+ * Public License. The complete corresponding modified source is distributed
+ * alongside the binary.
+ */
+
 #ifndef __dl_sprite_h
 #include "DeskLib:Sprite.h"
 #endif
@@ -81,6 +92,9 @@ extern void RDPClient_MenuSetDisplayMode(int display_mode);
   * Call WimpPoll and return immediately
   */
 extern event_type RDPClient_PollNull(void);
+
+/* Wimp_PollIdle: null event no sooner than 'delay' cs from now */
+extern event_type RDPClient_PollIdle(unsigned int delay);
 
 
  /*
